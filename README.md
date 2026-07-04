@@ -1,19 +1,21 @@
 # PatchManager
 
+![PatchManager](docs/brand/patchmanager-wordmark.svg)
+
 [![CI](https://github.com/ciaranwhiteside/PatchManager/actions/workflows/ci.yml/badge.svg)](https://github.com/ciaranwhiteside/PatchManager/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)
 ![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6.svg)
 
-**Keep every application on a Windows 10/11 device up to date — and prove it.**
+**Patch. Verify. Prove it.**
 
-PatchManager is a single-file PowerShell tool that discovers and applies
-updates across **Windows Update, WinGet, the Microsoft Store, Microsoft 365
-Click-to-Run, Chrome, and Edge**, then writes evidence-backed HTML, JSON, and
-CSV compliance reports. It works equally well as a set-and-forget updater on a
-personal machine and as a fleet patching agent across a commercial estate,
-with rings, maintenance windows, SLA tracking, CISA KEV emergency handling,
-and SIEM-ready event logging built in.
+PatchManager is a single-file PowerShell tool for evidence-led Windows patching.
+It discovers and applies updates across **Windows Update, WinGet, the Microsoft
+Store, Microsoft 365 Click-to-Run, Chrome, and Edge**, then writes audit-ready
+HTML, JSON, and CSV compliance reports. Use it as a set-and-forget updater on a
+personal machine or as a fleet patching agent across a commercial estate with
+rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
+SIEM-ready event logging.
 
 > **Public beta (v1.0.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
@@ -43,6 +45,7 @@ and SIEM-ready event logging built in.
 - [Troubleshooting & FAQ](#troubleshooting--faq)
 - [Tests](#tests)
 - [Contributing](#contributing)
+- [Brand](#brand)
 - [License](#license)
 
 ---
@@ -634,6 +637,12 @@ Issues and pull requests are welcome — see
 [CONTRIBUTING.md](CONTRIBUTING.md) for the project constraints (single-file
 script, PS 5.1 floor, never reboot, restore machine state) and the local
 dev loop.
+
+## Brand
+
+PatchManager's lightweight identity system lives in
+[docs/brand](docs/brand/BRAND.md). It includes SVG-only logo assets, palette
+guidance, and the visual rules used by the public docs and offline HTML reports.
 
 ## License
 

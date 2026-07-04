@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 160" role="img" aria-labelledby="title desc">
+  <title id="title">PatchManager wordmark</title>
+  <desc id="desc">PatchManager wordmark with protected evidence ledger symbol.</desc>
+  <rect width="680" height="160" rx="24" fill="#F6F2E8"/>
+  <g transform="translate(34 24)">
+    <rect width="112" height="112" rx="24" fill="#111513"/>
+    <path d="M56 10 92 24v25c0 24-15 38-36 49-21-11-36-25-36-49V24l36-14Z" fill="#F6F2E8"/>
+    <path d="M43 30h20l12 12v32H43V30Z" fill="#FFFFFF" stroke="#18324A" stroke-width="3.5" stroke-linejoin="round"/>
+    <path d="M63 30v13h12" fill="none" stroke="#18324A" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M41 61 51 71 73 49" fill="none" stroke="#24744F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif">
+    <text x="176" y="83" font-size="48" font-weight="800" letter-spacing="-1">PatchManager</text>
+    <text x="178" y="115" font-size="18" font-weight="650" fill="#5F6A62" letter-spacing="2">PATCH. VERIFY. PROVE IT.</text>
+  </g>
+  <path d="M176 126h420" stroke="#C49A3D" stroke-width="3" stroke-linecap="round"/>
+</svg>

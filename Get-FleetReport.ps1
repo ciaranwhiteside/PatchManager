@@ -223,6 +223,9 @@ $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{
 
 $generatedAt = ConvertTo-FleetHtml (Get-Date -Format 'dd MMM yyyy HH:mm:ss')
 $centralEsc  = ConvertTo-FleetHtml $CentralReportPath
+$brandMark = @'
+<svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><rect width="64" height="64" rx="14" fill="#f6f2e8"/><path d="M32 7 53 15v15c0 14-8.5 22-21 28C19.5 52 11 44 11 30V15L32 7Z" fill="#111513"/><path d="M32 13 47 18.5V30c0 9.5-5.5 16.5-15 21.5C22.5 46.5 17 39.5 17 30V18.5L32 13Z" fill="#f6f2e8"/><path d="M24.5 23h11.5l6.5 6.5V47h-18V23Z" fill="#fff" stroke="#18324a" stroke-width="2.5" stroke-linejoin="round"/><path d="M36 23v7h6.5" fill="none" stroke="#18324a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 39 29.5 44.5 41 32.5" fill="none" stroke="#24744f" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+'@
 
 $html = @"
 <!DOCTYPE html>
@@ -238,6 +241,7 @@ $html = @"
   body{margin:0;overflow-x:hidden;background:radial-gradient(circle at 78% 4%,rgba(135,215,176,.24),transparent 28rem),radial-gradient(circle at 4% 12%,rgba(255,240,213,.1),transparent 24rem),linear-gradient(180deg,#0b0e0d 0,#111612 42rem,#ebe5d7 42.1rem,#f6f2e8 100%);color:var(--ink);font:14px/1.55 "Segoe UI Variable Text","Aptos","Segoe UI",system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums}
   body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:34px 34px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.75),transparent 52rem);z-index:-1}
   .skip-link{position:absolute;left:-999px;top:8px;background:#fff;color:#000;padding:8px 10px;border-radius:6px;z-index:20}.skip-link:focus{left:8px}
+  .brand-lockup{display:inline-flex;align-items:center;gap:10px}.brand-mark{width:30px;height:30px;flex:0 0 auto}.brand-word{font-weight:820}.hero-brand{margin-bottom:14px;color:#f6f2e8;font-weight:780}.hero-brand .brand-mark{width:38px;height:38px}.footer-brand .brand-mark{width:24px;height:24px}
   .fleet-nav{position:sticky;top:0;z-index:12;display:grid;grid-template-columns:auto minmax(260px,1fr);gap:18px;align-items:start;max-width:1440px;margin:0 auto;padding:12px 32px;background:rgba(7,9,8,.68);backdrop-filter:blur(18px);border-bottom:1px solid rgba(255,255,255,.09);color:#fff}.nav-brand{font-weight:820;letter-spacing:0}.nav-links{display:flex;gap:8px;flex-wrap:wrap}.nav-links a{color:#dce5df;text-decoration:none;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:7px 10px;font-size:.82rem}.fleet-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) 135px 135px 155px auto auto;gap:8px;align-items:end;grid-column:1/-1}
   label{display:block;color:#b6c4bc;font-size:.74rem;font-weight:760;letter-spacing:0;margin-bottom:4px}input,select,button{font:inherit}input,select{width:100%;height:38px;border:1px solid rgba(255,255,255,.18);border-radius:7px;background:rgba(255,255,255,.08);color:#fff;padding:0 10px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}select option{color:#101412;background:#fff}input::placeholder{color:#aab6af}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(135,215,176,.24);border-color:var(--accent)}button{height:38px;border:1px solid rgba(255,255,255,.2);border-radius:7px;background:#f8f4ea;color:#111513;padding:0 13px;cursor:pointer;font-weight:760;transition:transform .18s ease,background .18s ease,border-color .18s ease,box-shadow .18s ease}button:hover{background:#fff;box-shadow:0 14px 35px rgba(0,0,0,.18)}button:active{transform:translateY(1px)}
   .hero{position:relative;color:#fff;min-height:560px;padding:72px 32px 84px;overflow:hidden}.hero:before{content:"";position:absolute;right:-7vw;bottom:36px;width:min(48vw,600px);height:min(48vw,600px);border-radius:42% 58% 48% 52%;background:radial-gradient(circle at 32% 24%,rgba(135,215,176,.72),transparent 0 14%,rgba(135,215,176,.18) 15% 28%,transparent 29%),linear-gradient(135deg,rgba(255,255,255,.12),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.12);box-shadow:0 50px 160px rgba(0,0,0,.45)}.hero-inner{position:relative;max-width:1440px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,430px);gap:48px;align-items:end}.hero-copy{max-width:min(92vw,1080px)}.eyebrow{margin:0 0 8px;color:var(--soft);font-size:.76rem;font-weight:730;letter-spacing:0}.hero .eyebrow{color:#a8b9b1}h1,h2,p{margin-top:0}h1{font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;max-width:min(92vw,1080px);font-size:clamp(2.7rem,5.6vw,5.4rem);line-height:.9;margin:0 0 20px;font-weight:820;letter-spacing:0;text-wrap:balance}h2{font-size:1.15rem;line-height:1.15;margin:0 0 4px;font-weight:760;letter-spacing:0;text-wrap:balance}.hero-summary{max-width:64rem;color:#d2ddd7;font-size:1.08rem;margin:0;text-wrap:pretty}.hero-panel{align-self:stretch;display:grid;align-content:end;gap:14px}.hero-proof{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.055);border-radius:8px;padding:14px}.hero-proof span{display:block;color:#a8b9b1;font-size:.75rem;font-weight:700}.hero-proof strong{display:block;margin-top:4px;color:#fff;word-break:break-word}.hero-visual{min-height:180px;border:1px solid rgba(255,255,255,.11);border-radius:8px;background:linear-gradient(135deg,rgba(255,255,255,.12),rgba(255,255,255,.03));padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.1);overflow:hidden}
@@ -261,7 +265,7 @@ $html = @"
 <body>
 <a class="skip-link" href="#fleetTable">Skip to host table</a>
 <nav class="fleet-nav" aria-label="Fleet command bar">
-  <div class="nav-brand">PatchManager Fleet</div>
+  <div class="nav-brand brand-lockup">$brandMark<span class="brand-word">PatchManager Fleet</span></div>
   <div class="nav-links"><a href="#summary">Summary</a><a href="#risk">Risk lanes</a><a href="#hosts">Hosts</a><a href="#provenance">Provenance</a></div>
   <div class="fleet-toolbar" aria-label="Fleet controls">
     <div class="search-field"><label for="fleetSearch">Search hosts</label><input id="fleetSearch" type="search" placeholder="Hostname, ring, profile, version, note"></div>
@@ -274,7 +278,7 @@ $html = @"
 </nav>
 <header class="hero">
   <div class="hero-inner">
-    <div class="hero-copy"><p class="eyebrow">PatchManager fleet report</p><h1>$fleetVerdictTitle<br>$totalHosts host(s)</h1><p class="hero-summary">$fleetVerdictCopy</p></div>
+    <div class="hero-copy"><div class="hero-brand brand-lockup">$brandMark<span>Patch. Verify. Prove it.</span></div><p class="eyebrow">PatchManager fleet report</p><h1>$fleetVerdictTitle<br>$totalHosts host(s)</h1><p class="hero-summary">$fleetVerdictCopy</p></div>
     <div class="hero-panel"><div class="hero-visual"><div class="telemetry-strip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></div><div class="hero-proof"><span>Central source</span><strong>$centralEsc</strong></div><div class="hero-proof"><span>Generated</span><strong>$generatedAt</strong></div></div>
   </div>
 </header>
@@ -311,7 +315,7 @@ $html = @"
     <div class="result-count" id="fleetResultCount"></div>
   </section>
   </div>
-  <div class="footer"><span>Generated by Get-FleetReport.ps1 for <a href="https://github.com/ciaranwhiteside/PatchManager" target="_blank" rel="noopener">PatchManager</a>.</span><span>Rows use each host's most recent JSON report only; stale rows may hide newer local state.</span></div>
+  <div class="footer"><span class="footer-brand brand-lockup">$brandMark<span>Generated by Get-FleetReport.ps1 for <a href="https://github.com/ciaranwhiteside/PatchManager" target="_blank" rel="noopener">PatchManager</a>.</span></span><span>Rows use each host's most recent JSON report only; stale rows may hide newer local state.</span></div>
 </main>
 <script>
 (function(){
