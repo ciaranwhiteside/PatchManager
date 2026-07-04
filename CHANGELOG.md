@@ -4,6 +4,16 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-07-04
+
+### Fixed
+- Microsoft Store CLI discovery now treats non-zero `store.exe` exits, including
+  exit code `5`, as provider failures that can fall back to the Windows MDM
+  bridge instead of being mistaken for "no Store updates".
+- Store CLI command capture now uses temp-file redirection instead of async
+  output event handlers, matching the WinGet wrapper and avoiding fragile
+  process behavior from the Store app execution alias.
+
 ## [1.1.0] - 2026-07-04
 
 ### Added

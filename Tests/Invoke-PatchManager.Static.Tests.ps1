@@ -117,6 +117,25 @@ $emptyParse = ConvertFrom-WinGetUpgradeOutput -Lines $emptyLines -QuerySource 'm
 Assert-True (-not $emptyParse.SawHeader) 'Empty fixture: no header should be detected.'
 Assert-True ($emptyParse.Upgrades.Count -eq 0) 'Empty fixture: no upgrades should parse.'
 
+#-- Microsoft Store CLI failure handling --------------------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-StoreCliUpdateCandidates')
+
+function Invoke-StoreCliCommand {
+    param([string]$StoreCli, [string[]]$Arguments, [int]$TimeoutSeconds, [string[]]$StandardInputLines = @())
+    return [PSCustomObject]@{
+        ExitCode = 5
+        TimedOut = $false
+        Failed   = $false
+        Output   = 'Store app execution alias failed.'
+    }
+}
+
+$storeCandidates = @(Get-StoreCliUpdateCandidates -StoreCli 'store.exe' -TimeoutSeconds 30)
+Assert-True ($storeCandidates.Count -eq 0) 'Store CLI: non-zero discovery exit should not return update candidates.'
+Assert-True ($script:StoreCliDiscoveryFailed) 'Store CLI: non-zero discovery exit should be marked as provider failure.'
+Assert-True ($script:StoreCliDiscoveryReason -match 'code 5') 'Store CLI: discovery failure should preserve the Store exit code.'
+
 #-- Config merge + scope profiles ---------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ScopeProfileDefaults')
@@ -283,7 +302,7 @@ Assert-True ((Select-RealPfroEntries @('', '')).Count -eq 0) 'PFRO: empty entrie
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ScriptVersionFromContent')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-SelfUpdateSource')
 
-Assert-True ((Get-ScriptVersionFromContent -Content "`$script:VERSION       = '1.1.0'") -eq '1.1.0') 'Self-update: version literal should be parsed from script content.'
+Assert-True ((Get-ScriptVersionFromContent -Content "`$script:VERSION       = '1.1.1'") -eq '1.1.1') 'Self-update: version literal should be parsed from script content.'
 Assert-True ($null -eq (Get-ScriptVersionFromContent -Content 'no version here')) 'Self-update: missing version should return null.'
 Assert-True ($null -eq (Get-ScriptVersionFromContent -Content '')) 'Self-update: empty content should return null.'
 # The live script must expose a parseable version to the self-updater

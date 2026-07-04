@@ -95,7 +95,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.1.0'
+$script:VERSION       = '1.1.1'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -2534,68 +2534,59 @@ function Invoke-StoreCliCommand {
         [string[]]$StandardInputLines = @()
     )
 
+    $tempOut = $null
+    $tempErr = $null
+    $tempIn = $null
     try {
         $escapedArgs = @($Arguments | ForEach-Object {
             if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
         }) -join ' '
-        $stdout = [System.Text.StringBuilder]::new()
-        $stderr = [System.Text.StringBuilder]::new()
-
-        $psi = [System.Diagnostics.ProcessStartInfo]::new()
-        $psi.FileName = $StoreCli
-        $psi.Arguments = $escapedArgs
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        try {
-            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-            $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-        } catch { }
-
-        $proc = [System.Diagnostics.Process]::new()
-        $proc.StartInfo = $psi
-        $proc.add_OutputDataReceived({
-            param($src, $dataArgs)
-            if ($null -ne $dataArgs.Data) { [void]$stdout.AppendLine($dataArgs.Data) }
-        })
-        $proc.add_ErrorDataReceived({
-            param($src, $dataArgs)
-            if ($null -ne $dataArgs.Data) { [void]$stderr.AppendLine($dataArgs.Data) }
-        })
-        [void]$proc.Start()
-        $proc.BeginOutputReadLine()
-        $proc.BeginErrorReadLine()
-
-        foreach ($line in $StandardInputLines) {
-            $proc.StandardInput.WriteLine($line)
+        $tempOut = [System.IO.Path]::GetTempFileName()
+        $tempErr = [System.IO.Path]::GetTempFileName()
+        $tempIn = [System.IO.Path]::GetTempFileName()
+        if ($StandardInputLines.Count -gt 0) {
+            Set-Content -Path $tempIn -Value $StandardInputLines -Encoding ASCII
+        } else {
+            Set-Content -Path $tempIn -Value '' -Encoding ASCII
         }
-        $proc.StandardInput.Close()
+
+        $proc = Start-Process -FilePath $StoreCli `
+                              -ArgumentList $escapedArgs `
+                              -NoNewWindow -PassThru `
+                              -RedirectStandardInput $tempIn `
+                              -RedirectStandardOutput $tempOut `
+                              -RedirectStandardError $tempErr `
+                              -ErrorAction Stop
 
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
             try { $proc.Kill() } catch { }
             return [PSCustomObject]@{
                 ExitCode = $null
                 TimedOut = $true
+                Failed   = $true
                 Output   = "Timed out after ${TimeoutSeconds}s."
             }
         }
 
         $proc.WaitForExit()
-        $outputText = ($stdout.ToString() + $stderr.ToString())
+        $outputText = ((Get-Content $tempOut -Raw -EA SilentlyContinue) +
+                       (Get-Content $tempErr -Raw -EA SilentlyContinue)) -join ''
 
         return [PSCustomObject]@{
             ExitCode = $proc.ExitCode
             TimedOut = $false
+            Failed   = $false
             Output   = $outputText
         }
     } catch {
         return [PSCustomObject]@{
             ExitCode = $null
             TimedOut = $false
+            Failed   = $true
             Output   = "Exception: $_"
         }
+    } finally {
+        Remove-Item $tempOut, $tempErr, $tempIn -Force -EA SilentlyContinue
     }
 }
 
@@ -2613,6 +2604,20 @@ function Get-StoreCliUpdateCandidates {
         $script:StoreCliDiscoveryFailed = $true
         $script:StoreCliDiscoveryReason = $result.Output
         Write-Log "Microsoft Store client: Store CLI discovery timed out. $($result.Output)" -Level WARN
+        return @()
+    }
+    if ([bool](Get-ObjectPropertyValue $result 'Failed' $false)) {
+        $script:StoreCliDiscoveryFailed = $true
+        $script:StoreCliDiscoveryReason = $result.Output
+        Write-Log "Microsoft Store client: Store CLI discovery failed. $($script:StoreCliDiscoveryReason)" -Level WARN
+        return @()
+    }
+    if ($null -ne $result.ExitCode -and $result.ExitCode -ne 0) {
+        $summary = (([string]$result.Output -replace '\s+', ' ').Trim())
+        if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+        $script:StoreCliDiscoveryFailed = $true
+        $script:StoreCliDiscoveryReason = "Store CLI exited with code $($result.ExitCode). $summary"
+        Write-Log "Microsoft Store client: Store CLI discovery failed. $($script:StoreCliDiscoveryReason)" -Level WARN
         return @()
     }
 
