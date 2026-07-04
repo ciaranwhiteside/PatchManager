@@ -279,6 +279,23 @@ Assert-True ((Select-RealPfroEntries @('\??\C:\Windows\System32\realupdate.dll',
 Assert-True ((Select-RealPfroEntries @('*1\??\C:\Windows\System32\gamingservices_host.dll.0', '', '\??\C:\Windows\real.dll', '')).Count -eq 1) 'PFRO: real renames should survive alongside benign gaming-services entries.'
 Assert-True ((Select-RealPfroEntries @('', '')).Count -eq 0) 'PFRO: empty entries should not count.'
 
+#-- Self-update version parsing -----------------------------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ScriptVersionFromContent')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-SelfUpdateSource')
+
+Assert-True ((Get-ScriptVersionFromContent -Content "`$script:VERSION       = '1.1.0'") -eq '1.1.0') 'Self-update: version literal should be parsed from script content.'
+Assert-True ($null -eq (Get-ScriptVersionFromContent -Content 'no version here')) 'Self-update: missing version should return null.'
+Assert-True ($null -eq (Get-ScriptVersionFromContent -Content '')) 'Self-update: empty content should return null.'
+# The live script must expose a parseable version to the self-updater
+$selfVer = Get-ScriptVersionFromContent -Content (Get-Content -Path $scriptPath -Raw)
+Assert-True ($null -ne $selfVer) 'Self-update: the current script must expose a version literal.'
+Assert-True ($null -ne ([version]$selfVer)) 'Self-update: the current script version must parse as [version].'
+Assert-True (Test-SelfUpdateSource -Repository 'ciaranwhiteside/PatchManager' -Ref 'main') 'Self-update: default GitHub source should validate.'
+Assert-True (Test-SelfUpdateSource -Repository 'owner-name/repo.name' -Ref 'release/v1.2.3') 'Self-update: normal branch/tag refs should validate.'
+Assert-True (-not (Test-SelfUpdateSource -Repository 'https://github.com/owner/repo' -Ref 'main')) 'Self-update: repository must be owner/name, not a URL.'
+Assert-True (-not (Test-SelfUpdateSource -Repository 'owner/repo' -Ref '../main')) 'Self-update: ref traversal should be rejected.'
+Assert-True (-not (Test-SelfUpdateSource -Repository 'owner/repo' -Ref 'main?raw=1')) 'Self-update: refs with URL metacharacters should be rejected.'
+
 #-- Public file hygiene ---------------------------------------------------------------
 $publicFiles = @(
     'Invoke-PatchManager.ps1'

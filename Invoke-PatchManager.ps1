@@ -65,6 +65,7 @@
         1010  Run completed successfully
         1011  Run completed with errors
         1020  SLA breach detected
+        1030  PatchManager self-updated
         3010  Reboot required
         9001  CISA KEV EMERGENCY - actively exploited vuln matched on this host
 #>
@@ -94,7 +95,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.0.0'
+$script:VERSION       = '1.1.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -111,6 +112,7 @@ $script:BITSPolicyBackup = $null
 $script:BITSPolicyApplied = $false
 $script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
+$script:SelfUpdateStatus = 'Not checked'
 
 $script:Stats = [ordered]@{
     UpdatesPlanned  = 0
@@ -257,6 +259,17 @@ $script:DefaultCfg = [ordered]@{
         WebhookUrl     = ''
         OnlyOnProblems = $true
         TimeoutSec     = 15
+    }
+
+    SelfUpdate = [ordered]@{
+        # Keep PatchManager itself current from GitHub. Off by default: this
+        # replaces an elevated script from the internet, so it is opt-in.
+        Enabled        = $false
+        Repository     = 'ciaranwhiteside/PatchManager'
+        Ref            = 'main'
+        AutoApply      = $true    # $false = only report that an update exists
+        ExpectedSha256 = ''       # Pin the expected file hash for locked-down estates
+        TimeoutSec     = 30
     }
 
     State = [ordered]@{
@@ -2985,6 +2998,7 @@ function New-ComplianceReport {
                 DryRun      = $DryRun.IsPresent
                 Emergency   = $script:EmergencyPatch
                 ScopeProfile = $script:CFG.ScopeProfile
+                SelfUpdate   = $script:SelfUpdateStatus
             }
             Statistics  = $script:Stats
             Metrics     = $Metrics
@@ -3446,6 +3460,155 @@ function Send-RunNotification {
 
 #endregion
 
+#region -- Self Update ----------------------------------------------------------------
+
+function Get-ScriptVersionFromContent {
+    # Extracts the $script:VERSION literal from a copy of the script's source.
+    # Standalone and side-effect-free so it can be unit tested.
+    param([string]$Content)
+    if ([string]::IsNullOrEmpty($Content)) { return $null }
+    $match = [regex]::Match($Content, "\`$script:VERSION\s*=\s*'([^']+)'")
+    if ($match.Success) { return $match.Groups[1].Value }
+    return $null
+}
+
+function Test-SelfUpdateSource {
+    param(
+        [string]$Repository,
+        [string]$Ref
+    )
+
+    if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { return $false }
+    if ([string]::IsNullOrWhiteSpace($Ref)) { return $false }
+    if ($Ref -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]{0,240}$') { return $false }
+    if ($Ref -match '(^|/)\.\.(/|$)') { return $false }
+    return $true
+}
+
+function Invoke-SelfUpdate {
+    # Optionally refresh PatchManager itself from GitHub. Security posture:
+    #   - Opt-in (Enabled=false by default).
+    #   - HTTPS only (TLS 1.2 enforced at startup) to a validated GitHub repo/ref.
+    #   - Version-gated: only a strictly newer [version] is considered.
+    #   - The download is PARSE-VALIDATED before it is installed, and its hash is
+    #     checked against ExpectedSha256 when that is pinned.
+    #   - The current on-disk script is backed up to a timestamped .bak; the new version is
+    #     NEVER executed in this run - the next run picks it up.
+    #   - Skipped for git clones (use 'git pull') and in DryRun/ReportOnly.
+    $su = Get-ObjectPropertyValue $script:CFG 'SelfUpdate' $null
+    if ($null -eq $su -or -not [bool](Get-ObjectPropertyValue $su 'Enabled' $false)) {
+        $script:SelfUpdateStatus = 'Disabled'
+        return
+    }
+
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath) -or -not (Test-Path $scriptPath)) {
+        Write-Log 'Self-update: cannot resolve the running script path; skipping.' -Level WARN
+        $script:SelfUpdateStatus = 'Skipped (unresolved path)'
+        return
+    }
+
+    $scriptDir = Split-Path -Parent $scriptPath
+    if (Test-Path (Join-Path $scriptDir '.git')) {
+        Write-Log 'Self-update: running from a git clone. Use "git pull" instead; skipping self-update.' -Level INFO
+        $script:SelfUpdateStatus = 'Skipped (git clone - use git pull)'
+        return
+    }
+
+    $repo    = [string](Get-ObjectPropertyValue $su 'Repository' 'ciaranwhiteside/PatchManager')
+    $ref     = [string](Get-ObjectPropertyValue $su 'Ref' 'main')
+    $timeout = [Math]::Max(5, [int](Get-ObjectPropertyValue $su 'TimeoutSec' 30))
+    if (-not (Test-SelfUpdateSource -Repository $repo -Ref $ref)) {
+        Write-Log "Self-update: invalid Repository or Ref value ('$repo' @ '$ref'); skipping." -Level WARN
+        $script:SelfUpdateStatus = 'Skipped (invalid source)'
+        return
+    }
+
+    $rawUrl  = "https://raw.githubusercontent.com/$repo/$ref/Invoke-PatchManager.ps1"
+
+    $tempFile = Join-Path $scriptDir ".PatchManager.selfupdate.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        Write-Log "Self-update: checking $repo@$ref for a newer version..." -Level INFO
+        Invoke-WebRequest -Uri $rawUrl -OutFile $tempFile -UseBasicParsing -TimeoutSec $timeout -EA Stop
+
+        $remoteContent = Get-Content $tempFile -Raw
+        $remoteVerText = Get-ScriptVersionFromContent -Content $remoteContent
+        if ([string]::IsNullOrWhiteSpace($remoteVerText)) {
+            Write-Log 'Self-update: could not read a version from the downloaded script; skipping.' -Level WARN
+            $script:SelfUpdateStatus = 'Skipped (no remote version)'
+            return
+        }
+
+        try {
+            $remoteVer = [version]$remoteVerText
+            $localVer  = [version]$script:VERSION
+        } catch {
+            Write-Log "Self-update: version comparison failed (local '$($script:VERSION)', remote '$remoteVerText'); skipping." -Level WARN
+            $script:SelfUpdateStatus = 'Skipped (unparseable version)'
+            return
+        }
+
+        if ($remoteVer -le $localVer) {
+            Write-Log "Self-update: already current (local $localVer, remote $remoteVer)." -Level INFO
+            $script:SelfUpdateStatus = "Current ($localVer)"
+            return
+        }
+
+        Write-Log "Self-update: newer version available: $localVer -> $remoteVer." -Level WARN
+
+        # Integrity gate 1: the download must parse cleanly as PowerShell. This
+        # rejects truncated or corrupted downloads before they are ever installed.
+        $parseErrors = $null; $parseTokens = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($tempFile, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+        if ($parseErrors -and $parseErrors.Count -gt 0) {
+            Write-Log "Self-update: downloaded script failed to parse ($($parseErrors.Count) error(s)); refusing to install." -Level ERROR
+            $script:SelfUpdateStatus = 'Available (download failed validation)'
+            return
+        }
+
+        # Integrity gate 2: optional pinned hash for locked-down estates.
+        $expectedHash = [string](Get-ObjectPropertyValue $su 'ExpectedSha256' '')
+        if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
+            $actualHash = (Get-FileHash -Path $tempFile -Algorithm SHA256).Hash
+            if ($actualHash -ine $expectedHash.Trim()) {
+                Write-Log "Self-update: SHA256 mismatch (expected $($expectedHash.Trim()), got $actualHash); refusing to install." -Level ERROR
+                $script:SelfUpdateStatus = 'Available (hash mismatch)'
+                return
+            }
+            Write-Log 'Self-update: pinned SHA256 verified.' -Level INFO
+        }
+
+        if (-not [bool](Get-ObjectPropertyValue $su 'AutoApply' $true)) {
+            Write-Log "Self-update: update $localVer -> $remoteVer is available. AutoApply is off; not modifying the script." -Level WARN
+            $script:SelfUpdateStatus = "Available ($localVer -> $remoteVer, AutoApply off)"
+            return
+        }
+
+        if ($DryRun -or $ReportOnly) {
+            Write-Log "Self-update: update $localVer -> $remoteVer available. Not applied in DryRun/ReportOnly." -Level INFO
+            $script:SelfUpdateStatus = "Available ($localVer -> $remoteVer)"
+            return
+        }
+
+        # Apply: back up the current script, then swap in the validated download.
+        # The running process keeps executing the old version; the next run uses
+        # the new one - we never execute freshly downloaded elevated code inline.
+        $backupPath = "$scriptPath.$((Get-Date).ToString('yyyyMMddHHmmss')).bak"
+        Copy-Item -Path $scriptPath -Destination $backupPath -Force -EA Stop
+        Copy-Item -Path $tempFile -Destination $scriptPath -Force -EA Stop
+        Write-Log "Self-update: applied $localVer -> $remoteVer. Backup: $backupPath. Takes effect on the next run." -Level SUCCESS
+        Write-RunEvent -EventId 1030 -Type Information -Message "PatchManager self-updated on $($script:HOSTNAME): $localVer -> $remoteVer (effective next run)."
+        $script:SelfUpdateStatus = "Applied ($localVer -> $remoteVer, effective next run)"
+    } catch {
+        Write-Log "Self-update check failed (run is unaffected): $_" -Level WARN
+        $script:SelfUpdateStatus = 'Check failed'
+    } finally {
+        Remove-Item $tempFile -Force -EA SilentlyContinue
+    }
+}
+
+#endregion
+
 #region -- Reboot Detection -----------------------------------------------------------
 
 function Test-RebootRequired {
@@ -3495,6 +3658,11 @@ function Invoke-Main {
         Write-Log 'Pre-flight checks failed. Aborting without changes.' -Level ERROR
         exit 2
     }
+
+    #-- Self-update -----------------------------------------------------------
+    # Runs after pre-flight (network confirmed). If it applies an update, this run
+    # continues on the current version; the next run uses the new one.
+    Invoke-SelfUpdate
 
     #-- BITS throttle ---------------------------------------------------------
     Set-BITSThrottle
