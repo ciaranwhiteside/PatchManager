@@ -32,6 +32,8 @@
   },
 
   "Network": {
+    "_comment": "BITSThrottleEnabled: null = decide by profile (Personal off, Commercial on). Throttle applies for the run only and is reverted afterwards.",
+    "BITSThrottleEnabled": null,
     "BITSMaxBandwidthKbps": 4096,
     "TestConnectivityUrl": "https://www.cloudflare.com",
     "ConnectivityTimeoutSec": 10
@@ -114,7 +116,16 @@
     "LocalReportPath": "C:\\ProgramData\\PatchManager\\Reports",
     "CentralReportPath": "",
     "GenerateHTML": true,
-    "GenerateJSON": true
+    "GenerateJSON": true,
+    "GenerateCSV": true
+  },
+
+  "Notifications": {
+    "_comment": "Optional webhook run summary. Works with Teams/Slack incoming webhooks and generic JSON receivers. OnlyOnProblems limits posts to runs with failures, KEV matches, SLA breaches, or errors.",
+    "Enabled": false,
+    "WebhookUrl": "",
+    "OnlyOnProblems": true,
+    "TimeoutSec": 15
   },
 
   "State": {
