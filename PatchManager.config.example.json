@@ -1,0 +1,146 @@
+{
+  "_comment": "Example config. Copy to PatchManager.config.json and edit locally; do not commit personal runtime config.",
+
+  "ScopeProfile": "Personal",
+
+  "Descope": {
+    "PackageIds": [],
+    "PackageNamePatterns": [],
+    "Providers": [],
+    "Sources": [],
+    "Reasons": {}
+  },
+
+  "Ring": {
+    "Default": "Pilot"
+  },
+
+  "MaintenanceWindow": {
+    "Enabled": true,
+    "StartHour": 22,
+    "EndHour": 6,
+    "AllowedDays": [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday"
+    ],
+    "JitterMaxMinutes": 30
+  },
+
+  "Network": {
+    "BITSMaxBandwidthKbps": 4096,
+    "TestConnectivityUrl": "https://www.cloudflare.com",
+    "ConnectivityTimeoutSec": 10
+  },
+
+  "WinGet": {
+    "ExcludePackagePrefixes": [
+      "Microsoft.AppInstaller",
+      "Microsoft.WindowsAppRuntime",
+      "Microsoft.VCLibs",
+      "Microsoft.UI.Xaml"
+    ],
+    "ApprovedPackages": [],
+    "PublisherManagedPackageIds": [],
+    "IncludeMSStore": true,
+    "Scope": "machine",
+    "AcceptAgreements": true,
+    "PackageTimeoutSeconds": 300,
+    "MaxUpdatesPerRun": 0,
+    "SuppressReboot": true,
+    "MaxRetries": 2
+  },
+
+  "WindowsUpdate": {
+    "Enabled": true,
+    "IncludeDrivers": false,
+    "IncludeOptionalUpdates": false,
+    "IncludeFeatureUpdates": false,
+    "SearchCriteria": "IsInstalled=0 and IsHidden=0 and Type='Software'",
+    "TimeoutSeconds": 3600
+  },
+
+  "Microsoft365": {
+    "Enabled": true,
+    "ForceAppShutdown": false,
+    "TimeoutSeconds": 1800
+  },
+
+  "Browsers": {
+    "Enabled": true,
+    "ChromeEnabled": true,
+    "EdgeEnabled": true,
+    "NativeTimeoutSeconds": 900
+  },
+
+  "UserExperience": {
+    "Enabled": true,
+    "PromptOnAppInUse": true,
+    "CompletionPopup": true,
+    "OpenReportPrompt": true,
+    "PromptTimeoutSeconds": 900,
+    "ShowOnDryRun": true
+  },
+
+  "MicrosoftStore": {
+    "Enabled": true,
+    "Provider": "Auto",
+    "TimeoutSeconds": 180,
+    "UseCimFallback": true,
+    "CaptureAppxDiff": true,
+    "PostUpdateSettleSeconds": 20
+  },
+
+  "SLA": {
+    "Critical": 14,
+    "High": 14,
+    "Medium": 14,
+    "Low": 14
+  },
+
+  "Logging": {
+    "LocalLogPath": "C:\\ProgramData\\PatchManager\\Logs",
+    "CentralLogPath": "",
+    "EventLogSource": "PatchManager",
+    "RetentionDays": 90,
+    "LogLevel": "Info"
+  },
+
+  "Reporting": {
+    "LocalReportPath": "C:\\ProgramData\\PatchManager\\Reports",
+    "CentralReportPath": "",
+    "GenerateHTML": true,
+    "GenerateJSON": true
+  },
+
+  "State": {
+    "StatePath": "C:\\ProgramData\\PatchManager\\State",
+    "StateFile": "patch_state.json"
+  },
+
+  "PreFlight": {
+    "MinFreeSpaceGB": 5,
+    "CheckBattery": true,
+    "MinBatteryPercent": 20,
+    "RequireACPower": false,
+    "AbortOnPendingReboot": true,
+    "RequireUserIdle": false,
+    "MinIdleMinutes": 5
+  },
+
+  "SystemRestore": {
+    "Enabled": true,
+    "Description": "PatchManager pre-patch checkpoint"
+  },
+
+  "CISAKEV": {
+    "Enabled": true,
+    "FeedUrl": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+    "CacheHours": 24,
+    "CachePath": "C:\\ProgramData\\PatchManager\\Cache"
+  }
+}

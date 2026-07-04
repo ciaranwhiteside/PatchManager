@@ -1,0 +1,20 @@
+# Local runtime configuration
+PatchManager.config.json
+
+# Generated runtime data
+Cache/
+Logs/
+Reports/
+State/
+
+# PowerShell/editor noise
+*.log
+*.tmp
+*.bak
+*.ps1xml.tmp
+.vscode/
+.idea/
+
+# OS noise
+Thumbs.db
+Desktop.ini
