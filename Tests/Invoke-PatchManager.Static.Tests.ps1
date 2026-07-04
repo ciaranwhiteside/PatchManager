@@ -83,6 +83,23 @@ Assert-True ($html -match 'WinGet source: winget') 'HTML report should show wing
 Assert-True ($html -match 'WinGet source: msstore') 'HTML report should show msstore source check.'
 Assert-True ($html -match 'Microsoft Store library updates') 'HTML report should show Microsoft Store client check.'
 Assert-True ($html -match '0 action row\(s\)') 'Source checks alone should not create actionable update rows.'
+Assert-True ($html -match 'class="bento-board') 'HTML report should include the cinematic bento summary board.'
+Assert-True ($html -match 'class="report-nav') 'HTML report should include the sticky report command navigation.'
+Assert-True ($html -match 'class="evidence-rail') 'HTML report should include the pinned evidence trail.'
+Assert-True ($html -match 'class="report-lanes') 'HTML report should include horizontal report lanes.'
+Assert-True ($html -match 'No package updates required action') 'HTML report should preserve the composed zero-action empty state.'
+Assert-True ($html -match 'https://github.com/ciaranwhiteside/PatchManager') 'HTML report footer should link to the PatchManager repository.'
+Assert-True ($html -match "querySelectorAll\('tr\.data-row'\)") 'HTML report filters should discover options from all report rows.'
+Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count should describe all report rows.'
+Assert-True ($html -match 'margin:44px 0 52px') 'HTML report content should leave breathing room below the hero.'
+
+$actionHtml = New-HTMLReport -Results $updatedRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{
+    AvgDaysToApply = 'N/A'
+    TotalTracked = 0
+    Applied = 0
+    Pending = 0
+})
+Assert-True ($actionHtml -match "id=['""]updatesTable['""]") 'HTML report should preserve the interactive updates table when action rows exist.'
 
 $commercialRow = New-PatchResult -Name 'Google Chrome' -PackageId 'Google.Chrome' -Source 'winget' -Provider 'winget' -Status 'Descoped' -Evidence 'Commercial provider-managed browser.'
 Update-StatsFromResults -Results @($commercialRow)
@@ -302,7 +319,7 @@ Assert-True ((Select-RealPfroEntries @('', '')).Count -eq 0) 'PFRO: empty entrie
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ScriptVersionFromContent')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-SelfUpdateSource')
 
-Assert-True ((Get-ScriptVersionFromContent -Content "`$script:VERSION       = '1.1.1'") -eq '1.1.1') 'Self-update: version literal should be parsed from script content.'
+Assert-True ((Get-ScriptVersionFromContent -Content "`$script:VERSION       = '1.0.0'") -eq '1.0.0') 'Self-update: version literal should be parsed from script content.'
 Assert-True ($null -eq (Get-ScriptVersionFromContent -Content 'no version here')) 'Self-update: missing version should return null.'
 Assert-True ($null -eq (Get-ScriptVersionFromContent -Content '')) 'Self-update: empty content should return null.'
 # The live script must expose a parseable version to the self-updater
@@ -338,5 +355,22 @@ foreach ($file in $publicFiles) {
     $content = Get-Content -Path $path -Raw
     Assert-True ($content -notmatch $forbidden) "Forbidden personal/local path found in $file"
 }
+
+$fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
+Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
+Assert-True ($fleetScript -match 'class="fleet-bento') 'Fleet report should include the cinematic fleet bento summary.'
+Assert-True ($fleetScript -match 'class="fleet-lanes') 'Fleet report should include horizontal fleet risk lanes.'
+Assert-True ($fleetScript -match 'class="fleet-evidence') 'Fleet report should include the pinned fleet evidence rail.'
+Assert-True ($fleetScript -match 'id="fleetSearch"') 'Fleet report should include host search controls.'
+Assert-True ($fleetScript -match 'id="postureFilter"') 'Fleet report should include posture filtering controls.'
+Assert-True ($fleetScript -match 'id="ringFilter"') 'Fleet report should include ring filtering controls.'
+Assert-True ($fleetScript -match 'id="profileFilter"') 'Fleet report should include profile filtering controls.'
+Assert-True ($fleetScript -match 'id="fleetResultCount"') 'Fleet report should include a visible row count.'
+Assert-True ($fleetScript -match 'data-ring=') 'Fleet report ring filter should be populated from row data.'
+Assert-True ($fleetScript -match 'data-profile=') 'Fleet report profile filter should be populated from row data.'
+Assert-True ($fleetScript -match 'data-sort="host"') 'Fleet report host table should keep sortable host columns.'
+Assert-True ($fleetScript -match '<th data-sort="invkev">Inv\. KEV</th>') 'Fleet report host table should keep the inventory KEV column.'
+Assert-True ($fleetScript -match 'https://github.com/ciaranwhiteside/PatchManager') 'Fleet report footer should link to the PatchManager repository.'
+Assert-True ($fleetScript -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'Fleet report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
