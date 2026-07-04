@@ -925,17 +925,29 @@ function Test-PendingReboot {
         }
     }
 
-    # Filter out null/empty entries - stale leftovers from background updates
-    # (e.g. Gaming Services DLL cleanup) that don't represent a real reboot requirement
+    # PendingFileRenameOperations is the weakest reboot signal: many benign
+    # components queue file renames/deletes here that never actually require a
+    # reboot and, worse, re-add themselves so a reboot does not clear them.
+    # The Xbox "Gaming Services" proxy DLLs are the classic example - they would
+    # otherwise pin the machine at "pending reboot" forever and block patching.
+    # Skip empty entries (delete destinations) and these known-benign patterns.
+    $benignPfroPatterns = @(
+        'gamingservices'          # Xbox Gaming Services proxy/host DLL cleanup
+        'gamingservicesproxy'
+    )
+    $benignPfroRegex = ($benignPfroPatterns | ForEach-Object { [regex]::Escape($_) }) -join '|'
     $pfro = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' `
                               -Name PendingFileRenameOperations -EA SilentlyContinue
     if ($pfro -and $pfro.PendingFileRenameOperations) {
-        $realEntries = @($pfro.PendingFileRenameOperations |
-                         Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $realEntries = @($pfro.PendingFileRenameOperations | Where-Object {
+            $entry = [string]$_
+            (-not [string]::IsNullOrWhiteSpace($entry)) -and ($entry -inotmatch $benignPfroRegex)
+        })
         if ($realEntries.Count -gt 0) {
             Write-Log "Pending file operation(s) ($($realEntries.Count)): $($realEntries[0])" -Level DEBUG
             return $true
         }
+        Write-Log 'PendingFileRenameOperations present but only benign/empty entries; not treating as pending reboot.' -Level DEBUG
     }
 
     # SCCM client check (non-fatal if SCCM not installed)
