@@ -46,6 +46,15 @@ Use calm, specific language. Prefer evidence terms: verified, current, stale,
 blocked, failed, applied, pending, source, report, proof. Avoid hype and vague
 security theatre.
 
+## User Prompts
+
+Native prompts should use the same trust language as reports: a charcoal header,
+ivory surface, audit-blue boundary, verified-green primary action, and concise
+evidence-led copy. Use the PatchManager mark in prompt headers where the UI
+framework allows it. For native controls that cannot embed SVG directly, recreate
+the same shield/document/check geometry and palette rather than inventing a new
+symbol.
+
 ## Rules
 
 - Keep reports self-contained: no remote fonts, images, CDN scripts, or runtime
