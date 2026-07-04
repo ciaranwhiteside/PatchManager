@@ -260,6 +260,25 @@ try {
     Remove-Item $tempStateDir -Recurse -Force -EA SilentlyContinue
 }
 
+#-- PendingFileRenameOperations benign filtering ------------------------------------
+# Mirrors the filter logic in Test-PendingReboot: Xbox Gaming Services proxy DLL
+# cleanup is benign and must not be treated as a real pending reboot, while a
+# genuine pending rename still counts.
+$benignPfroPatterns = @('gamingservices', 'gamingservicesproxy')
+$benignPfroRegex = ($benignPfroPatterns | ForEach-Object { [regex]::Escape($_) }) -join '|'
+function Select-RealPfroEntries {
+    param([string[]]$Entries)
+    return @($Entries | Where-Object {
+        $entry = [string]$_
+        (-not [string]::IsNullOrWhiteSpace($entry)) -and ($entry -inotmatch $benignPfroRegex)
+    })
+}
+
+Assert-True ((Select-RealPfroEntries @('*1\??\C:\Windows\System32\gamingservicesproxy_11.dll.0', '')).Count -eq 0) 'PFRO: gaming-services-only entries should not count as a pending reboot.'
+Assert-True ((Select-RealPfroEntries @('\??\C:\Windows\System32\realupdate.dll', '\??\C:\Windows\System32\realupdate.dll.new')).Count -eq 2) 'PFRO: genuine pending renames should count.'
+Assert-True ((Select-RealPfroEntries @('*1\??\C:\Windows\System32\gamingservices_host.dll.0', '', '\??\C:\Windows\real.dll', '')).Count -eq 1) 'PFRO: real renames should survive alongside benign gaming-services entries.'
+Assert-True ((Select-RealPfroEntries @('', '')).Count -eq 0) 'PFRO: empty entries should not count.'
+
 #-- Public file hygiene ---------------------------------------------------------------
 $publicFiles = @(
     'Invoke-PatchManager.ps1'
