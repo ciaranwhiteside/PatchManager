@@ -4,6 +4,12 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- User-facing close-app and completion prompts now follow the PatchManager brand
+  system with the protected-evidence mark, brand palette, and evidence-led copy.
+
 ## [1.0.0] - 2026-07-05
 
 First public beta release. PatchManager is a PowerShell-based patch orchestration

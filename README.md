@@ -324,6 +324,10 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `PromptTimeoutSeconds` | `900` | Auto-defer if the user doesn't respond. |
 | `ShowOnDryRun` | `true` | Also show the popup for dry runs. |
 
+Interactive prompts use the same PatchManager brand system as the generated
+reports: a protected-evidence mark, ivory/charcoal surfaces, and concise
+evidence-led copy.
+
 ### `MicrosoftStore`
 
 | Key | Default | Purpose |

@@ -575,47 +575,161 @@ function Show-PatchManagerDialog {
         Add-Type -AssemblyName System.Windows.Forms -EA Stop
         Add-Type -AssemblyName System.Drawing -EA Stop
 
+        $brandInk = [System.Drawing.Color]::FromArgb(17, 21, 19)
+        $brandPaper = [System.Drawing.Color]::FromArgb(246, 242, 232)
+        $brandPaperSoft = [System.Drawing.Color]::FromArgb(236, 230, 216)
+        $brandBlue = [System.Drawing.Color]::FromArgb(24, 50, 74)
+        $brandGreen = [System.Drawing.Color]::FromArgb(36, 116, 79)
+        $brandMuted = [System.Drawing.Color]::FromArgb(91, 100, 94)
+        $brandLine = [System.Drawing.Color]::FromArgb(199, 190, 171)
+
         $form = New-Object System.Windows.Forms.Form
         $form.Text = $Title
         $form.StartPosition = 'CenterScreen'
-        $form.Size = New-Object System.Drawing.Size(540, 270)
-        $form.MinimumSize = New-Object System.Drawing.Size(540, 270)
+        $form.Size = New-Object System.Drawing.Size(580, 330)
+        $form.MinimumSize = New-Object System.Drawing.Size(580, 330)
         $form.TopMost = $true
         $form.FormBorderStyle = 'FixedDialog'
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
-        $form.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
+        $form.BackColor = $brandPaper
+
+        $header = New-Object System.Windows.Forms.Panel
+        $header.Dock = 'Top'
+        $header.Height = 96
+        $header.BackColor = $brandInk
+        [void]$form.Controls.Add($header)
+
+        $brandIcon = New-Object System.Windows.Forms.Panel
+        $brandIcon.Location = New-Object System.Drawing.Point(24, 22)
+        $brandIcon.Size = New-Object System.Drawing.Size(52, 52)
+        $brandIcon.BackColor = $brandPaper
+        $brandIcon.Add_Paint({
+            param($sender, $paintEvent)
+            $graphics = $paintEvent.Graphics
+            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+
+            $ink = [System.Drawing.Color]::FromArgb(17, 21, 19)
+            $paper = [System.Drawing.Color]::FromArgb(246, 242, 232)
+            $blue = [System.Drawing.Color]::FromArgb(24, 50, 74)
+            $green = [System.Drawing.Color]::FromArgb(36, 116, 79)
+
+            $backgroundBrush = New-Object System.Drawing.SolidBrush($paper)
+            $graphics.FillRectangle($backgroundBrush, 0, 0, 52, 52)
+
+            $shield = New-Object System.Drawing.Drawing2D.GraphicsPath
+            $shield.AddPolygon([System.Drawing.Point[]]@(
+                (New-Object System.Drawing.Point(26, 4)),
+                (New-Object System.Drawing.Point(43, 11)),
+                (New-Object System.Drawing.Point(43, 24)),
+                (New-Object System.Drawing.Point(39, 36)),
+                (New-Object System.Drawing.Point(26, 48)),
+                (New-Object System.Drawing.Point(13, 36)),
+                (New-Object System.Drawing.Point(9, 24)),
+                (New-Object System.Drawing.Point(9, 11))
+            ))
+            $shieldBrush = New-Object System.Drawing.SolidBrush($ink)
+            $graphics.FillPath($shieldBrush, $shield)
+
+            $inner = New-Object System.Drawing.Drawing2D.GraphicsPath
+            $inner.AddPolygon([System.Drawing.Point[]]@(
+                (New-Object System.Drawing.Point(26, 10)),
+                (New-Object System.Drawing.Point(37, 15)),
+                (New-Object System.Drawing.Point(37, 25)),
+                (New-Object System.Drawing.Point(34, 33)),
+                (New-Object System.Drawing.Point(26, 41)),
+                (New-Object System.Drawing.Point(18, 33)),
+                (New-Object System.Drawing.Point(15, 25)),
+                (New-Object System.Drawing.Point(15, 15))
+            ))
+            $innerBrush = New-Object System.Drawing.SolidBrush($paper)
+            $graphics.FillPath($innerBrush, $inner)
+
+            $docBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+            $docPen = New-Object System.Drawing.Pen($blue, 2)
+            $graphics.FillRectangle($docBrush, 20, 18, 17, 22)
+            $graphics.DrawRectangle($docPen, 20, 18, 17, 22)
+            $graphics.DrawLine($docPen, 31, 18, 37, 24)
+            $graphics.DrawLine($docPen, 31, 18, 31, 24)
+            $graphics.DrawLine($docPen, 31, 24, 37, 24)
+
+            $checkPen = New-Object System.Drawing.Pen($green, 3)
+            $checkPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+            $checkPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+            $checkPen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+            $graphics.DrawLines($checkPen, [System.Drawing.Point[]]@(
+                (New-Object System.Drawing.Point(18, 34)),
+                (New-Object System.Drawing.Point(24, 40)),
+                (New-Object System.Drawing.Point(38, 27))
+            ))
+
+            $backgroundBrush.Dispose()
+            $shieldBrush.Dispose()
+            $innerBrush.Dispose()
+            $docBrush.Dispose()
+            $docPen.Dispose()
+            $checkPen.Dispose()
+            $shield.Dispose()
+            $inner.Dispose()
+        })
+        [void]$header.Controls.Add($brandIcon)
+
+        $brandTitle = New-Object System.Windows.Forms.Label
+        $brandTitle.Text = 'PatchManager'
+        $brandTitle.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
+        $brandTitle.ForeColor = $brandPaper
+        $brandTitle.Location = New-Object System.Drawing.Point(92, 22)
+        $brandTitle.Size = New-Object System.Drawing.Size(440, 25)
+        [void]$header.Controls.Add($brandTitle)
+
+        $taglineLabel = New-Object System.Windows.Forms.Label
+        $taglineLabel.Text = 'Patch. Verify. Prove it.'
+        $taglineLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+        $taglineLabel.ForeColor = $brandPaperSoft
+        $taglineLabel.Location = New-Object System.Drawing.Point(94, 52)
+        $taglineLabel.Size = New-Object System.Drawing.Size(420, 22)
+        [void]$header.Controls.Add($taglineLabel)
 
         $accent = New-Object System.Windows.Forms.Panel
-        $accent.Dock = 'Top'
-        $accent.Height = 8
-        $accent.BackColor = [System.Drawing.Color]::FromArgb(40, 95, 143)
-        [void]$form.Controls.Add($accent)
+        $accent.Location = New-Object System.Drawing.Point(0, 92)
+        $accent.Size = New-Object System.Drawing.Size(580, 4)
+        $accent.BackColor = $brandBlue
+        [void]$header.Controls.Add($accent)
 
         $headingLabel = New-Object System.Windows.Forms.Label
         $headingLabel.Text = $Heading
         $headingLabel.Font = New-Object System.Drawing.Font('Segoe UI', 15, [System.Drawing.FontStyle]::Bold)
-        $headingLabel.ForeColor = [System.Drawing.Color]::FromArgb(24, 33, 43)
-        $headingLabel.Location = New-Object System.Drawing.Point(24, 28)
-        $headingLabel.Size = New-Object System.Drawing.Size(486, 34)
+        $headingLabel.ForeColor = $brandInk
+        $headingLabel.Location = New-Object System.Drawing.Point(24, 116)
+        $headingLabel.Size = New-Object System.Drawing.Size(528, 34)
         [void]$form.Controls.Add($headingLabel)
 
         $messageLabel = New-Object System.Windows.Forms.Label
         $messageLabel.Text = $Message
         $messageLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-        $messageLabel.ForeColor = [System.Drawing.Color]::FromArgb(67, 81, 96)
-        $messageLabel.Location = New-Object System.Drawing.Point(26, 72)
-        $messageLabel.Size = New-Object System.Drawing.Size(484, 98)
+        $messageLabel.ForeColor = $brandMuted
+        $messageLabel.Location = New-Object System.Drawing.Point(26, 154)
+        $messageLabel.Size = New-Object System.Drawing.Size(526, 84)
+        $messageLabel.AutoEllipsis = $true
         [void]$form.Controls.Add($messageLabel)
+
+        $evidenceLabel = New-Object System.Windows.Forms.Label
+        $evidenceLabel.Text = 'Evidence-led Windows patching'
+        $evidenceLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
+        $evidenceLabel.ForeColor = $brandMuted
+        $evidenceLabel.Location = New-Object System.Drawing.Point(26, 252)
+        $evidenceLabel.Size = New-Object System.Drawing.Size(240, 22)
+        [void]$form.Controls.Add($evidenceLabel)
 
         $result = 'Secondary'
         $primary = New-Object System.Windows.Forms.Button
         $primary.Text = $PrimaryText
         $primary.Size = New-Object System.Drawing.Size(150, 38)
-        $primary.Location = New-Object System.Drawing.Point(360, 188)
-        $primary.BackColor = [System.Drawing.Color]::FromArgb(40, 95, 143)
+        $primary.Location = New-Object System.Drawing.Point(402, 252)
+        $primary.BackColor = $brandGreen
         $primary.ForeColor = [System.Drawing.Color]::White
         $primary.FlatStyle = 'Flat'
+        $primary.FlatAppearance.BorderSize = 0
         $primary.Add_Click({ $script:DialogResultValue = 'Primary'; $form.Close() })
         [void]$form.Controls.Add($primary)
 
@@ -623,10 +737,11 @@ function Show-PatchManagerDialog {
             $secondary = New-Object System.Windows.Forms.Button
             $secondary.Text = $SecondaryText
             $secondary.Size = New-Object System.Drawing.Size(150, 38)
-            $secondary.Location = New-Object System.Drawing.Point(196, 188)
-            $secondary.BackColor = [System.Drawing.Color]::White
-            $secondary.ForeColor = [System.Drawing.Color]::FromArgb(24, 33, 43)
+            $secondary.Location = New-Object System.Drawing.Point(236, 252)
+            $secondary.BackColor = $brandPaper
+            $secondary.ForeColor = $brandInk
             $secondary.FlatStyle = 'Flat'
+            $secondary.FlatAppearance.BorderColor = $brandLine
             $secondary.Add_Click({ $script:DialogResultValue = 'Secondary'; $form.Close() })
             [void]$form.Controls.Add($secondary)
         }
@@ -654,12 +769,12 @@ function Show-AppInUsePrompt {
 
     if (-not $script:CFG.UserExperience.PromptOnAppInUse) { return 'Unavailable' }
     $timeout = [int]$script:CFG.UserExperience.PromptTimeoutSeconds
-    $message = "PatchManager could not update '$AppName' because it appears to be open or locked.`r`n`r`nClose the app, then choose Retry. Choose Defer to leave it for the next run."
+    $message = "PatchManager could not verify the update for '$AppName' because the app appears to be open or locked.`r`n`r`nClose the app, then choose Retry update. Choose Defer to leave evidence in this run and try again next time."
     if (-not [string]::IsNullOrWhiteSpace($Evidence)) {
         $message += "`r`n`r`nDetails: $Evidence"
     }
     return Show-PatchManagerDialog -Title 'PatchManager needs your input' `
-                                   -Heading 'Close the app to continue updating' `
+                                   -Heading 'Close the app to verify the update' `
                                    -Message $message `
                                    -PrimaryText 'Retry update' `
                                    -SecondaryText 'Defer' `
@@ -672,11 +787,11 @@ function Show-CompletionPopup {
     if (-not $script:CFG.UserExperience.CompletionPopup) { return }
     if ($DryRun -and -not $script:CFG.UserExperience.ShowOnDryRun) { return }
 
-    $message = "PatchManager has finished this run.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: $($script:Stats.UpdatesFailed)   Skipped: $($script:Stats.UpdatesSkipped)`r`n`r`nOpen the HTML report for the full details."
+    $message = "PatchManager finished this run and wrote the report evidence.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: $($script:Stats.UpdatesFailed)   Skipped: $($script:Stats.UpdatesSkipped)`r`n`r`nOpen the HTML report for the full details."
     $primaryText = if ($script:CFG.UserExperience.OpenReportPrompt) { 'Open report' } else { 'OK' }
     $secondaryText = if ($script:CFG.UserExperience.OpenReportPrompt) { 'Close' } else { '' }
     $choice = Show-PatchManagerDialog -Title 'PatchManager complete' `
-                                      -Heading 'Patch run complete' `
+                                      -Heading 'Patch evidence is ready' `
                                       -Message $message `
                                       -PrimaryText $primaryText `
                                       -SecondaryText $secondaryText `

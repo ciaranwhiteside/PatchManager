@@ -36,6 +36,18 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-Patc
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Update-StatsFromResults')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-HTMLReport')
 
+$dialogText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-PatchManagerDialog'
+$appPromptText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-AppInUsePrompt'
+$completionPromptText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-CompletionPopup'
+Assert-True ($dialogText -match 'Patch\. Verify\. Prove it\.') 'User dialogs should include the PatchManager brand tagline.'
+Assert-True ($dialogText -match 'Evidence-led Windows patching') 'User dialogs should include brand-aligned provenance copy.'
+Assert-True ($dialogText -match 'FromArgb\(17, 21, 19\)') 'User dialogs should use the Charcoal Ink brand color.'
+Assert-True ($dialogText -match 'FromArgb\(246, 242, 232\)') 'User dialogs should use the Ivory Paper brand color.'
+Assert-True ($dialogText -match 'FromArgb\(24, 50, 74\)') 'User dialogs should use the Audit Blue brand color.'
+Assert-True ($dialogText -match 'FromArgb\(36, 116, 79\)') 'User dialogs should use the Verified Green brand color.'
+Assert-True ($appPromptText -match 'Close the app to verify the update') 'App-in-use prompts should use evidence-led wording.'
+Assert-True ($completionPromptText -match 'Patch evidence is ready') 'Completion popups should use evidence-led wording.'
+
 $script:Stats = [ordered]@{
     UpdatesPlanned = 0
     UpdatesApplied = 0
