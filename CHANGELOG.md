@@ -4,6 +4,26 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-07-04
+
+### Added
+- **Opt-in self-update** (`SelfUpdate` config section): checks GitHub for a
+  newer `Invoke-PatchManager.ps1`, version-gates the result, parse-validates
+  the downloaded script, optionally verifies a pinned SHA256 hash, backs up the
+  current script, and installs the update for the next run.
+- Self-update status is included in JSON report metadata, and successful
+  self-updates raise Windows Event Log ID `1030`.
+- Static tests for self-update version parsing and GitHub source validation.
+- README personal-machine setup instructions with staging, first run, scheduled
+  task install, and latest-report commands.
+
+### Changed
+- Self-update is skipped in git clones, in `DryRun`/`ReportOnly` apply paths,
+  and when `Repository`/`Ref` contains malformed or unsafe values.
+- Self-update downloads are staged beside the running script instead of the
+  user temp folder, keeping validation and replacement inside the same
+  deployment directory boundary.
+
 ## [1.0.0] - 2026-07-04
 
 First public beta release. Version restarts at 1.0.0 for the public line

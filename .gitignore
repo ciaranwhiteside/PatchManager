@@ -14,6 +14,7 @@ State/
 *.ps1xml.tmp
 .vscode/
 .idea/
+.claude/
 
 # OS noise
 Thumbs.db

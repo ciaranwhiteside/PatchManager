@@ -128,6 +128,16 @@
     "TimeoutSec": 15
   },
 
+  "SelfUpdate": {
+    "_comment": "Keep PatchManager itself current from GitHub. Opt-in: it replaces an elevated script from the internet. Downloads are version-gated and parse-validated; set ExpectedSha256 to pin an exact file hash. Skipped for git clones (use git pull). AutoApply=false reports updates without changing the script.",
+    "Enabled": false,
+    "Repository": "ciaranwhiteside/PatchManager",
+    "Ref": "main",
+    "AutoApply": true,
+    "ExpectedSha256": "",
+    "TimeoutSec": 30
+  },
+
   "State": {
     "StatePath": "C:\\ProgramData\\PatchManager\\State",
     "StateFile": "patch_state.json"

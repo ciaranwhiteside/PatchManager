@@ -15,7 +15,7 @@ personal machine and as a fleet patching agent across a commercial estate,
 with rings, maintenance windows, SLA tracking, CISA KEV emergency handling,
 and SIEM-ready event logging built in.
 
-> **Public beta (v1.0.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.1.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -28,6 +28,7 @@ and SIEM-ready event logging built in.
 - [What it updates](#what-it-updates)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Personal machine setup](#personal-machine-setup)
 - [Scheduled runs](#scheduled-runs)
 - [Configuration reference](#configuration-reference)
 - [Scope profiles: Personal vs Commercial](#scope-profiles-personal-vs-commercial)
@@ -146,6 +147,50 @@ notepad .\PatchManager.config.json
 | `-InstallStartupTask` | Register a scheduled task (startup + logon triggers). |
 | `-UninstallStartupTask` | Remove that scheduled task. |
 | `-TaskName <name>` / `-TaskDelayMinutes <n>` | Customise the scheduled task. |
+
+## Personal machine setup
+
+Use an elevated PowerShell window for these steps. Stage the script somewhere
+admin-only-writable before creating the scheduled task; `C:\ProgramData` is a
+good default for a personal Windows 10/11 machine.
+
+```powershell
+# From the folder where you cloned or extracted PatchManager
+$installDir = 'C:\ProgramData\PatchManager'
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+
+Copy-Item .\Invoke-PatchManager.ps1, .\PatchManager.config.example.json -Destination $installDir -Force
+Copy-Item "$installDir\PatchManager.config.example.json" "$installDir\PatchManager.config.json" -Force
+
+# If the script came from a browser download or zip, unblock it once.
+Unblock-File "$installDir\Invoke-PatchManager.ps1" -ErrorAction SilentlyContinue
+
+# Optional: review the config. The defaults are already suitable for Personal.
+notepad "$installDir\PatchManager.config.json"
+
+# First run: see what would happen without changing installed software.
+& "$installDir\Invoke-PatchManager.ps1" -DryRun -Force
+
+# Second run: patch for real when you are ready.
+& "$installDir\Invoke-PatchManager.ps1" -Force
+
+# Install the startup/logon task so PatchManager keeps checking automatically.
+& "$installDir\Invoke-PatchManager.ps1" -InstallStartupTask -TaskName 'PatchManager Personal' -TaskDelayMinutes 2
+```
+
+Reports land in `C:\ProgramData\PatchManager\Reports`. To open the latest HTML
+report:
+
+```powershell
+Get-ChildItem 'C:\ProgramData\PatchManager\Reports\PatchReport_*.html' |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1 |
+    Invoke-Item
+```
+
+For a personal device, leave `ScopeProfile` as `"Personal"`. Consider enabling
+`PreFlight.RequireUserIdle` if you do not want scheduled runs to patch while
+you are actively using the machine.
 
 ## Scheduled runs
 
@@ -320,6 +365,23 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `OnlyOnProblems` | `true` | Only post when a run has failures, KEV matches, SLA breaches, or errors. |
 | `TimeoutSec` | `15` | Webhook post timeout. A webhook failure never fails the run. |
 
+### `SelfUpdate`
+
+Self-update is **off by default**. When enabled, PatchManager checks the
+configured GitHub repository for a newer `Invoke-PatchManager.ps1`, validates
+that the downloaded script parses as PowerShell, optionally verifies a pinned
+SHA256 hash, backs up the current script, and installs the new copy for the
+next run. It is skipped when running from a git clone; use `git pull` there.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `false` | Enable self-update checks. Leave off unless the script is staged in an admin-only-writable location. |
+| `Repository` | `"ciaranwhiteside/PatchManager"` | GitHub `owner/repo` to fetch from. URL values are rejected. |
+| `Ref` | `"main"` | Branch or tag to read from. Path traversal and URL metacharacters are rejected. |
+| `AutoApply` | `true` | `true` installs a validated newer script; `false` only reports that an update is available. |
+| `ExpectedSha256` | `""` | Optional exact SHA256 hash pin for locked-down deployments. |
+| `TimeoutSec` | `30` | Download timeout. A self-update failure never fails the patch run. |
+
 ### `State`, `PreFlight`, `SystemRestore`, `CISAKEV`
 
 | Key | Default | Purpose |
@@ -472,6 +534,7 @@ Source `PatchManager`, log `Application` — for SIEM correlation:
 | `1010` | Info | Run completed successfully |
 | `1011` | Warning | Run completed with errors |
 | `1020` | Error | SLA breach detected |
+| `1030` | Info | PatchManager self-updated; new script takes effect on next run |
 | `3010` | Warning | Reboot required |
 | `9001` | Error | **CISA KEV emergency** — actively exploited vulnerability matched on this host |
 
@@ -481,6 +544,10 @@ Source `PatchManager`, log `Application` — for SIEM correlation:
   software. Review the script before first use — it is a single readable file.
 - Keep the script in an **admin-only-writable directory** when running it from
   a scheduled task (see [Scheduled runs](#scheduled-runs)).
+- If `SelfUpdate.Enabled` is turned on, keep the script in an
+  **admin-only-writable directory**, pin `ExpectedSha256` where possible, and
+  prefer a release tag in `SelfUpdate.Ref` over a moving branch for broad
+  deployments.
 - Machine-wide changes are **reverted on exit**: the BITS policy snapshot is
   restored even after a crash. The only persistent artifacts are logs,
   reports, state, cache, and the optional scheduled task.
