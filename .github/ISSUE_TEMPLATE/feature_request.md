@@ -13,8 +13,8 @@ What can't you do today, or what is harder than it should be?
 ## Proposed solution
 
 What you'd like PatchManager to do. Note whether it fits the project
-constraints: single deployable script, PowerShell 5.1 floor, no forced
-reboots, machine state restored on exit.
+constraints: evidence-led reporting, single deployable script, PowerShell 5.1
+floor, no forced reboots, machine state restored on exit.
 
 ## Use case
 

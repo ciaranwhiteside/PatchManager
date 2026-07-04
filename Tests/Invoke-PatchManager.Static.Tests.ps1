@@ -89,9 +89,12 @@ Assert-True ($html -match 'class="evidence-rail') 'HTML report should include th
 Assert-True ($html -match 'class="report-lanes') 'HTML report should include horizontal report lanes.'
 Assert-True ($html -match 'No package updates required action') 'HTML report should preserve the composed zero-action empty state.'
 Assert-True ($html -match 'https://github.com/ciaranwhiteside/PatchManager') 'HTML report footer should link to the PatchManager repository.'
+Assert-True ($html -match 'class="brand-mark"') 'HTML report should include the inline PatchManager brand mark.'
+Assert-True ($html -match 'Patch\. Verify\. Prove it\.') 'HTML report should include the PatchManager brand tagline.'
 Assert-True ($html -match "querySelectorAll\('tr\.data-row'\)") 'HTML report filters should discover options from all report rows.'
 Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count should describe all report rows.'
 Assert-True ($html -match 'margin:44px 0 52px') 'HTML report content should leave breathing room below the hero.'
+Assert-True ($html -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'HTML report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 
 $actionHtml = New-HTMLReport -Results $updatedRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{
     AvgDaysToApply = 'N/A'
@@ -341,6 +344,13 @@ $publicFiles = @(
     'SECURITY.md'
     'CHANGELOG.md'
     'CONTRIBUTING.md'
+    'docs/brand/BRAND.md'
+    'docs/brand/patchmanager-mark.svg'
+    'docs/brand/patchmanager-wordmark.svg'
+    'docs/brand/patchmanager-brand-board.svg'
+    '.github/pull_request_template.md'
+    '.github/ISSUE_TEMPLATE/bug_report.md'
+    '.github/ISSUE_TEMPLATE/feature_request.md'
     '.gitignore'
     'LICENSE'
 )
@@ -356,11 +366,17 @@ foreach ($file in $publicFiles) {
     Assert-True ($content -notmatch $forbidden) "Forbidden personal/local path found in $file"
 }
 
+$readme = Get-Content -Path (Join-Path $root 'README.md') -Raw
+Assert-True ($readme -match 'docs/brand/patchmanager-wordmark\.svg') 'README should reference the PatchManager wordmark asset.'
+Assert-True ($readme -match 'docs/brand/BRAND\.md') 'README should link to the PatchManager brand guide.'
+
 $fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
 Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
 Assert-True ($fleetScript -match 'class="fleet-bento') 'Fleet report should include the cinematic fleet bento summary.'
 Assert-True ($fleetScript -match 'class="fleet-lanes') 'Fleet report should include horizontal fleet risk lanes.'
 Assert-True ($fleetScript -match 'class="fleet-evidence') 'Fleet report should include the pinned fleet evidence rail.'
+Assert-True ($fleetScript -match 'class="brand-mark"') 'Fleet report should include the inline PatchManager brand mark.'
+Assert-True ($fleetScript -match 'Patch\. Verify\. Prove it\.') 'Fleet report should include the PatchManager brand tagline.'
 Assert-True ($fleetScript -match 'id="fleetSearch"') 'Fleet report should include host search controls.'
 Assert-True ($fleetScript -match 'id="postureFilter"') 'Fleet report should include posture filtering controls.'
 Assert-True ($fleetScript -match 'id="ringFilter"') 'Fleet report should include ring filtering controls.'

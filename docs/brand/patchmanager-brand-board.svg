@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">PatchManager brand board</title>
+  <desc id="desc">SVG brand board showing the PatchManager identity, palette, typography, report UI, and usage examples.</desc>
+  <rect width="1600" height="1000" fill="#111513"/>
+  <g fill="none" stroke="#2B332F" stroke-width="1" opacity=".45">
+    <path d="M80 80h1440M80 330h1440M80 660h1440M80 920h1440"/>
+    <path d="M80 80v840M520 80v840M1080 80v840M1520 80v840"/>
+  </g>
+  <rect x="80" y="80" width="440" height="250" rx="18" fill="#F6F2E8"/>
+  <g transform="translate(128 128)">
+    <rect width="104" height="104" rx="22" fill="#111513"/>
+    <path d="M52 10 86 23v23c0 22-14 36-34 46-20-10-34-24-34-46V23l34-13Z" fill="#F6F2E8"/>
+    <path d="M40 29h19l11 11v30H40V29Z" fill="#FFFFFF" stroke="#18324A" stroke-width="3.2" stroke-linejoin="round"/>
+    <path d="M59 29v12h11" fill="none" stroke="#18324A" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M38 58 48 68 68 47" fill="none" stroke="#24744F" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="128" y="270" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="48" font-weight="820">PatchManager</text>
+  <text x="130" y="302" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="2">PATCH. VERIFY. PROVE IT.</text>
+
+  <rect x="560" y="80" width="520" height="250" rx="18" fill="#F6F2E8"/>
+  <text x="600" y="132" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="24" font-weight="760">Construction logic</text>
+  <g transform="translate(620 164)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M80 0 150 28v54c0 52-30 84-70 106C40 166 10 134 10 82V28L80 0Z" stroke="#C49A3D" stroke-width="3"/>
+    <path d="M57 42h48l26 26v78H57V42Z" stroke="#18324A" stroke-width="5"/>
+    <path d="M105 42v28h26" stroke="#18324A" stroke-width="5"/>
+    <path d="M50 112 74 136 128 82" stroke="#24744F" stroke-width="9"/>
+  </g>
+  <text x="820" y="194" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Shield = protected endpoint</text>
+  <text x="820" y="226" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Document = audit evidence</text>
+  <text x="820" y="258" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Path = verified patch state</text>
+
+  <rect x="1120" y="80" width="400" height="250" rx="18" fill="#F6F2E8"/>
+  <text x="1160" y="132" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="24" font-weight="760">Palette</text>
+  <g transform="translate(1160 166)">
+    <rect width="70" height="70" rx="12" fill="#111513"/>
+    <rect x="84" width="70" height="70" rx="12" fill="#F6F2E8" stroke="#D9D1C1"/>
+    <rect x="168" width="70" height="70" rx="12" fill="#18324A"/>
+    <rect x="252" width="70" height="70" rx="12" fill="#24744F"/>
+    <rect y="88" width="70" height="70" rx="12" fill="#C49A3D"/>
+    <rect x="84" y="88" width="70" height="70" rx="12" fill="#A53B35"/>
+  </g>
+  <text x="1160" y="304" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="16">Ivory paper, audit blue, verified green, caution amber.</text>
+
+  <rect x="80" y="370" width="620" height="290" rx="18" fill="#F6F2E8"/>
+  <text x="120" y="430" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="52" font-weight="820">Evidence-led patching</text>
+  <text x="122" y="478" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="22">Windows updates, app updates, fleet proof, one auditable run.</text>
+  <text x="122" y="568" fill="#111513" font-family="Consolas, Cascadia Mono, monospace" font-size="22">.\Invoke-PatchManager.ps1 -DryRun -Force</text>
+  <path d="M122 598h360" stroke="#C49A3D" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="740" y="370" width="780" height="290" rx="18" fill="#F6F2E8"/>
+  <rect x="780" y="412" width="700" height="206" rx="14" fill="#111513"/>
+  <rect x="806" y="442" width="180" height="34" rx="7" fill="#18324A"/>
+  <rect x="1008" y="442" width="128" height="34" rx="7" fill="#24744F"/>
+  <rect x="1158" y="442" width="128" height="34" rx="7" fill="#C49A3D"/>
+  <rect x="1308" y="442" width="128" height="34" rx="7" fill="#A53B35"/>
+  <rect x="806" y="510" width="630" height="16" rx="8" fill="#F6F2E8" opacity=".86"/>
+  <rect x="806" y="544" width="520" height="16" rx="8" fill="#F6F2E8" opacity=".62"/>
+  <rect x="806" y="578" width="590" height="16" rx="8" fill="#F6F2E8" opacity=".42"/>
+  <text x="780" y="392" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="24" font-weight="760">Report surface</text>
+
+  <rect x="80" y="700" width="440" height="220" rx="18" fill="#F6F2E8"/>
+  <text x="120" y="760" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="32" font-weight="820">Type system</text>
+  <text x="120" y="822" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="46" font-weight="820">Aa 123</text>
+  <text x="122" y="872" fill="#5F6A62" font-family="Consolas, Cascadia Mono, monospace" font-size="22">Cascadia Mono for commands</text>
+
+  <rect x="560" y="700" width="440" height="220" rx="18" fill="#F6F2E8"/>
+  <text x="600" y="760" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="32" font-weight="820">Tone</text>
+  <text x="600" y="820" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="23">Calm. Auditable. Operator-grade.</text>
+  <text x="600" y="862" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="23">Never decorative without evidence.</text>
+
+  <rect x="1040" y="700" width="480" height="220" rx="18" fill="#F6F2E8"/>
+  <text x="1080" y="760" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="32" font-weight="820">System promise</text>
+  <text x="1080" y="826" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="44" font-weight="820">Patch. Verify. Prove it.</text>
+  <path d="M1084 862h250" stroke="#24744F" stroke-width="5" stroke-linecap="round"/>
+</svg>

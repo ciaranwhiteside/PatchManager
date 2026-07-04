@@ -4,7 +4,7 @@
 
 ## Risk surface
 
-<!-- What runs elevated, what machine state is touched, how failures are handled. -->
+<!-- What runs elevated, what machine state is touched, what evidence changes, how failures are handled. -->
 
 ## Checklist
 
@@ -14,4 +14,5 @@
 - [ ] Any machine-wide state change is reverted on exit (including crash paths)
 - [ ] `CHANGELOG.md` updated
 - [ ] README configuration reference updated (if config keys changed)
+- [ ] Report/docs brand treatment stays consistent with `docs/brand/BRAND.md` (if UI/docs changed)
 - [ ] No personal paths, hostnames, or generated report data included

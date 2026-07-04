@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">PatchManager mark</title>
+  <desc id="desc">A protected document shield with an internal verified path.</desc>
+  <rect width="128" height="128" rx="28" fill="#F6F2E8"/>
+  <path d="M64 14 106 30v30c0 27-17 44-42 56-25-12-42-29-42-56V30l42-16Z" fill="#111513"/>
+  <path d="M64 25 94 36v24c0 19-11 33-30 43-19-10-30-24-30-43V36l30-11Z" fill="#F6F2E8"/>
+  <path d="M49 36h23l13 13v35H49V36Z" fill="#FFFFFF" stroke="#18324A" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M72 36v14h13" fill="none" stroke="#18324A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M48 68 59 79 82 55" fill="none" stroke="#24744F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38 93c7 8 16 14 26 19 10-5 19-11 26-19" fill="none" stroke="#C49A3D" stroke-width="4" stroke-linecap="round"/>
+</svg>
