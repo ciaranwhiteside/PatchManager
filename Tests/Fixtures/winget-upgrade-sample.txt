@@ -1,0 +1,6 @@
+Name                          Id                       Version       Available     Source
+------------------------------------------------------------------------------------------
+Google Chrome                 Google.Chrome            125.0.6422.1  126.0.6478.5  winget
+7-Zip 23.01 (x64)             7zip.7zip                23.01         24.05         winget
+Microsoft Visual Studio Code  Microsoft.VisualStudioCo 1.89.0        1.90.1        winget
+3 upgrades available.
