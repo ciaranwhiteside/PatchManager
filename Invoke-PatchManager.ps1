@@ -95,7 +95,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.1.1'
+$script:VERSION       = '1.0.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -3139,6 +3139,8 @@ function New-HTMLReport {
     $errorTone  = if ($errorCount -gt 0) { 'danger' } else { 'good' }
     $runTone    = if ($isEmergency -or $kevCount -gt 0 -or $slaCount -gt 0 -or $failCount -gt 0 -or $errorCount -gt 0) { 'attention' } else { 'clean' }
     $runSummary = if ($attentionCount -gt 0) { "$attentionCount item(s) need review before closing this run." } elseif ($runTone -eq 'clean') { 'No actionable KEV, SLA, failure, or script error conditions were recorded.' } else { 'Review the highlighted sections below before closing this run.' }
+    $verdictTitle = if ($runTone -eq 'clean') { 'Patch state holds.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Exposure needs action.' } else { 'Review before close.' }
+    $verdictCopy  = if ($runTone -eq 'clean') { 'The run completed with no actionable KEV, SLA, failure, or script-error signals. Provider evidence remains below for audit review.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Security signals are present. Prioritise KEV and failed rows before treating this device as current.' } else { 'The report found items that need operator review. Follow the evidence trail, then use the table filters to isolate each row.' }
 
     function Get-ReportRowKind {
         param($Row)
@@ -3298,6 +3300,40 @@ function New-HTMLReport {
         "<div class='callout danger-callout'><strong>Emergency patch run.</strong><span>CISA KEV criteria triggered maintenance-window bypass for actionable packages.</span></div>"
     } else { '' }
 
+    $bentoSection = @"
+  <section class="bento-board reveal" id="summary" aria-label="Run summary">
+    <article class="bento-card bento-primary good"><span class="bento-kicker">$primaryLabel</span><strong>$primaryCount</strong><p>$verdictCopy</p><div class="telemetry-strip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></article>
+    <article class="bento-card bento-action"><span class="bento-kicker">Action rows</span><strong>$($actionableRows.Count)</strong><p>Rows that represent update work, verification, KEV exposure, reboot flags, or failed operations.</p></article>
+    <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>Blocked, failed, verifying, and script-error signals grouped for operator follow-up.</p></article>
+    <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security pressure</span><strong>$kevCount KEV</strong><p>$slaCount SLA breach(es) and $rebootCount reboot-required signal(s) were recorded.</p></article>
+    <article class="bento-card bento-coverage"><span class="bento-kicker">Coverage</span><strong>$providerCheckCount</strong><p>$inventoryCount inventory items, $($sourceGroups.Count) source group(s), and $($providerGroups.Count) provider group(s).</p></article>
+    <article class="bento-card bento-runtime $errorTone"><span class="bento-kicker">Runtime</span><strong>$errorCount</strong><p>$visibleSkippedCount skipped or descoped row(s). Generated in ${elapsed2dp}m from PatchManager v$ver.</p></article>
+  </section>
+"@
+
+    $accordionSection = @"
+  <section class="report-lanes reveal" aria-label="Report lanes">
+    <a href="#updates" class="lane lane-wide"><span>Action queue</span><strong>$($actionableRows.Count)</strong><p>Patch rows, failed commands, verification states, and priority security work.</p></a>
+    <a href="#providers" class="lane"><span>Provider proof</span><strong>$providerCheckCount</strong><p>Discovery and health checks.</p></a>
+    <a href="#security" class="lane"><span>Exposure watch</span><strong>$kevCount / $slaCount</strong><p>KEV and SLA evidence.</p></a>
+    <a href="#runtime" class="lane"><span>Runtime trail</span><strong>$errorCount</strong><p>Script errors and state summary.</p></a>
+  </section>
+"@
+
+    $evidenceRail = @"
+    <aside class="evidence-rail" aria-label="Evidence trail">
+      <p class="rail-kicker">Evidence trail</p>
+      <h2>$verdictTitle</h2>
+      <p class="scrub-copy"><span>Start with the action queue.</span> <span>Confirm skipped rows are intentional.</span> <span>Resolve failed, blocked, KEV, and SLA signals before closing the run.</span></p>
+      <nav class="rail-links" aria-label="Report sections">
+        <a href="#updates">Action queue</a>
+        <a href="#providers">Provider proof</a>
+        <a href="#security">Security</a>
+        <a href="#runtime">Runtime</a>
+      </nav>
+    </aside>
+"@
+
     return @"
 <!DOCTYPE html>
 <html lang="en">
@@ -3307,37 +3343,33 @@ function New-HTMLReport {
 <meta name="description" content="PatchManager compliance report for $hostname">
 <title>PatchManager report - $hostname</title>
 <style>
-  :root{--bg:#eef1f4;--paper:#fbfcfd;--ink:#18212b;--muted:#667483;--line:#dce3ea;--line-strong:#c8d2dc;--charcoal:#202b36;--green:#237a57;--green-bg:#eaf6ef;--red:#b73a35;--red-bg:#fbebe9;--amber:#9a641d;--amber-bg:#fff4df;--blue:#285f8f;--blue-bg:#e9f2fb;--shadow:0 18px 50px rgba(31,43,55,.12)}
+  :root{--void:#070908;--bg:#0d100f;--paper:#f6f2e8;--paper-2:#ece6d8;--ink:#111513;--muted:#6d756f;--soft:#9ba69d;--line:rgba(17,21,19,.14);--line-strong:rgba(17,21,19,.28);--accent:#87d7b0;--accent-deep:#1f6b50;--green:#24744f;--green-bg:#e7f3e9;--red:#a53b35;--red-bg:#f7e4df;--amber:#9b6324;--amber-bg:#fff0d5;--steel:#365f72;--steel-bg:#e5eef1;--shadow:0 28px 80px rgba(0,0,0,.22)}
   *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  body{margin:0;background:radial-gradient(circle at top left,rgba(40,95,143,.12),transparent 34rem),var(--bg);color:var(--ink);font:14px/1.55 "Aptos","Segoe UI",system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums}
-  .skip-link{position:absolute;left:-999px;top:8px;background:var(--ink);color:#fff;padding:8px 10px;border-radius:6px;z-index:10}.skip-link:focus{left:8px}
-  .hero{background:linear-gradient(135deg,var(--charcoal),#111820);color:#fff;padding:30px 32px 28px;border-bottom:1px solid rgba(255,255,255,.08)}
-  .hero-inner{max-width:1320px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:end}
-  .eyebrow{margin:0 0 8px;color:#7b8a99;text-transform:uppercase;letter-spacing:.12em;font-size:.72rem;font-weight:700}.hero .eyebrow{color:#9fb4c9}
-  h1,h2,p{margin-top:0}h1{font-size:clamp(2rem,4vw,4rem);line-height:.98;margin:0 0 14px;font-weight:750;letter-spacing:0;text-wrap:balance}h2{font-size:1.15rem;line-height:1.2;margin:0 0 4px;font-weight:720}
-  .hero-summary{max-width:64rem;color:#c6d0da;font-size:1rem;margin:0}.run-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);padding:8px 10px;border-radius:7px;font-weight:700;white-space:nowrap}.run-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:#68d391}.run-pill.attention:before{background:#f6ad55}
-  .meta-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;margin-top:22px}.meta-item{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.06);border-radius:8px;padding:11px 12px}.meta-item span{display:block;color:#9fb4c9;font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700}.meta-item strong{display:block;margin-top:3px;font-size:.96rem;color:#fff}
-  main{max-width:1320px;margin:0 auto;padding:24px 32px 34px}.callout{display:flex;gap:10px;align-items:center;border-radius:8px;padding:13px 14px;margin-bottom:16px;border:1px solid var(--line)}.danger-callout{background:var(--red-bg);border-color:#efb8b3;color:#7a211e}
-  .toolbar{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:minmax(220px,1fr) 150px 150px 170px auto auto;gap:10px;align-items:center;background:rgba(238,241,244,.92);backdrop-filter:blur(12px);padding:12px 0 14px;margin-bottom:16px}
-  label{display:block;color:var(--muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px}input,select,button{font:inherit}input,select{width:100%;height:38px;border:1px solid var(--line-strong);border-radius:7px;background:#fff;color:var(--ink);padding:0 10px;outline:none}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(40,95,143,.22);border-color:var(--blue)}
-  button{height:38px;border:1px solid var(--line-strong);border-radius:7px;background:#fff;color:var(--ink);padding:0 12px;cursor:pointer;font-weight:700;transition:transform .18s ease,background .18s ease,border-color .18s ease}button:hover{background:#f7f9fb;border-color:#aebac6}button:active{transform:translateY(1px)}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:12px;margin-bottom:16px}.stat{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:15px 14px;box-shadow:0 1px 0 rgba(255,255,255,.75)}.stat .n{font-size:2rem;line-height:1;font-weight:760;color:var(--charcoal)}.stat .l{margin-top:8px;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;font-weight:800}.stat.good .n{color:var(--green)}.stat.danger .n{color:var(--red)}
-  .panel{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}.panel.danger-panel{border-color:#efb8b3}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}.count{display:inline-flex;min-width:36px;justify-content:center;border-radius:7px;padding:4px 9px;font-weight:800;background:#edf2f7}.count.good{background:var(--green-bg);color:var(--green)}.count.danger{background:var(--red-bg);color:var(--red)}
-  .note{color:var(--muted);margin:0 0 14px;max-width:72ch}.danger-text{color:#8b2a25}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff}.table-wrap.compact th,.table-wrap.compact td{padding:9px 10px}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.9rem}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#f6f8fa;color:#3c4956;font-size:.72rem;text-transform:uppercase;letter-spacing:.09em;font-weight:800;white-space:nowrap;user-select:none}th[data-sort]{cursor:pointer}th[data-sort]:after{content:" sort";color:#97a5b3;font-weight:700;text-transform:none;letter-spacing:0;margin-left:4px}tbody tr:last-child td{border-bottom:none}tbody tr:hover td{background:#f7fafc}
-  tr.ok td{background:linear-gradient(90deg,var(--green-bg),#fff 36%)}tr.fail td{background:linear-gradient(90deg,var(--red-bg),#fff 36%)}tr.planned td{background:linear-gradient(90deg,var(--blue-bg),#fff 36%)}tr.skipped td,tr.breach td{background:linear-gradient(90deg,var(--amber-bg),#fff 36%)}.status,.source-pill,.flag{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-size:.74rem;font-weight:800;white-space:nowrap}.status.ok{background:var(--green-bg);color:var(--green)}.status.fail{background:var(--red-bg);color:var(--red)}.status.planned{background:var(--blue-bg);color:var(--blue)}.status.skipped{background:var(--amber-bg);color:var(--amber)}.source-pill{background:#edf2f7;color:#435160}.flag{margin-left:8px}.flag.danger{background:var(--red);color:#fff}.details{min-width:260px;max-width:620px;color:var(--muted);font-size:.82rem;line-height:1.35;white-space:normal}.details summary{cursor:pointer;font-weight:800;color:#435160}.details div{margin-top:6px}
-  .mono{font-family:"Cascadia Mono","Consolas",monospace;font-size:.84rem}.nowrap{white-space:nowrap}.empty-state{border:1px dashed var(--line-strong);background:#fff;border-radius:8px;padding:24px;max-width:780px}.empty-title{font-weight:800;margin-bottom:4px}.empty-state p{color:var(--muted);margin:0}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}.breakdown-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.error-list{margin:0;padding-left:18px;color:#7a211e}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.footer{color:#6d7b89;font-size:.8rem;margin-top:18px;padding-bottom:20px}
-  @media (max-width:1120px){.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.hero-inner,.two-col{grid-template-columns:1fr}.meta-grid{grid-template-columns:repeat(2,1fr)}.toolbar{position:static;grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.stats{grid-template-columns:repeat(2,1fr)}}@media (max-width:620px){.hero,main{padding-left:18px;padding-right:18px}.meta-grid,.toolbar,.stats{grid-template-columns:1fr}h1{font-size:2rem}.panel{padding:16px}}@media print{body{background:#fff}.hero{background:#fff;color:#000;border-bottom:2px solid #000}.hero .eyebrow,.hero-summary,.meta-item span{color:#333}.meta-item,.panel,.stat{box-shadow:none;background:#fff}.toolbar,button,.skip-link{display:none}.panel{break-inside:avoid}main{padding:18px 0}.table-wrap{overflow:visible}}
+  html{scroll-behavior:smooth;background:var(--void)}
+  body{margin:0;overflow-x:hidden;background:radial-gradient(circle at 78% 4%,rgba(135,215,176,.24),transparent 28rem),radial-gradient(circle at 4% 12%,rgba(255,240,213,.1),transparent 24rem),linear-gradient(180deg,#0b0e0d 0,#111612 42rem,#ebe5d7 42.1rem,#f6f2e8 100%);color:var(--ink);font:14px/1.55 "Segoe UI Variable Text","Aptos","Segoe UI",system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums}
+  body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:34px 34px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.75),transparent 52rem);z-index:-1}
+  .skip-link{position:absolute;left:-999px;top:8px;background:#fff;color:#000;padding:8px 10px;border-radius:6px;z-index:20}.skip-link:focus{left:8px}
+  .report-nav{position:sticky;top:0;z-index:12;display:grid;grid-template-columns:auto minmax(260px,1fr);gap:18px;align-items:start;max-width:1440px;margin:0 auto;padding:12px 32px;background:rgba(7,9,8,.68);backdrop-filter:blur(18px);border-bottom:1px solid rgba(255,255,255,.09);color:#fff}.nav-brand{font-weight:820;letter-spacing:0}.nav-links{display:flex;gap:8px;flex-wrap:wrap}.nav-links a{color:#dce5df;text-decoration:none;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:7px 10px;font-size:.82rem}.toolbar{display:grid;grid-template-columns:minmax(220px,1fr) 135px 135px 155px auto auto;gap:8px;align-items:end;grid-column:1/-1}.toolbar a{color:#fff}
+  label{display:block;color:#b6c4bc;font-size:.74rem;font-weight:760;letter-spacing:0;margin-bottom:4px}input,select,button{font:inherit}input,select{width:100%;height:38px;border:1px solid rgba(255,255,255,.18);border-radius:7px;background:rgba(255,255,255,.08);color:#fff;padding:0 10px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}select option{color:#101412;background:#fff}input::placeholder{color:#aab6af}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(135,215,176,.24);border-color:var(--accent)}button{height:38px;border:1px solid rgba(255,255,255,.2);border-radius:7px;background:#f8f4ea;color:#111513;padding:0 13px;cursor:pointer;font-weight:760;transition:transform .18s ease,background .18s ease,border-color .18s ease,box-shadow .18s ease}button:hover{background:#fff;box-shadow:0 14px 35px rgba(0,0,0,.18)}button:active{transform:translateY(1px)}
+  .hero{position:relative;color:#fff;min-height:580px;padding:72px 32px 80px;overflow:hidden}.hero:before{content:"";position:absolute;right:-8vw;bottom:32px;width:min(50vw,620px);height:min(50vw,620px);border-radius:42% 58% 48% 52%;background:radial-gradient(circle at 32% 24%,rgba(135,215,176,.72),transparent 0 14%,rgba(135,215,176,.18) 15% 28%,transparent 29%),linear-gradient(135deg,rgba(255,255,255,.12),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.12);filter:saturate(125%);box-shadow:0 50px 160px rgba(0,0,0,.45)}.hero-inner{position:relative;max-width:1440px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,420px);gap:42px;align-items:end}.hero-copy{max-width:min(92vw,1120px)}.eyebrow{margin:0 0 8px;color:var(--soft);font-size:.76rem;font-weight:730;letter-spacing:0}.hero .eyebrow{color:#a8b9b1}h1,h2,p{margin-top:0}h1{font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;max-width:min(92vw,1120px);font-size:clamp(2.8rem,6vw,5.8rem);line-height:.88;margin:0 0 20px;font-weight:820;letter-spacing:0;text-wrap:balance}h2{font-size:1.15rem;line-height:1.15;margin:0 0 4px;font-weight:760;letter-spacing:0;text-wrap:balance}.hero-summary{max-width:64rem;color:#d2ddd7;font-size:1.08rem;margin:0;text-wrap:pretty}.run-pill{display:inline-flex;align-items:center;gap:9px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);padding:9px 12px;border-radius:7px;font-weight:780;white-space:nowrap;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}.run-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:#69c592;box-shadow:0 0 0 4px rgba(105,197,146,.12)}.run-pill.attention:before{background:#e6a557;box-shadow:0 0 0 4px rgba(230,165,87,.14)}
+  .hero-panel{align-self:stretch;display:grid;align-content:end;gap:14px}.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.meta-item{border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.055);border-radius:8px;padding:12px}.meta-item span{display:block;color:#a8b9b1;font-size:.75rem;font-weight:700;letter-spacing:0}.meta-item strong{display:block;margin-top:3px;font-size:1rem;color:#fff}.hero-visual{min-height:180px;border:1px solid rgba(255,255,255,.11);border-radius:8px;background:linear-gradient(135deg,rgba(255,255,255,.12),rgba(255,255,255,.03));padding:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.1);overflow:hidden}
+  .telemetry-strip{display:flex;align-items:end;gap:8px;height:80px}.telemetry-strip i{display:block;flex:1;min-width:16px;border-radius:999px;background:linear-gradient(180deg,rgba(135,215,176,.95),rgba(135,215,176,.12));transform-origin:bottom;animation:pulseBars 4.8s ease-in-out infinite}.telemetry-strip i:nth-child(1){height:34%;animation-delay:.1s}.telemetry-strip i:nth-child(2){height:72%;animation-delay:.4s}.telemetry-strip i:nth-child(3){height:48%;animation-delay:.2s}.telemetry-strip i:nth-child(4){height:92%;animation-delay:.6s}.telemetry-strip i:nth-child(5){height:58%;animation-delay:.3s}@keyframes pulseBars{0%,100%{transform:scaleY(.82);opacity:.65}50%{transform:scaleY(1);opacity:1}}
+  main{max-width:1440px;margin:0 auto;padding:0 32px 56px;overflow-x:hidden}.callout{display:flex;gap:10px;align-items:center;border-radius:8px;padding:13px 14px;margin:0 0 18px;border:1px solid var(--line);box-shadow:0 1px 0 rgba(255,255,255,.8)}.danger-callout{background:var(--red-bg);border-color:#e9b3ad;color:#77221e}
+  .bento-board{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-flow:dense;grid-auto-rows:minmax(150px,auto);gap:12px;margin:44px 0 52px;position:relative;z-index:3}.bento-card{background:rgba(246,242,232,.96);border:1px solid rgba(255,255,255,.4);border-radius:8px;padding:20px;box-shadow:var(--shadow);transition:transform .35s ease,box-shadow .35s ease}.bento-card:hover{transform:translateY(-4px);box-shadow:0 32px 100px rgba(0,0,0,.27)}.bento-card strong{display:block;font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(2rem,4vw,4.2rem);line-height:.92;margin:8px 0;color:var(--ink)}.bento-card p{margin:0;color:var(--muted);max-width:42rem}.bento-kicker{font-weight:780;color:var(--accent-deep)}.bento-primary{grid-column:span 5;grid-row:span 2}.bento-action{grid-column:span 3;grid-row:span 2}.bento-review{grid-column:span 4;grid-row:span 2}.bento-security,.bento-coverage,.bento-runtime{grid-column:span 4;grid-row:span 2}.bento-card.danger{background:linear-gradient(135deg,var(--red-bg),#fff6ef)}.bento-card.good{background:linear-gradient(135deg,var(--green-bg),#fffdf7)}
+  .report-lanes{display:flex;gap:10px;margin-bottom:42px;min-height:180px}.lane{flex:1;display:flex;flex-direction:column;justify-content:flex-end;min-width:0;overflow:hidden;text-decoration:none;color:#fff;border-radius:8px;padding:18px;background:linear-gradient(145deg,#161c19,#0d100f);border:1px solid rgba(255,255,255,.1);transition:flex .45s ease,transform .35s ease}.lane:hover{flex:2.4;transform:translateY(-3px)}.lane span{color:#a8b9b1;font-weight:760}.lane strong{font-size:2.8rem;line-height:1}.lane p{margin:6px 0 0;color:#dce5df;max-width:28rem}.lane-wide{flex:1.6}
+  .evidence-layout{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:22px;align-items:start}.evidence-rail{position:sticky;top:128px;background:#101411;color:#fff;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:22px;box-shadow:0 24px 80px rgba(0,0,0,.26)}.rail-kicker{color:#a8b9b1;font-weight:760;margin-bottom:10px}.scrub-copy span{display:block;color:#dce5df;opacity:calc(.34 + (var(--scroll-progress,0) * .66));margin:10px 0}.rail-links{display:grid;gap:8px;margin-top:18px}.rail-links a{color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.13);border-radius:7px;padding:9px 10px}.evidence-stack{min-width:0}.reveal{opacity:0;transform:translateY(28px);transition:opacity .7s ease,transform .7s ease}.reveal.is-visible{opacity:1;transform:translateY(0)}
+  .panel{background:rgba(246,242,232,.98);border:1px solid var(--line);border-radius:8px;padding:22px;margin-bottom:18px;box-shadow:var(--shadow)}.panel.danger-panel{border-color:#e9b3ad}.secondary-panel{background:rgba(236,230,216,.95)}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}.count{display:inline-flex;min-width:36px;justify-content:center;border-radius:7px;padding:4px 9px;font-weight:820;background:#e6dfd0;color:#332f29}.count.good{background:var(--green-bg);color:var(--green)}.count.danger{background:var(--red-bg);color:var(--red)}
+  .note{color:var(--muted);margin:0 0 14px;max-width:68ch;text-wrap:pretty}.danger-text{color:#842a25}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffaf0;box-shadow:inset 0 1px 0 rgba(255,255,255,.78)}.table-wrap.compact th,.table-wrap.compact td{padding:9px 10px}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.89rem}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#eee7d8;color:#4a453c;font-size:.73rem;font-weight:820;letter-spacing:0;white-space:nowrap;user-select:none;box-shadow:0 1px 0 var(--line)}th[data-sort]{cursor:pointer}th[data-sort]:after{content:" sort";color:#8f8678;font-weight:700;letter-spacing:0;margin-left:4px}tbody tr:last-child td{border-bottom:none}tbody tr{transition:transform .2s ease,filter .2s ease}tbody tr:hover td{background:#fffdf8}tbody tr:hover{transform:translateX(3px)}
+  tr.ok td{background:linear-gradient(90deg,var(--green-bg),#fffaf0 34%)}tr.fail td{background:linear-gradient(90deg,var(--red-bg),#fffaf0 34%)}tr.planned td{background:linear-gradient(90deg,var(--steel-bg),#fffaf0 34%)}tr.skipped td,tr.breach td{background:linear-gradient(90deg,var(--amber-bg),#fffaf0 34%)}.status,.source-pill,.flag{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-size:.75rem;font-weight:820;white-space:nowrap}.status.ok{background:var(--green-bg);color:var(--green)}.status.fail{background:var(--red-bg);color:var(--red)}.status.planned{background:var(--steel-bg);color:var(--steel)}.status.skipped{background:var(--amber-bg);color:var(--amber)}.source-pill{background:#e9e1d1;color:#4f493f}.flag{margin-left:8px}.flag.danger{background:var(--red);color:#fff}.details{min-width:260px;max-width:620px;color:var(--muted);font-size:.82rem;line-height:1.35;white-space:normal}.details summary{cursor:pointer;font-weight:800;color:#4f493f}.details div{margin-top:6px}
+  .mono{font-family:"Cascadia Mono","Consolas",monospace;font-size:.84rem}.nowrap{white-space:nowrap}.empty-state{border:1px dashed var(--line-strong);background:#fffaf0;border-radius:8px;padding:24px;max-width:780px}.empty-title{font-weight:820;margin-bottom:4px}.empty-state p{color:var(--muted);margin:0}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}.breakdown-grid{display:grid;grid-template-columns:1.12fr .94fr .94fr;gap:18px}.error-list{margin:0;padding-left:18px;color:#77221e}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.footer{margin-top:30px;padding:28px;border-radius:8px;background:#0d100f;color:#dce5df;display:flex;justify-content:space-between;gap:18px;align-items:center}.footer a{color:#fff;text-decoration-color:rgba(135,215,176,.65);text-underline-offset:3px}.footer a:hover{color:var(--accent)}
+  @media (max-width:1180px){.bento-board{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 3}.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.report-nav{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.hero-inner,.two-col{grid-template-columns:1fr}.hero-panel{max-width:620px}.report-lanes{display:grid;grid-template-columns:1fr 1fr}.lane:hover{flex:1;transform:none}}@media (max-width:620px){.report-nav,.hero,main{padding-left:18px;padding-right:18px}.toolbar,.meta-grid,.report-lanes{grid-template-columns:1fr}.bento-board{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 1;grid-row:auto}h1{font-size:clamp(2.45rem,14vw,3.4rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.report-nav,.hero:before,.hero-visual,.telemetry-strip,button,.skip-link{display:none}.hero{background:#fff;color:#000;min-height:auto;padding:18px 0;border-bottom:2px solid #000;box-shadow:none}.hero-summary,.meta-item span{color:#333}.bento-card,.meta-item,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.bento-board,.evidence-layout,.two-col,.breakdown-grid{display:block}.report-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}}
 </style>
 </head>
 <body>
 <a class="skip-link" href="#updates">Skip to update table</a>
-<header class="hero">
-  <div class="hero-inner"><div><p class="eyebrow">PatchManager compliance report</p><h1>$hostname</h1><p class="hero-summary">$runSummary</p></div><div class="run-pill $runTone">$runMode</div></div>
-  <div class="hero-inner"><div class="meta-grid"><div class="meta-item"><span>Ring</span><strong>$ring</strong></div><div class="meta-item"><span>Started</span><strong>$startStr</strong></div><div class="meta-item"><span>Duration</span><strong>${elapsed2dp}m</strong></div><div class="meta-item"><span>Version</span><strong>$ver</strong></div></div></div>
-</header>
-<main id="content">
-  $emergencyBanner
+<nav class="report-nav" aria-label="Report command bar">
+  <div class="nav-brand">PatchManager</div>
+  <div class="nav-links"><a href="#summary">Summary</a><a href="#updates">Action queue</a><a href="#providers">Providers</a><a href="#security">Security</a><a href="#runtime">Runtime</a></div>
   <div class="toolbar" aria-label="Report controls">
     <div class="search-field"><label for="searchInput">Search packages</label><input id="searchInput" type="search" placeholder="Name, package ID, source, version"></div>
     <div><label for="statusFilter">Result</label><select id="statusFilter"><option value="">All results</option><option value="Planned">Planned</option><option value="Completed">Completed</option><option value="Updated">Updated</option><option value="Detected">Detected</option><option value="AlreadyCurrent">Already current</option><option value="Skipped">Skipped</option><option value="Descoped">Descoped</option><option value="Succeeded">Succeeded</option><option value="Blocked">Blocked</option><option value="Verifying">Verifying</option><option value="Failed">Failed</option></select></div>
@@ -3346,35 +3378,37 @@ function New-HTMLReport {
     <div><label>&nbsp;</label><button type="button" id="clearFilters">Clear</button></div>
     <div><label>&nbsp;</label><button type="button" id="printReport">Print</button></div>
   </div>
-  <div class="stats">
-    <div class="stat good"><div class="n">$primaryCount</div><div class="l">$primaryLabel</div></div>
-    <div class="stat"><div class="n">$($actionableRows.Count)</div><div class="l">Action rows</div></div>
-    <div class="stat $failTone"><div class="n">$failCount</div><div class="l">Failed</div></div>
-    <div class="stat $attentionTone"><div class="n">$attentionCount</div><div class="l">Needs review</div></div>
-    <div class="stat $blockedTone"><div class="n">$blockedCount</div><div class="l">Blocked</div></div>
-    <div class="stat $verifyingTone"><div class="n">$verifyingCount</div><div class="l">Verifying</div></div>
-    <div class="stat"><div class="n">$providerCheckCount</div><div class="l">Source checks</div></div>
-    <div class="stat"><div class="n">$visibleSkippedCount</div><div class="l">Skipped / descoped</div></div>
-    <div class="stat $rebootTone"><div class="n">$rebootCount</div><div class="l">Reboot required</div></div>
-    <div class="stat"><div class="n">$inventoryCount</div><div class="l">Inventory items</div></div>
-    <div class="stat $kevTone"><div class="n">$kevCount</div><div class="l">KEV matches</div></div>
-    <div class="stat $slaTone"><div class="n">$slaCount</div><div class="l">SLA breaches</div></div>
-    <div class="stat $errorTone"><div class="n">$errorCount</div><div class="l">Script errors</div></div>
+</nav>
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-copy"><p class="eyebrow">PatchManager compliance report</p><h1>$verdictTitle<br>$hostname</h1><p class="hero-summary">$runSummary</p></div>
+    <div class="hero-panel"><div class="run-pill $runTone">$runMode</div><div class="hero-visual"><div class="telemetry-strip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div></div><div class="meta-grid"><div class="meta-item"><span>Ring</span><strong>$ring</strong></div><div class="meta-item"><span>Started</span><strong>$startStr</strong></div><div class="meta-item"><span>Duration</span><strong>${elapsed2dp}m</strong></div><div class="meta-item"><span>Version</span><strong>$ver</strong></div></div></div>
   </div>
-  $attentionSection
-  $breakdownSection
-  <section class="panel" id="updates"><div class="section-head"><div><p class="eyebrow">Actionable package updates</p><h2>$($actionableRows.Count) action row(s)</h2></div><span class="count">$(ConvertTo-ReportHtml $Results.Count) total</span></div>$tableSection<div class="result-count" id="resultCount"></div></section>
-  $providerCheckSection
-  $skippedSection
-  <div class="two-col">$kevSection$slaSection</div>
-  $invKevSection
-  $errSection
-  <section class="panel"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p></section>
-  <div class="footer">Generated by PatchManager v$ver on $generatedAt.</div>
+</header>
+<main id="content">
+  $emergencyBanner
+  $bentoSection
+  $accordionSection
+  <div class="evidence-layout">
+    $evidenceRail
+    <div class="evidence-stack">
+      <div class="reveal">$attentionSection</div>
+      <div class="reveal">$breakdownSection</div>
+      <section class="panel reveal" id="updates"><div class="section-head"><div><p class="eyebrow">Actionable package updates</p><h2>$($actionableRows.Count) action row(s)</h2></div><span class="count">$(ConvertTo-ReportHtml $Results.Count) total</span></div>$tableSection<div class="result-count" id="resultCount"></div></section>
+      <div id="providers" class="reveal">$providerCheckSection</div>
+      <div class="reveal">$skippedSection</div>
+      <div id="security" class="two-col reveal">$kevSection$slaSection</div>
+      <div class="reveal">$invKevSection</div>
+      <div id="runtime" class="reveal">$errSection</div>
+      <section class="panel reveal"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p></section>
+    </div>
+  </div>
+  <div class="footer"><span>Generated by <a href="https://github.com/ciaranwhiteside/PatchManager" target="_blank" rel="noopener">PatchManager</a> v$ver on $generatedAt.</span><span>Self-contained HTML report</span></div>
 </main>
 <script>
 (function(){
-  var rows = Array.prototype.slice.call(document.querySelectorAll('#updatesTable tbody tr.data-row'));
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tr.data-row'));
+  var updateRows = Array.prototype.slice.call(document.querySelectorAll('#updatesTable tbody tr.data-row'));
   var search = document.getElementById('searchInput');
   var statusFilter = document.getElementById('statusFilter');
   var sourceFilter = document.getElementById('sourceFilter');
@@ -3384,15 +3418,27 @@ function New-HTMLReport {
   var printReport = document.getElementById('printReport');
   var sources = [];
   var providers = [];
+  var revealItems = Array.prototype.slice.call(document.querySelectorAll('.reveal'));
+  var rail = document.querySelector('.evidence-rail');
+  if('IntersectionObserver' in window){
+    var observer = new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target);}});},{threshold:.12});
+    revealItems.forEach(function(item){observer.observe(item);});
+  } else {
+    revealItems.forEach(function(item){item.classList.add('is-visible');});
+  }
+  function updateScrollProgress(){if(!rail){return;}var total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);var progress = Math.min(1, Math.max(0, window.scrollY / total));rail.style.setProperty('--scroll-progress', progress.toFixed(3));}
+  window.addEventListener('scroll', updateScrollProgress, {passive:true});
   rows.forEach(function(row){var source = row.getAttribute('data-source') || '';if(source && sources.indexOf(source) === -1){sources.push(source);}});
   rows.forEach(function(row){var provider = row.getAttribute('data-provider') || '';if(provider && providers.indexOf(provider) === -1){providers.push(provider);}});
-  sources.sort().forEach(function(source){var option = document.createElement('option');option.value = source;option.textContent = source;sourceFilter.appendChild(option);});
-  providers.sort().forEach(function(provider){var option = document.createElement('option');option.value = provider;option.textContent = provider;providerFilter.appendChild(option);});
-  function applyFilters(){var query = (search.value || '').toLowerCase();var status = statusFilter.value;var source = sourceFilter.value;var provider = providerFilter.value;var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var rowStatus = row.getAttribute('data-status') || '';var rowSource = row.getAttribute('data-source') || '';var rowProvider = row.getAttribute('data-provider') || '';var show = (!query || rowText.indexOf(query) !== -1) && (!status || rowStatus === status) && (!source || rowSource === source) && (!provider || rowProvider === provider);row.style.display = show ? '' : 'none';if(show){visible += 1;}});if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' update row(s) visible';}}
+  function appendUniqueOption(select, value){if(!select || !value){return;}var exists = Array.prototype.some.call(select.options, function(option){return option.value === value;});if(exists){return;}var option = document.createElement('option');option.value = value;option.textContent = value;select.appendChild(option);}
+  sources.sort().forEach(function(source){appendUniqueOption(sourceFilter, source);});
+  providers.sort().forEach(function(provider){appendUniqueOption(providerFilter, provider);});
+  function applyFilters(){var query = (search.value || '').toLowerCase();var status = statusFilter.value;var source = sourceFilter.value;var provider = providerFilter.value;var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var rowStatus = row.getAttribute('data-status') || '';var rowSource = row.getAttribute('data-source') || '';var rowProvider = row.getAttribute('data-provider') || '';var show = (!query || rowText.indexOf(query) !== -1) && (!status || rowStatus === status) && (!source || rowSource === source) && (!provider || rowProvider === provider);row.style.display = show ? '' : 'none';if(show){visible += 1;}});if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' report row(s) visible';}}
   [search,statusFilter,sourceFilter,providerFilter].forEach(function(control){if(control){control.addEventListener('input', applyFilters);control.addEventListener('change', applyFilters);}});
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';statusFilter.value = '';sourceFilter.value = '';providerFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}
-  document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(th, index){th.addEventListener('click', function(){var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('data-direction') === 'asc' ? 'desc' : 'asc';document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(other){other.removeAttribute('data-direction');});th.setAttribute('data-direction', direction);rows.sort(function(a,b){var av = (a.children[index].innerText || '').trim();var bv = (b.children[index].innerText || '').trim();return direction === 'asc' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});rows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
+  document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(th, index){th.addEventListener('click', function(){var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('data-direction') === 'asc' ? 'desc' : 'asc';document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(other){other.removeAttribute('data-direction');});th.setAttribute('data-direction', direction);updateRows.sort(function(a,b){var av = (a.children[index].innerText || '').trim();var bv = (b.children[index].innerText || '').trim();return direction === 'asc' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});updateRows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
+  updateScrollProgress();
   applyFilters();
 })();
 </script>

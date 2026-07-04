@@ -15,7 +15,7 @@ personal machine and as a fleet patching agent across a commercial estate,
 with rings, maintenance windows, SLA tracking, CISA KEV emergency handling,
 and SIEM-ready event logging built in.
 
-> **Public beta (v1.1.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.0.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -470,6 +470,24 @@ You get one HTML dashboard and CSV covering every host's most recent run:
 last-seen time with **stale-host flagging**, ring, profile, applied/failed
 counts, KEV matches (actionable and inventory), SLA breaches, script errors,
 and pending reboots — the "is my estate actually patched?" view.
+
+To preview the fleet dashboard on one machine before you have a central share,
+wrap the newest local JSON report in a host-named folder and point the
+aggregator at that test root:
+
+```powershell
+$central = 'C:\ProgramData\PatchManager\FleetTestCentral'
+$out = 'C:\ProgramData\PatchManager\Reports'
+$hostFolder = Join-Path $central $env:COMPUTERNAME
+New-Item -ItemType Directory -Path $hostFolder -Force | Out-Null
+
+$latestJson = Get-ChildItem $out -Filter 'PatchReport_*.json' |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+
+Copy-Item $latestJson.FullName $hostFolder -Force
+.\Get-FleetReport.ps1 -CentralReportPath $central -OutputPath $out -StaleDays 7 -OpenReport
+```
 
 ## Security features
 
