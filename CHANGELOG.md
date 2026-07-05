@@ -4,6 +4,13 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-07-06
+
+### Changed
+- Refined generated HTML reports for local compliance and fleet dashboards with
+  the PatchManager brand system, audit-first layout, offline-safe assets,
+  no-script readability, print-safe content, and updated documentation samples.
+
 ## [1.1.0] - 2026-07-05
 
 ### Changed
