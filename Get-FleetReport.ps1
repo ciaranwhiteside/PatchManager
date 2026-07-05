@@ -224,7 +224,7 @@ $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{
 $generatedAt = ConvertTo-FleetHtml (Get-Date -Format 'dd MMM yyyy HH:mm:ss')
 $centralEsc  = ConvertTo-FleetHtml $CentralReportPath
 $brandMark = @'
-<svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><rect width="64" height="64" rx="14" fill="#f6f2e8"/><path d="M32 7 53 15v15c0 14-8.5 22-21 28C19.5 52 11 44 11 30V15L32 7Z" fill="#111513"/><path d="M32 13 47 18.5V30c0 9.5-5.5 16.5-15 21.5C22.5 46.5 17 39.5 17 30V18.5L32 13Z" fill="#f6f2e8"/><path d="M24.5 23h11.5l6.5 6.5V47h-18V23Z" fill="#fff" stroke="#18324a" stroke-width="2.5" stroke-linejoin="round"/><path d="M36 23v7h6.5" fill="none" stroke="#18324a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 39 29.5 44.5 41 32.5" fill="none" stroke="#24744f" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><rect width="64" height="64" rx="14" fill="#f6f2e8"/><path d="M32 7 53 15v15c0 13.5-8.5 22-21 28C19.5 52 11 43.5 11 30V15L32 7Z" fill="#111513"/><path d="M32 12.5 47 18v12c0 9.5-5.5 16.5-15 21.5C22.5 46.5 17 39.5 17 30V18l15-5.5Z" fill="#f6f2e8"/><path d="M24.5 18h11.5l6.5 6.5V42h-18V18Z" fill="#fff" stroke="#18324a" stroke-width="2" stroke-linejoin="round"/><path d="M36 18v7h6.5" fill="none" stroke="#18324a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M24 34 29.5 39.5 41 27.5" fill="none" stroke="#24744f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 46.5c3.5 4 8 7 13 9.5 5-2.5 9.5-5.5 13-9.5" fill="none" stroke="#c49a3d" stroke-width="2" stroke-linecap="round"/></svg>
 '@
 
 $html = @"

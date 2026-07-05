@@ -45,6 +45,8 @@ Assert-True ($dialogText -match 'FromArgb\(17, 21, 19\)') 'User dialogs should u
 Assert-True ($dialogText -match 'FromArgb\(246, 242, 232\)') 'User dialogs should use the Ivory Paper brand color.'
 Assert-True ($dialogText -match 'FromArgb\(24, 50, 74\)') 'User dialogs should use the Audit Blue brand color.'
 Assert-True ($dialogText -match 'FromArgb\(36, 116, 79\)') 'User dialogs should use the Verified Green brand color.'
+Assert-True ($dialogText -match 'FromArgb\(196, 154, 61\)') 'User dialogs should use the Caution Amber brand color in the mark.'
+Assert-True ($dialogText -match 'DrawBeziers') 'User dialogs should draw the PatchManager ledger curve in the brand mark.'
 Assert-True ($appPromptText -match 'Close the app to verify the update') 'App-in-use prompts should use evidence-led wording.'
 Assert-True ($completionPromptText -match 'Patch evidence is ready') 'Completion popups should use evidence-led wording.'
 
@@ -102,6 +104,7 @@ Assert-True ($html -match 'class="report-lanes') 'HTML report should include hor
 Assert-True ($html -match 'No package updates required action') 'HTML report should preserve the composed zero-action empty state.'
 Assert-True ($html -match 'https://github.com/ciaranwhiteside/PatchManager') 'HTML report footer should link to the PatchManager repository.'
 Assert-True ($html -match 'class="brand-mark"') 'HTML report should include the inline PatchManager brand mark.'
+Assert-True ($html -match '#c49a3d') 'HTML report brand mark should include the amber ledger curve.'
 Assert-True ($html -match 'Patch\. Verify\. Prove it\.') 'HTML report should include the PatchManager brand tagline.'
 Assert-True ($html -match "querySelectorAll\('tr\.data-row'\)") 'HTML report filters should discover options from all report rows.'
 Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count should describe all report rows.'
@@ -397,6 +400,12 @@ Assert-True (Test-Path (Join-Path $root 'docs/images/report-sample.png')) 'Local
 Assert-True (Test-Path (Join-Path $root 'docs/images/fleet-report-sample.png')) 'Fleet report screenshot should exist.'
 Assert-True (Test-Path (Join-Path $root 'docs/images/user-app-in-use-prompt.png')) 'App-in-use prompt screenshot should exist.'
 Assert-True (Test-Path (Join-Path $root 'docs/images/user-completion-popup.png')) 'Completion popup screenshot should exist.'
+$brandMark = Get-Content -Path (Join-Path $root 'docs/brand/patchmanager-mark.svg') -Raw
+$brandWordmark = Get-Content -Path (Join-Path $root 'docs/brand/patchmanager-wordmark.svg') -Raw
+$brandBoard = Get-Content -Path (Join-Path $root 'docs/brand/patchmanager-brand-board.svg') -Raw
+Assert-True ($brandMark -match '#C49A3D') 'Canonical brand mark should include the amber ledger curve.'
+Assert-True ($brandWordmark -match '#C49A3D') 'Wordmark should use the canonical amber ledger curve.'
+Assert-True ($brandBoard -match 'Ledger curve = auditable proof') 'Brand board should document the ledger curve.'
 
 $fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
 Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
@@ -404,6 +413,7 @@ Assert-True ($fleetScript -match 'class="fleet-bento') 'Fleet report should incl
 Assert-True ($fleetScript -match 'class="fleet-lanes') 'Fleet report should include horizontal fleet risk lanes.'
 Assert-True ($fleetScript -match 'class="fleet-evidence') 'Fleet report should include the pinned fleet evidence rail.'
 Assert-True ($fleetScript -match 'class="brand-mark"') 'Fleet report should include the inline PatchManager brand mark.'
+Assert-True ($fleetScript -match '#c49a3d') 'Fleet report brand mark should include the amber ledger curve.'
 Assert-True ($fleetScript -match 'Patch\. Verify\. Prove it\.') 'Fleet report should include the PatchManager brand tagline.'
 Assert-True ($fleetScript -match 'id="fleetSearch"') 'Fleet report should include host search controls.'
 Assert-True ($fleetScript -match 'id="postureFilter"') 'Fleet report should include posture filtering controls.'

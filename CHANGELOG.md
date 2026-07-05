@@ -52,6 +52,8 @@ reporting, safety guards, and fleet visibility.
   staggers runs by up to 120 minutes to protect shared links.
 - Report heroes now use static evidence/provenance cards and audit-grid surfaces
   instead of decorative telemetry art.
+- Brand iconography is unified across SVG assets, generated reports, README
+  screenshots, and native user prompts.
 - Windows Update search/download/install has an enforced timeout instead of
   hanging indefinitely.
 - Connectivity pre-flight uses HTTP HEAD with GET fallback, and TLS 1.2 is

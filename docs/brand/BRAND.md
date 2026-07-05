@@ -9,12 +9,12 @@ the result with audit-ready reports.
 - Audience: IT admins, MSPs, and security-conscious power users.
 - Promise: patch, verify, and prove current state in one auditable run.
 - Metaphor: protected evidence ledger.
-- Mark: shield boundary, document surface, and verified path.
+- Mark: shield boundary, document surface, verified check, and ledger curve.
 
 ## Assets
 
-- `patchmanager-mark.svg` is the compact mark for icons, report navigation,
-  social previews, and small lockups.
+- `patchmanager-mark.svg` is the canonical compact mark for icons, report
+  navigation, social previews, native prompts, and small lockups.
 - `patchmanager-wordmark.svg` is the preferred public README/header lockup.
 - `patchmanager-brand-board.svg` is the lightweight brand overview board.
 
@@ -52,14 +52,16 @@ Native prompts should use the same trust language as reports: a charcoal header,
 ivory surface, audit-blue boundary, verified-green primary action, and concise
 evidence-led copy. Use the PatchManager mark in prompt headers where the UI
 framework allows it. For native controls that cannot embed SVG directly, recreate
-the same shield/document/check geometry and palette rather than inventing a new
-symbol.
+the same shield/document/check/ledger geometry and palette rather than inventing
+a new symbol.
 
 ## Rules
 
 - Keep reports self-contained: no remote fonts, images, CDN scripts, or runtime
   dependencies.
 - Use the SVG mark consistently; do not redraw alternate shield/check marks.
+- Keep the shield, document, check, and amber ledger curve together wherever the
+  full PatchManager mark appears.
 - Keep spacing generous and interface density readable.
 - Do not use the mark as decoration where it does not reinforce trust or
   provenance.
