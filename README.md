@@ -120,7 +120,7 @@ All commands run in an **elevated PowerShell** (right-click Start → *Terminal
 
 ### Personal device
 
-Four commands:
+Four commands, and your machine keeps itself patched from then on:
 
 ```powershell
 # 1. Get the code - straight into an admin-only-writable location
@@ -133,14 +133,17 @@ cd C:\ProgramData\PatchManager
 # 3. Patch for real
 .\Invoke-PatchManager.ps1 -Force
 
-# 4. Optional: keep it running automatically at startup/logon
+# 4. Set and forget - register the automatic startup/logon task
 .\Invoke-PatchManager.ps1 -InstallStartupTask
 ```
 
-That's it. Reports (HTML/JSON/CSV) land in
-`C:\ProgramData\PatchManager\Reports` — the completion popup offers to open
-the latest one for you. No configuration needed: the defaults suit a personal
-machine.
+Step 4 is the whole point for a personal machine: from now on PatchManager
+runs itself a couple of minutes after every startup and logon, patches, and
+writes a fresh compliance report every time — no further action from you.
+Reports (HTML/JSON/CSV) land in `C:\ProgramData\PatchManager\Reports`, and
+the completion popup offers to open the latest one. No configuration needed:
+the defaults suit a personal machine. See [Scheduled runs](#scheduled-runs)
+for how the task behaves and how to remove it.
 
 ### Commercial / managed estate
 
@@ -204,11 +207,24 @@ with [scope profiles and descoping](#scope-profiles-personal-vs-commercial).
 ## Scheduled runs
 
 `-InstallStartupTask` (step 4 above) registers a scheduled task that runs
-PatchManager elevated a couple of minutes after every startup and logon. It
-respects the maintenance window and pre-flight checks, and never overlaps
-itself thanks to the single-instance mutex. Enable
-`PreFlight.RequireUserIdle` in the config if you don't want it patching while
-you're actively using the machine.
+PatchManager elevated a couple of minutes after every startup and logon.
+
+How the task behaves:
+
+- **It patches right away rather than waiting for the maintenance window.**
+  The task runs with `-Force` deliberately: a personal machine that's asleep
+  overnight would otherwise never reach a 22:00–06:00 window. All other
+  safeties still apply — pre-flight checks (disk, battery, pending reboot,
+  connectivity), restore point, and reboot flagging.
+- **It never overlaps itself** thanks to the single-instance mutex, so dense
+  startup/logon triggers are safe.
+- **It stays out of your way if you ask it to**: enable
+  `PreFlight.RequireUserIdle` in the config and runs quietly defer while
+  you're actively using the machine, retrying at the next trigger.
+- If you *do* want scheduled runs held to a maintenance window, create your
+  own task with Task Scheduler pointing at the script **without** `-Force`
+  (this is the normal pattern for commercial estates — see
+  [Commercial deployment](#commercial-deployment)).
 
 > **Why `C:\ProgramData\PatchManager`?** The task runs elevated with
 > `-ExecutionPolicy Bypass`. If the script sat somewhere your user account can
