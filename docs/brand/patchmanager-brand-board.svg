@@ -7,12 +7,14 @@
     <path d="M80 80v840M520 80v840M1080 80v840M1520 80v840"/>
   </g>
   <rect x="80" y="80" width="440" height="250" rx="18" fill="#F6F2E8"/>
-  <g transform="translate(128 128)">
-    <rect width="104" height="104" rx="22" fill="#111513"/>
-    <path d="M52 10 86 23v23c0 22-14 36-34 46-20-10-34-24-34-46V23l34-13Z" fill="#F6F2E8"/>
-    <path d="M40 29h19l11 11v30H40V29Z" fill="#FFFFFF" stroke="#18324A" stroke-width="3.2" stroke-linejoin="round"/>
-    <path d="M59 29v12h11" fill="none" stroke="#18324A" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M38 58 48 68 68 47" fill="none" stroke="#24744F" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="translate(128 116) scale(.8125)">
+    <rect width="128" height="128" rx="28" fill="#F6F2E8"/>
+    <path d="M64 14 106 30v30c0 27-17 44-42 56-25-12-42-29-42-56V30l42-16Z" fill="#111513"/>
+    <path d="M64 25 94 36v24c0 19-11 33-30 43-19-10-30-24-30-43V36l30-11Z" fill="#F6F2E8"/>
+    <path d="M49 36h23l13 13v35H49V36Z" fill="#FFFFFF" stroke="#18324A" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M72 36v14h13" fill="none" stroke="#18324A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M48 68 59 79 82 55" fill="none" stroke="#24744F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M38 93c7 8 16 14 26 19 10-5 19-11 26-19" fill="none" stroke="#C49A3D" stroke-width="4" stroke-linecap="round"/>
   </g>
   <text x="128" y="270" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="48" font-weight="820">PatchManager</text>
   <text x="130" y="302" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="2">PATCH. VERIFY. PROVE IT.</text>
@@ -24,10 +26,12 @@
     <path d="M57 42h48l26 26v78H57V42Z" stroke="#18324A" stroke-width="5"/>
     <path d="M105 42v28h26" stroke="#18324A" stroke-width="5"/>
     <path d="M50 112 74 136 128 82" stroke="#24744F" stroke-width="9"/>
+    <path d="M38 162c12 14 27 24 42 32 15-8 30-18 42-32" stroke="#C49A3D" stroke-width="5"/>
   </g>
   <text x="820" y="194" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Shield = protected endpoint</text>
   <text x="820" y="226" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Document = audit evidence</text>
-  <text x="820" y="258" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Path = verified patch state</text>
+  <text x="820" y="258" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Check = verified patch state</text>
+  <text x="820" y="290" fill="#5F6A62" font-family="Segoe UI, Arial, sans-serif" font-size="18">Ledger curve = auditable proof</text>
 
   <rect x="1120" y="80" width="400" height="250" rx="18" fill="#F6F2E8"/>
   <text x="1160" y="132" fill="#111513" font-family="Segoe UI Variable Display, Aptos Display, Segoe UI, Arial, sans-serif" font-size="24" font-weight="760">Palette</text>
