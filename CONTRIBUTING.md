@@ -4,6 +4,8 @@ Thanks for your interest in improving PatchManager. This project deliberately
 stays a **single deployable script** (`Invoke-PatchManager.ps1`) plus optional
 companion tools — please keep that constraint in mind when proposing changes.
 
+By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Ground rules
 
 - **Target Windows PowerShell 5.1.** Everything must run on a stock Windows
