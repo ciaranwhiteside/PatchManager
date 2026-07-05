@@ -4,37 +4,18 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [1.0.1] - 2026-07-05
+## [1.0.0] - 2026-07-05
+
+First public release (beta). PatchManager is a PowerShell-based patch
+orchestration tool for Windows 10/11 endpoints, with local and central
+reporting, safety guards, and fleet visibility.
 
 ### Added
 - PatchManager brand system under `docs/brand/` (mark, wordmark, brand board,
   brand guide), with the inline brand mark applied to the local and fleet HTML
-  reports and the README.
-- Keyboard support in user prompts: Enter activates the primary action, Esc
-  defers.
-
-### Changed
-- User-facing close-app and completion prompts now follow the PatchManager brand
-  system with the protected-evidence mark, brand palette, and evidence-led copy.
-- Self-update keeps only the three most recent `.bak` backups instead of
-  accumulating one per update.
-
-### Fixed
-- HTML reports now always print completely: scroll-reveal sections are forced
-  visible in print output instead of printing blank when not yet scrolled into
-  view.
-- HTML reports remain fully readable when JavaScript is disabled (`noscript`
-  fallback) and respect `prefers-reduced-motion`.
-- Completion prompt copy no longer overflows and truncates with an ellipsis.
-- Brand board SVG text no longer clips outside its cards.
-
-## [1.0.0] - 2026-07-05
-
-First public beta release. PatchManager is a PowerShell-based patch orchestration
-tool for Windows 10/11 endpoints, with local and central reporting, safety
-guards, and fleet visibility.
-
-### Added
+  reports, the user prompts, and the README.
+- Branded, keyboard-accessible user prompts: Enter activates the primary
+  action, Esc defers.
 - App and Windows patch orchestration with dry-run, report-only, force, and
   scheduled startup/logon task modes.
 - Interactive HTML, JSON, and CSV compliance reports for local evidence,
@@ -90,4 +71,6 @@ guards, and fleet visibility.
 - Generated logs, reports, state, cache data, hostnames, and local paths are
   excluded from publication.
 - Reports remain self-contained and offline: no external fonts, CDN scripts,
-  remote images, or third-party JavaScript dependencies are required.
+  remote images, or third-party JavaScript dependencies are required. They
+  print completely, stay readable with JavaScript disabled, and respect
+  `prefers-reduced-motion`.
