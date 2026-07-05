@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Fleet compliance dashboard for PatchManager v1.0.0.
+    Fleet compliance dashboard for PatchManager.
 
 .DESCRIPTION
     Aggregates per-host PatchManager JSON reports from a central report share
@@ -259,8 +259,10 @@ $html = @"
   .nowrap{white-space:nowrap}
   .details{color:var(--muted);font-size:.82rem;max-width:420px}
   .footer{margin-top:30px;padding:28px;border-radius:8px;background:#0d100f;color:#dce5df;display:flex;justify-content:space-between;gap:18px;align-items:center}.footer a{color:#fff;text-decoration-color:rgba(135,215,176,.65);text-underline-offset:3px}.footer a:hover{color:var(--accent)}
-  @media (max-width:1180px){.fleet-bento{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-reboot,.bento-coverage{grid-column:span 3}.fleet-layout{grid-template-columns:1fr}.fleet-evidence{position:static}}@media (max-width:980px){.fleet-nav{grid-template-columns:1fr}.fleet-toolbar{grid-template-columns:1fr 1fr}.fleet-toolbar .search-field{grid-column:1/-1}.hero-inner{grid-template-columns:1fr}.hero-panel{max-width:620px}.fleet-lanes{display:grid;grid-template-columns:1fr 1fr}.lane:hover{flex:1;transform:none}}@media (max-width:620px){.fleet-nav,.hero,main{padding-left:18px;padding-right:18px}.fleet-toolbar,.fleet-lanes{grid-template-columns:1fr}.fleet-bento{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-reboot,.bento-coverage{grid-column:span 1;grid-row:auto}h1{font-size:clamp(2.45rem,14vw,3.4rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.fleet-nav,.hero:before,.hero-visual,.telemetry-strip,button,.skip-link{display:none}.hero{background:#fff;color:#000;min-height:auto;padding:18px 0;border-bottom:2px solid #000;box-shadow:none}.hero-summary,.hero-proof span{color:#333}.bento-card,.hero-proof,.panel,.fleet-evidence{box-shadow:none;background:#fff;color:#000}.fleet-bento,.fleet-layout{display:block}.fleet-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}}
+  @media (max-width:1180px){.fleet-bento{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-reboot,.bento-coverage{grid-column:span 3}.fleet-layout{grid-template-columns:1fr}.fleet-evidence{position:static}}@media (max-width:980px){.fleet-nav{grid-template-columns:1fr}.fleet-toolbar{grid-template-columns:1fr 1fr}.fleet-toolbar .search-field{grid-column:1/-1}.hero-inner{grid-template-columns:1fr}.hero-panel{max-width:620px}.fleet-lanes{display:grid;grid-template-columns:1fr 1fr}.lane:hover{flex:1;transform:none}}@media (max-width:620px){.fleet-nav,.hero,main{padding-left:18px;padding-right:18px}.fleet-toolbar,.fleet-lanes{grid-template-columns:1fr}.fleet-bento{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-reboot,.bento-coverage{grid-column:span 1;grid-row:auto}h1{font-size:clamp(2.45rem,14vw,3.4rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.fleet-nav,.hero:before,.hero-visual,.telemetry-strip,button,.skip-link{display:none}.hero{background:#fff;color:#000;min-height:auto;padding:18px 0;border-bottom:2px solid #000;box-shadow:none}.hero-summary,.hero-proof span{color:#333}.bento-card,.hero-proof,.panel,.fleet-evidence{box-shadow:none;background:#fff;color:#000}.fleet-bento,.fleet-layout{display:block}.fleet-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
+  @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.reveal{opacity:1;transform:none;transition:none}}
 </style>
+<noscript><style>.reveal{opacity:1;transform:none}</style></noscript>
 </head>
 <body>
 <a class="skip-link" href="#fleetTable">Skip to host table</a>

@@ -4,11 +4,29 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.1] - 2026-07-05
+
+### Added
+- PatchManager brand system under `docs/brand/` (mark, wordmark, brand board,
+  brand guide), with the inline brand mark applied to the local and fleet HTML
+  reports and the README.
+- Keyboard support in user prompts: Enter activates the primary action, Esc
+  defers.
 
 ### Changed
 - User-facing close-app and completion prompts now follow the PatchManager brand
   system with the protected-evidence mark, brand palette, and evidence-led copy.
+- Self-update keeps only the three most recent `.bak` backups instead of
+  accumulating one per update.
+
+### Fixed
+- HTML reports now always print completely: scroll-reveal sections are forced
+  visible in print output instead of printing blank when not yet scrolled into
+  view.
+- HTML reports remain fully readable when JavaScript is disabled (`noscript`
+  fallback) and respect `prefers-reduced-motion`.
+- Completion prompt copy no longer overflows and truncates with an ellipsis.
+- Brand board SVG text no longer clips outside its cards.
 
 ## [1.0.0] - 2026-07-05
 
