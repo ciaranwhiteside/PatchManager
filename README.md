@@ -344,6 +344,8 @@ Interactive prompts use the same PatchManager brand system as the generated
 reports: a protected-evidence mark, ivory/charcoal surfaces, and concise
 evidence-led copy.
 
+![PatchManager user prompts](docs/images/user-popups-sample.png)
+
 ### `MicrosoftStore`
 
 | Key | Default | Purpose |

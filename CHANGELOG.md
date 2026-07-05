@@ -50,8 +50,8 @@ reporting, safety guards, and fleet visibility.
 - Run jitter is profile-aware: Personal devices patch immediately (a single
   device gains nothing from delaying itself), while the Commercial profile
   staggers runs by up to 120 minutes to protect shared links.
-- Report heroes now use static evidence/provenance cards instead of decorative
-  animated telemetry bars.
+- Report heroes now use static evidence/provenance cards and audit-grid surfaces
+  instead of decorative telemetry art.
 - Windows Update search/download/install has an enforced timeout instead of
   hanging indefinitely.
 - Connectivity pre-flight uses HTTP HEAD with GET fallback, and TLS 1.2 is

@@ -108,6 +108,7 @@ Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count s
 Assert-True ($html -match 'margin:44px 0 52px') 'HTML report content should leave breathing room below the hero.'
 Assert-True ($html -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'HTML report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 Assert-True ($html -notmatch 'hero-visual|telemetry-strip|pulseBars') 'HTML report should not include decorative animated hero telemetry.'
+Assert-True ($html -notmatch '\.hero:before') 'HTML report hero should not include decorative pseudo-art.'
 Assert-True ($html -match '<noscript><style>\.reveal\{opacity:1') 'HTML report must stay readable when JavaScript is disabled.'
 Assert-True ($html -match '@media print\{[^@]*\.reveal\{opacity:1 !important') 'HTML report reveal sections must always print.'
 Assert-True ($html -match 'prefers-reduced-motion') 'HTML report should respect reduced-motion preferences.'
@@ -390,8 +391,10 @@ Assert-True ($readme -match 'docs/brand/patchmanager-wordmark\.svg') 'README sho
 Assert-True ($readme -match 'docs/brand/BRAND\.md') 'README should link to the PatchManager brand guide.'
 Assert-True ($readme -match 'docs/images/report-sample\.png') 'README should show the local report screenshot.'
 Assert-True ($readme -match 'docs/images/fleet-report-sample\.png') 'README should show the fleet report screenshot.'
+Assert-True ($readme -match 'docs/images/user-popups-sample\.png') 'README should show the user prompt screenshot.'
 Assert-True (Test-Path (Join-Path $root 'docs/images/report-sample.png')) 'Local report screenshot should exist.'
 Assert-True (Test-Path (Join-Path $root 'docs/images/fleet-report-sample.png')) 'Fleet report screenshot should exist.'
+Assert-True (Test-Path (Join-Path $root 'docs/images/user-popups-sample.png')) 'User prompt screenshot should exist.'
 
 $fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
 Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
@@ -415,5 +418,6 @@ Assert-True ($fleetScript -match '\.reveal\{opacity:1 !important') 'Fleet report
 Assert-True ($fleetScript -match 'prefers-reduced-motion') 'Fleet report should respect reduced-motion preferences.'
 Assert-True ($fleetScript -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'Fleet report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 Assert-True ($fleetScript -notmatch 'hero-visual|telemetry-strip|pulseBars') 'Fleet report should not include decorative animated hero telemetry.'
+Assert-True ($fleetScript -notmatch '\.hero:before') 'Fleet report hero should not include decorative pseudo-art.'
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
