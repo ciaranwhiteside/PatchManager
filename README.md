@@ -340,11 +340,15 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `PromptTimeoutSeconds` | `900` | Auto-defer if the user doesn't respond. |
 | `ShowOnDryRun` | `true` | Also show the popup for dry runs. |
 
-Interactive prompts use the same PatchManager brand system as the generated
-reports: a protected-evidence mark, ivory/charcoal surfaces, and concise
-evidence-led copy.
+If an app is still running when PatchManager tries to verify an update, the
+user can close it and retry immediately or defer the item to the next run.
 
-![PatchManager user prompts](docs/images/user-popups-sample.png)
+![PatchManager app-in-use prompt](docs/images/user-app-in-use-prompt.png)
+
+When a run finishes, the completion popup summarizes the outcome and can open
+the HTML report directly.
+
+![PatchManager completion popup](docs/images/user-completion-popup.png)
 
 ### `MicrosoftStore`
 

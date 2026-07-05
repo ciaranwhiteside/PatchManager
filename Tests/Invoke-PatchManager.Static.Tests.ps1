@@ -391,10 +391,12 @@ Assert-True ($readme -match 'docs/brand/patchmanager-wordmark\.svg') 'README sho
 Assert-True ($readme -match 'docs/brand/BRAND\.md') 'README should link to the PatchManager brand guide.'
 Assert-True ($readme -match 'docs/images/report-sample\.png') 'README should show the local report screenshot.'
 Assert-True ($readme -match 'docs/images/fleet-report-sample\.png') 'README should show the fleet report screenshot.'
-Assert-True ($readme -match 'docs/images/user-popups-sample\.png') 'README should show the user prompt screenshot.'
+Assert-True ($readme -match 'docs/images/user-app-in-use-prompt\.png') 'README should show the app-in-use prompt screenshot.'
+Assert-True ($readme -match 'docs/images/user-completion-popup\.png') 'README should show the completion popup screenshot.'
 Assert-True (Test-Path (Join-Path $root 'docs/images/report-sample.png')) 'Local report screenshot should exist.'
 Assert-True (Test-Path (Join-Path $root 'docs/images/fleet-report-sample.png')) 'Fleet report screenshot should exist.'
-Assert-True (Test-Path (Join-Path $root 'docs/images/user-popups-sample.png')) 'User prompt screenshot should exist.'
+Assert-True (Test-Path (Join-Path $root 'docs/images/user-app-in-use-prompt.png')) 'App-in-use prompt screenshot should exist.'
+Assert-True (Test-Path (Join-Path $root 'docs/images/user-completion-popup.png')) 'Completion popup screenshot should exist.'
 
 $fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
 Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
