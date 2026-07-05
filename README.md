@@ -115,8 +115,12 @@ What it deliberately does **not** do:
 
 ## Get started
 
-Four commands in an **elevated PowerShell** (right-click Start → *Terminal
-(Admin)*):
+All commands run in an **elevated PowerShell** (right-click Start → *Terminal
+(Admin)*).
+
+### Personal device
+
+Four commands:
 
 ```powershell
 # 1. Get the code - straight into an admin-only-writable location
@@ -135,24 +139,54 @@ cd C:\ProgramData\PatchManager
 
 That's it. Reports (HTML/JSON/CSV) land in
 `C:\ProgramData\PatchManager\Reports` — the completion popup offers to open
-the latest one for you.
+the latest one for you. No configuration needed: the defaults suit a personal
+machine.
 
-A few notes:
+### Commercial / managed estate
+
+Same code, different posture: the `Commercial` profile assumes your management
+platform (Intune/SCCM/RMM) already owns OS, Office, and browser patching, so
+PatchManager focuses on the third-party app gap and stays out of the way.
+Evaluate it on one pilot machine first:
+
+```powershell
+# 1. Get the code onto a pilot device
+git clone https://github.com/ciaranwhiteside/PatchManager.git C:\ProgramData\PatchManager
+cd C:\ProgramData\PatchManager
+
+# 2. Create a config with the Commercial profile and your central share
+Copy-Item .\PatchManager.config.example.json .\PatchManager.config.json
+notepad .\PatchManager.config.json
+#   "ScopeProfile": "Commercial"
+#   "Reporting":    { "CentralReportPath": "\\\\fileserver\\PatchManager\\Reports" }
+
+# 3. Preview on the pilot - review the report, confirm the descoping is right
+.\Invoke-PatchManager.ps1 -DryRun -Force
+
+# 4. Live run on the pilot, then check the estate view
+.\Invoke-PatchManager.ps1 -Force
+.\Get-FleetReport.ps1 -CentralReportPath '\\fileserver\PatchManager\Reports' -OpenReport
+```
+
+Happy with the pilot? Roll out with your deployment tooling — rings via
+registry, nightly scheduled task, SIEM wiring — following
+[Commercial deployment](#commercial-deployment). Fine-tune what's in scope
+with [scope profiles and descoping](#scope-profiles-personal-vs-commercial).
+
+### Notes for both paths
 
 - **No git?** Download the [latest release
   ZIP](https://github.com/ciaranwhiteside/PatchManager/releases/latest),
   extract it, and put the contents at `C:\ProgramData\PatchManager` (so the
   script is `C:\ProgramData\PatchManager\Invoke-PatchManager.ps1`), then run
-  `Unblock-File C:\ProgramData\PatchManager\*.ps1` once before step 2.
-- **Configuration is optional.** The defaults suit a personal machine. To
-  customise (maintenance window, exclusions, central reporting), copy
-  `PatchManager.config.example.json` to `PatchManager.config.json` and edit —
-  see the [configuration reference](#configuration-reference).
+  `Unblock-File C:\ProgramData\PatchManager\*.ps1` once before running it.
 - **`-Force` only bypasses the maintenance-window wait** so your manual run
   starts immediately — every other safety (pre-flight checks, dry-run
   semantics, restore point) still applies.
 - **Just want a report?** `.\Invoke-PatchManager.ps1 -ReportOnly -Force`
   audits without patching.
+- Every setting is documented in the
+  [configuration reference](#configuration-reference).
 
 ### Parameters
 
