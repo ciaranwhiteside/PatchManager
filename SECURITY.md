@@ -39,6 +39,12 @@ You can expect an acknowledgement within a week during the beta period.
 - **Webhook URLs are credentials.** An incoming-webhook URL in
   `PatchManager.config.json` lets anyone who reads it post to your channel.
   Restrict read access to the config file accordingly.
+- **Treat self-update as a supply chain.** `SelfUpdate` is off by default. If
+  you enable it, keep the script in an admin-only-writable directory, prefer a
+  release tag over a moving branch in `SelfUpdate.Ref`, and pin
+  `ExpectedSha256` for locked-down estates. Downloads are version-gated and
+  parse-validated, and a new script is never executed in the run that fetched
+  it.
 - Machine-wide changes (the BITS bandwidth policy) are snapshotted and
   restored on exit, including crash paths.
 
