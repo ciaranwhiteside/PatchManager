@@ -155,7 +155,10 @@ $script:DefaultCfg = [ordered]@{
         StartHour        = 22
         EndHour          = 6
         AllowedDays      = @('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')
-        JitterMaxMinutes = 120
+        # Jitter staggers estate-wide runs so a fleet doesn't hit the network at
+        # once. $null = decide by profile (Personal: 0 - a single device gains
+        # nothing from delaying itself; Commercial: 120).
+        JitterMaxMinutes = $null
     }
 
     Network = [ordered]@{
@@ -376,6 +379,9 @@ function Set-ScopeProfileDefaults {
     # Resolve profile-dependent defaults left as $null in the base config.
     if ($null -eq (Get-ObjectPropertyValue $Config.Network 'BITSThrottleEnabled' $null)) {
         $Config.Network.BITSThrottleEnabled = ($scopeProfile -ieq 'Commercial')
+    }
+    if ($null -eq (Get-ObjectPropertyValue $Config.MaintenanceWindow 'JitterMaxMinutes' $null)) {
+        $Config.MaintenanceWindow.JitterMaxMinutes = if ($scopeProfile -ieq 'Commercial') { 120 } else { 0 }
     }
 }
 

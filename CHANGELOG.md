@@ -47,6 +47,9 @@ reporting, safety guards, and fleet visibility.
   posture.
 - BITS throttling is temporary and profile-aware; machine policy is snapshotted
   before the run and restored afterwards.
+- Run jitter is profile-aware: Personal devices patch immediately (a single
+  device gains nothing from delaying itself), while the Commercial profile
+  staggers runs by up to 120 minutes to protect shared links.
 - Windows Update search/download/install has an enforced timeout instead of
   hanging indefinitely.
 - Connectivity pre-flight uses HTTP HEAD with GET fallback, and TLS 1.2 is

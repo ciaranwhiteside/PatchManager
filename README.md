@@ -263,7 +263,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `Enabled` | `true` | Enforce the window (bypassed by `-Force` and KEV emergencies). |
 | `StartHour` / `EndHour` | `22` / `6` | Window in local time; overnight windows (start > end) are supported. |
 | `AllowedDays` | all days | Days on which patching may run. |
-| `JitterMaxMinutes` | `120` | Hostname-seeded random delay so a fleet doesn't hit the network at once. Rings scale it: Pilot 30%, Early 65%, Broad 100%. |
+| `JitterMaxMinutes` | `null` → profile | Hostname-seeded random delay so a fleet doesn't hit the network at once. `null` resolves by profile: Personal `0` (a single device gains nothing from delaying itself), Commercial `120`. Rings scale it: Pilot 30%, Early 65%, Broad 100%. |
 
 ### `Network`
 
