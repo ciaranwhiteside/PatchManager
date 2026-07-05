@@ -436,7 +436,9 @@ automatically:
 - disables the Windows Update, Microsoft 365, Chrome, and Edge providers,
 - descopes Chrome/Edge/WebView2/Office/Teams/OneDrive WinGet packages (with
   audit-visible reasons),
-- enables run-scoped BITS throttling to protect shared office links.
+- enables run-scoped BITS throttling to protect shared office links,
+- staggers runs across the estate with hostname-seeded jitter (up to
+  120 minutes, scaled down for Pilot/Early rings).
 
 Everything a profile does can be overridden per-key in your config, and
 finer-grained exclusions go in `Descope` — for example, if your RMM manages
@@ -452,6 +454,8 @@ Zoom:
 ```
 
 ## Reports
+
+![PatchManager HTML compliance report](docs/images/report-sample.png)
 
 Each run writes up to three artifacts to `Reporting.LocalReportPath` (and the
 central share if configured):
@@ -605,10 +609,10 @@ git-ignored, and the test suite scans the public files for common leaks.
 ## Troubleshooting & FAQ
 
 **Pre-flight fails with "winget.exe not found".**
-Install/update *App Installer* from the Microsoft Store, or deploy it via
-[winget-cs](https://learn.microsoft.com/windows/package-manager/winget/) for
-SYSTEM contexts. PatchManager also looks in `Program Files\WindowsApps` for
-SYSTEM-context runs.
+Install/update *App Installer* from the Microsoft Store — see
+[Microsoft's WinGet documentation](https://learn.microsoft.com/windows/package-manager/winget/)
+for offline/managed installation options. PatchManager also looks in
+`Program Files\WindowsApps` for SYSTEM-context runs.
 
 **A package is always `Blocked`.**
 The app (or one of its components) is running. Close it and rerun, or let the

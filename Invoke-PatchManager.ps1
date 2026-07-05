@@ -6,22 +6,26 @@
     Patch Manager v1.0.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
-    Ring-based, network-aware patching for Windows, Microsoft 365, browsers,
-    WinGet packages, and Microsoft Store apps.
+    Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
+    packages, and Microsoft Store apps, with audit-ready reporting.
 
     Key features:
       - Ring-based staged rollout: Pilot -> Early -> Broad
-      - BITS throttling to prevent network saturation
-      - Hostname-seeded jitter to stagger estate-wide concurrent runs
       - CISA KEV emergency bypass (patches immediately, skips maintenance window)
+      - Inventory-wide KEV visibility for software with no available update
       - SLA tracking against update availability date (not CVE dates)
-      - Local + centralised logging and HTML/JSON compliance reporting
+      - Local + centralised logging and HTML/JSON/CSV compliance reporting
+      - Fleet dashboard via the companion Get-FleetReport.ps1
       - System restore points before patching
       - Pre-flight checks: disk, battery, connectivity, pending reboot, winget
+      - Optional webhook notifications and validated opt-in self-update
+      - Commercial profile extras: run-scoped BITS throttling and
+        hostname-seeded jitter to stagger estate-wide concurrent runs
 
-    Scope is config-driven. Personal devices include Windows Update, M365,
-    Chrome, and Edge by default. Commercial/provider-managed exclusions should
-    be expressed through Descope configuration.
+    Scope is profile-driven. ScopeProfile "Personal" (default) covers Windows
+    Update, M365, Chrome, and Edge. "Commercial" assumes Intune/SCCM/RMM owns
+    those and focuses on the third-party app gap; fine-grained exclusions go
+    in the Descope configuration.
 
 .PARAMETER ConfigPath
     Path to JSON config override file. Defaults to .\PatchManager.config.json
