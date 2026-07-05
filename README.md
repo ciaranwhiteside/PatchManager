@@ -486,6 +486,8 @@ central share if configured):
 
 ## Fleet reporting
 
+![PatchManager fleet dashboard](docs/images/fleet-report-sample.png)
+
 Point every device's `Reporting.CentralReportPath` at the same share, then run
 the aggregator from anywhere that can read it (read-only, no elevation):
 

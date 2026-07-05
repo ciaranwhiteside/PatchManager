@@ -388,6 +388,10 @@ foreach ($file in $publicFiles) {
 $readme = Get-Content -Path (Join-Path $root 'README.md') -Raw
 Assert-True ($readme -match 'docs/brand/patchmanager-wordmark\.svg') 'README should reference the PatchManager wordmark asset.'
 Assert-True ($readme -match 'docs/brand/BRAND\.md') 'README should link to the PatchManager brand guide.'
+Assert-True ($readme -match 'docs/images/report-sample\.png') 'README should show the local report screenshot.'
+Assert-True ($readme -match 'docs/images/fleet-report-sample\.png') 'README should show the fleet report screenshot.'
+Assert-True (Test-Path (Join-Path $root 'docs/images/report-sample.png')) 'Local report screenshot should exist.'
+Assert-True (Test-Path (Join-Path $root 'docs/images/fleet-report-sample.png')) 'Fleet report screenshot should exist.'
 
 $fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
 Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
