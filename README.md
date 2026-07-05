@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.0.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.1.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -147,23 +147,32 @@ for how the task behaves and how to remove it.
 
 ### Commercial / managed estate
 
-Same code, different posture: the `Commercial` profile assumes your management
-platform (Intune/SCCM/RMM) already owns OS, Office, and browser patching, so
-PatchManager focuses on the third-party app gap and stays out of the way.
-Evaluate it on one pilot machine first:
+One decision up front, then a pilot:
+
+- **`Commercial`** — full coverage plus fleet behaviours. PatchManager patches
+  everything it can (Windows Update, Office, browsers, third-party apps) and
+  adds estate-friendly behaviour: run-scoped bandwidth throttling and jittered
+  scheduling. **Pick this unless something else already patches your OS and
+  browsers** — an unpatched Chrome is a vulnerability whether or not you have
+  an RMM.
+- **`CommercialManaged`** — for estates where Intune/SCCM/WSUS/RMM already
+  owns OS, Office, and browser patching. Those areas are descoped (recorded in
+  every report as a decision, not a miss) and PatchManager covers the
+  third-party gap your platform doesn't. The inventory-wide CISA KEV scan
+  still flags exposure in the managed software, so nothing goes invisible.
 
 ```powershell
 # 1. Get the code onto a pilot device
 git clone https://github.com/ciaranwhiteside/PatchManager.git C:\ProgramData\PatchManager
 cd C:\ProgramData\PatchManager
 
-# 2. Create a config with the Commercial profile and your central share
+# 2. Create a config with your profile and central share
 Copy-Item .\PatchManager.config.example.json .\PatchManager.config.json
 notepad .\PatchManager.config.json
-#   "ScopeProfile": "Commercial"
+#   "ScopeProfile": "Commercial"          (or "CommercialManaged")
 #   "Reporting":    { "CentralReportPath": "\\\\fileserver\\PatchManager\\Reports" }
 
-# 3. Preview on the pilot - review the report, confirm the descoping is right
+# 3. Preview on the pilot - review the report, confirm the scope is right
 .\Invoke-PatchManager.ps1 -DryRun -Force
 
 # 4. Live run on the pilot, then check the estate view
@@ -252,7 +261,7 @@ paths and share names.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `ScopeProfile` | `"Personal"` | `Personal` or `Commercial`. See [Scope profiles](#scope-profiles-personal-vs-commercial). |
+| `ScopeProfile` | `"Personal"` | `Personal`, `Commercial` (full coverage + fleet behaviours), or `CommercialManaged` (defer OS/Office/browsers to your platform). See [Scope profiles](#scope-profiles-personal-vs-commercial). |
 
 ### `Descope`
 
@@ -282,13 +291,13 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `Enabled` | `true` | Enforce the window (bypassed by `-Force` and KEV emergencies). |
 | `StartHour` / `EndHour` | `22` / `6` | Window in local time; overnight windows (start > end) are supported. |
 | `AllowedDays` | all days | Days on which patching may run. |
-| `JitterMaxMinutes` | `null` → profile | Hostname-seeded random delay so a fleet doesn't hit the network at once. `null` resolves by profile: Personal `0` (a single device gains nothing from delaying itself), Commercial `120`. Rings scale it: Pilot 30%, Early 65%, Broad 100%. |
+| `JitterMaxMinutes` | `null` → profile | Hostname-seeded random delay so a fleet doesn't hit the network at once. `null` resolves by profile: Personal `0` (a single device gains nothing from delaying itself), Commercial/CommercialManaged `120`. Rings scale it: Pilot 30%, Early 65%, Broad 100%. |
 
 ### `Network`
 
 | Key | Default | Purpose |
 |---|---|---|
-| `BITSThrottleEnabled` | `null` | `null` = decide by profile (Personal **off**, Commercial **on**). The BITS policy is applied for the run only and **restored afterwards**, even on crash. |
+| `BITSThrottleEnabled` | `null` | `null` = decide by profile (Personal **off**, Commercial/CommercialManaged **on**). The BITS policy is applied for the run only and **restored afterwards**, even on crash. |
 | `BITSMaxBandwidthKbps` | `4096` | Per-machine BITS cap while patching. |
 | `TestConnectivityUrl` | `https://www.cloudflare.com` | Pre-flight connectivity probe (HEAD, GET fallback). |
 | `ConnectivityTimeoutSec` | `10` | Probe timeout. |
@@ -312,7 +321,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Enabled` | `true` (Personal) / `false` (Commercial) | Windows Update provider on/off. |
+| `Enabled` | `true` (`false` on CommercialManaged) | Windows Update provider on/off. |
 | `IncludeDrivers` / `IncludeOptionalUpdates` / `IncludeFeatureUpdates` | `false` | Opt-in expansions of scope. |
 | `SearchCriteria` | `IsInstalled=0 and IsHidden=0 and Type='Software'` | WUA search criteria. |
 | `TimeoutSeconds` | `3600` | **Enforced** watchdog over the whole search/download/install flow. |
@@ -321,7 +330,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Enabled` | `true` (Personal) / `false` (Commercial) | Click-to-Run updates on/off. |
+| `Enabled` | `true` (`false` on CommercialManaged) | Click-to-Run updates on/off. |
 | `ForceAppShutdown` | `false` | Whether the C2R updater may close running Office apps. |
 | `TimeoutSeconds` | `1800` | Updater timeout. |
 
@@ -329,7 +338,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Enabled` / `ChromeEnabled` / `EdgeEnabled` | `true` (Personal; Chrome/Edge `false` on Commercial) | Native browser updaters, used only when WinGet has no actionable candidate. |
+| `Enabled` / `ChromeEnabled` / `EdgeEnabled` | `true` (Chrome/Edge `false` on CommercialManaged) | Native browser updaters, used only when WinGet has no actionable candidate. |
 | `NativeTimeoutSeconds` | `900` | Native updater timeout. |
 
 ### `UserExperience`
@@ -429,25 +438,29 @@ next run. It is skipped when running from a git clone; use `git pull` there.
 
 ## Scope profiles: Personal vs Commercial
 
-**Personal** (default) assumes the device owns its own patching: Windows
-Update, Microsoft 365, Chrome, and Edge are all in scope.
+The guiding principle: **maximum coverage by default**. Nothing is descoped
+unless you explicitly say another system owns it — an unpatched application is
+a vulnerability regardless of the size of your organisation.
 
-**Commercial** assumes a management platform (Intune/SCCM/RMM) already owns
-OS, Office, and browser patching, so PatchManager stays in its lane and
-focuses on the third-party app gap:
+| Profile | Coverage | Fleet behaviours | Pick it when |
+|---|---|---|---|
+| `Personal` (default) | Everything: Windows Update, Microsoft 365, browsers, WinGet, Store | None (patch immediately, no throttling) | It's your own machine. |
+| `Commercial` | Everything — same full coverage as Personal | BITS throttling + jitter staggering (up to 120 min, scaled by ring) | Your organisation has no dedicated patch platform, or you want belt-and-braces coverage. **The safe default for orgs.** |
+| `CommercialManaged` | Third-party gap only | Same as Commercial | Intune/SCCM/WSUS/RMM genuinely already patches your OS, Office, and browsers. |
 
-```json
-{ "ScopeProfile": "Commercial" }
-```
-
-automatically:
+`CommercialManaged` automatically:
 
 - disables the Windows Update, Microsoft 365, Chrome, and Edge providers,
 - descopes Chrome/Edge/WebView2/Office/Teams/OneDrive WinGet packages (with
-  audit-visible reasons),
-- enables run-scoped BITS throttling to protect shared office links,
-- staggers runs across the estate with hostname-seeded jitter (up to
-  120 minutes, scaled down for Pilot/Early rings).
+  audit-visible reasons in every report — a decision, not a miss).
+
+Two safety nets remain even under `CommercialManaged`:
+
+- The **inventory-wide CISA KEV scan** covers *all* installed software,
+  including the managed apps — if your platform falls behind on an actively
+  exploited Chrome, the report still flags it.
+- Every descoped row appears in the report with its reason, so an auditor can
+  see exactly what PatchManager deferred to the platform.
 
 Everything a profile does can be overridden per-key in your config, and
 finer-grained exclusions go in `Descope` — for example, if your RMM manages
@@ -551,8 +564,9 @@ Copy-Item $latestJson.FullName $hostFolder -Force
 1. **Stage the script** at an admin-only-writable path on each device, e.g.
    `C:\ProgramData\PatchManager\` (Intune Win32 app, SCCM package, GPO file
    copy, or your RMM).
-2. **Drop a config** next to it with `"ScopeProfile": "Commercial"`, your
-   central share paths, and any descoping.
+2. **Drop a config** next to it with `"ScopeProfile": "Commercial"` (or
+   `"CommercialManaged"` if a platform already patches OS/Office/browsers),
+   your central share paths, and any descoping.
 3. **Assign rings** by writing `DeploymentRing` (`Pilot`/`Early`/`Broad`) to
    `HKLM:\SOFTWARE\Company\PatchManager` via GPO/Intune — pilot a small group,
    then let `Early` and `Broad` follow.
@@ -631,10 +645,11 @@ interactive prompt's *Retry* handle it. Unattended runs defer and try again
 next run.
 
 **Why didn't PatchManager update Chrome/Office on my work laptop?**
-You're on the Commercial profile: those are descoped on the assumption your
-management platform owns them. Check the *Skipped and descoped* section of the
-report — the reason is recorded there. Override per-key if the assumption is
-wrong for you.
+You're on the `CommercialManaged` profile, which descopes those on the
+explicit assumption your management platform owns them. Check the *Skipped
+and descoped* section of the report — the reason is recorded there. If
+nothing else actually patches them, switch to `ScopeProfile: "Commercial"`
+for full coverage, or override the individual providers per-key.
 
 **Does `-Force` skip safety checks?**
 No — it only bypasses the maintenance window. Pre-flight checks, restore

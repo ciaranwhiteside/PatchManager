@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.0.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.1.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -22,10 +22,16 @@
       - Commercial profile extras: run-scoped BITS throttling and
         hostname-seeded jitter to stagger estate-wide concurrent runs
 
-    Scope is profile-driven. ScopeProfile "Personal" (default) covers Windows
-    Update, M365, Chrome, and Edge. "Commercial" assumes Intune/SCCM/RMM owns
-    those and focuses on the third-party app gap; fine-grained exclusions go
-    in the Descope configuration.
+    Scope is profile-driven:
+      Personal (default)  - full coverage for a single machine.
+      Commercial          - full coverage plus fleet behaviours (BITS
+                            throttling, jitter staggering). The safe default
+                            for organisations.
+      CommercialManaged   - for estates where Intune/SCCM/RMM already owns
+                            OS, Office, and browser patching; PatchManager
+                            descopes those (audit-visible) and covers the
+                            third-party app gap. Fine-grained exclusions go
+                            in the Descope configuration.
 
 .PARAMETER ConfigPath
     Path to JSON config override file. Defaults to .\PatchManager.config.json
@@ -99,7 +105,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.0.0'
+$script:VERSION       = '1.1.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -344,15 +350,37 @@ function Import-Configuration {
     return $cfg
 }
 
+function Test-IsFleetProfile {
+    # Commercial and CommercialManaged share the fleet behaviours (BITS
+    # throttling, jitter staggering, Descoped-vs-Skipped report language).
+    param([string]$ScopeProfile)
+    return $ScopeProfile -ieq 'Commercial' -or $ScopeProfile -ieq 'CommercialManaged'
+}
+
 function Set-ScopeProfileDefaults {
     param([Parameter(Mandatory)] [object]$Config)
 
     $scopeProfile = [string]$Config.ScopeProfile
     if ([string]::IsNullOrWhiteSpace($scopeProfile)) { $scopeProfile = 'Personal' }
+    if ($scopeProfile -notin @('Personal', 'Commercial', 'CommercialManaged')) {
+        Write-Warning "[CONFIG] Unknown ScopeProfile '$scopeProfile'. Falling back to 'Personal' (full coverage)."
+        $scopeProfile = 'Personal'
+    }
     $Config.ScopeProfile = $scopeProfile
 
-    if ($scopeProfile -ieq 'Commercial') {
-        $commercialPackageIds = @(
+    # Profile intent:
+    #   Personal          - full coverage, single machine, no fleet behaviours.
+    #   Commercial        - full coverage PLUS fleet behaviours. The safe default
+    #                       for organisations: an unpatched browser is a
+    #                       vulnerability whether or not an RMM exists, so
+    #                       nothing is descoped unless the org says so.
+    #   CommercialManaged - for estates where Intune/SCCM/RMM already owns OS,
+    #                       Office, and browser patching: those providers are
+    #                       descoped (with audit-visible reasons) and PatchManager
+    #                       covers the third-party gap. The inventory-wide CISA
+    #                       KEV scan still reports exposure in managed software.
+    if ($scopeProfile -ieq 'CommercialManaged') {
+        $managedPackageIds = @(
             'Google.Chrome'
             'Microsoft.Edge'
             'Microsoft.EdgeWebView2Runtime'
@@ -361,7 +389,7 @@ function Set-ScopeProfileDefaults {
             'Microsoft.Teams'
             'Microsoft.OneDrive'
         )
-        $commercialPatterns = @(
+        $managedPatterns = @(
             '^Google\s+Chrome\b'
             '^Microsoft\s+Edge\b'
             '^Microsoft\s+Edge\s+WebView2\b'
@@ -372,8 +400,8 @@ function Set-ScopeProfileDefaults {
             '^Microsoft\s+OneDrive\b'
         )
 
-        $Config.Descope.PackageIds = @($Config.Descope.PackageIds + $commercialPackageIds | Select-Object -Unique)
-        $Config.Descope.PackageNamePatterns = @($Config.Descope.PackageNamePatterns + $commercialPatterns | Select-Object -Unique)
+        $Config.Descope.PackageIds = @($Config.Descope.PackageIds + $managedPackageIds | Select-Object -Unique)
+        $Config.Descope.PackageNamePatterns = @($Config.Descope.PackageNamePatterns + $managedPatterns | Select-Object -Unique)
         $Config.WindowsUpdate.Enabled = $false
         $Config.Microsoft365.Enabled = $false
         $Config.Browsers.ChromeEnabled = $false
@@ -381,11 +409,12 @@ function Set-ScopeProfileDefaults {
     }
 
     # Resolve profile-dependent defaults left as $null in the base config.
+    $isFleet = Test-IsFleetProfile -ScopeProfile $scopeProfile
     if ($null -eq (Get-ObjectPropertyValue $Config.Network 'BITSThrottleEnabled' $null)) {
-        $Config.Network.BITSThrottleEnabled = ($scopeProfile -ieq 'Commercial')
+        $Config.Network.BITSThrottleEnabled = $isFleet
     }
     if ($null -eq (Get-ObjectPropertyValue $Config.MaintenanceWindow 'JitterMaxMinutes' $null)) {
-        $Config.MaintenanceWindow.JitterMaxMinutes = if ($scopeProfile -ieq 'Commercial') { 120 } else { 0 }
+        $Config.MaintenanceWindow.JitterMaxMinutes = if ($isFleet) { 120 } else { 0 }
     }
 }
 
@@ -2216,7 +2245,7 @@ function Invoke-AllUpdates {
 function Invoke-WindowsUpdateProvider {
     $provider = 'windows-update'
     if (-not $script:CFG.WindowsUpdate.Enabled) {
-        $status = if ($script:CFG.ScopeProfile -ieq 'Commercial') { 'Descoped' } else { 'Skipped' }
+        $status = if (Test-IsFleetProfile -ScopeProfile $script:CFG.ScopeProfile) { 'Descoped' } else { 'Skipped' }
         return @((New-PatchResult -Name 'Windows Update' -PackageId 'Windows.Update' -Provider $provider -Source $provider -Status $status -Evidence 'Windows Update provider disabled by configuration.'))
     }
 
@@ -2397,7 +2426,7 @@ function Get-Microsoft365ClickToRunInfo {
 function Invoke-Microsoft365Provider {
     $provider = 'microsoft365-clicktorun'
     if (-not $script:CFG.Microsoft365.Enabled) {
-        $status = if ($script:CFG.ScopeProfile -ieq 'Commercial') { 'Descoped' } else { 'Skipped' }
+        $status = if (Test-IsFleetProfile -ScopeProfile $script:CFG.ScopeProfile) { 'Descoped' } else { 'Skipped' }
         return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -Status $status -Evidence 'Microsoft 365 provider disabled by configuration.'))
     }
 

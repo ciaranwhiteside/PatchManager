@@ -178,6 +178,7 @@ Assert-True ($script:StoreCliDiscoveryReason -match 'code 5') 'Store CLI: discov
 
 #-- Config merge + scope profiles ---------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-IsFleetProfile')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ScopeProfileDefaults')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Import-Configuration')
 
@@ -215,13 +216,35 @@ try {
     Assert-True ($mergedCfg.Network.BITSThrottleEnabled -eq $false) 'Personal profile should resolve BITSThrottleEnabled to false.'
     Assert-True ($mergedCfg.MaintenanceWindow.JitterMaxMinutes -eq 0) 'Personal profile should resolve JitterMaxMinutes to 0 - a single device should not delay itself.'
 
+    # Commercial = FULL coverage + fleet behaviours. It must never silently
+    # disable protection - that assumption belongs to CommercialManaged only.
     $script:DefaultCfg = New-TestDefaultCfg
     $script:DefaultCfg.ScopeProfile = 'Commercial'
     $commercialCfg = Import-Configuration -Path 'nonexistent-config.json'
     Assert-True ($commercialCfg.Network.BITSThrottleEnabled -eq $true) 'Commercial profile should resolve BITSThrottleEnabled to true.'
     Assert-True ($commercialCfg.MaintenanceWindow.JitterMaxMinutes -eq 120) 'Commercial profile should resolve JitterMaxMinutes to 120 for fleet staggering.'
-    Assert-True ($commercialCfg.WindowsUpdate.Enabled -eq $false) 'Commercial profile should disable Windows Update provider.'
-    Assert-True ('Google.Chrome' -in $commercialCfg.Descope.PackageIds) 'Commercial profile should descope Chrome.'
+    Assert-True ($commercialCfg.WindowsUpdate.Enabled -eq $true) 'Commercial profile must keep Windows Update enabled - full coverage is the safe org default.'
+    Assert-True ($commercialCfg.Microsoft365.Enabled -eq $true) 'Commercial profile must keep Microsoft 365 enabled.'
+    Assert-True ($commercialCfg.Browsers.ChromeEnabled -eq $true) 'Commercial profile must keep browser patching enabled.'
+    Assert-True ('Google.Chrome' -notin $commercialCfg.Descope.PackageIds) 'Commercial profile must not descope Chrome - only CommercialManaged assumes a platform owns it.'
+
+    # CommercialManaged = the explicit "our platform owns OS/Office/browsers" posture.
+    $script:DefaultCfg = New-TestDefaultCfg
+    $script:DefaultCfg.ScopeProfile = 'CommercialManaged'
+    $managedCfg = Import-Configuration -Path 'nonexistent-config.json'
+    Assert-True ($managedCfg.Network.BITSThrottleEnabled -eq $true) 'CommercialManaged profile should resolve BITSThrottleEnabled to true.'
+    Assert-True ($managedCfg.MaintenanceWindow.JitterMaxMinutes -eq 120) 'CommercialManaged profile should resolve JitterMaxMinutes to 120.'
+    Assert-True ($managedCfg.WindowsUpdate.Enabled -eq $false) 'CommercialManaged profile should disable Windows Update provider.'
+    Assert-True ($managedCfg.Microsoft365.Enabled -eq $false) 'CommercialManaged profile should disable Microsoft 365 provider.'
+    Assert-True ($managedCfg.Browsers.ChromeEnabled -eq $false) 'CommercialManaged profile should disable Chrome native updates.'
+    Assert-True ('Google.Chrome' -in $managedCfg.Descope.PackageIds) 'CommercialManaged profile should descope Chrome.'
+
+    # Unknown profile values must fail SAFE: full Personal coverage.
+    $script:DefaultCfg = New-TestDefaultCfg
+    $script:DefaultCfg.ScopeProfile = 'Enterprise'
+    $unknownCfg = Import-Configuration -Path 'nonexistent-config.json' 3>$null
+    Assert-True ($unknownCfg.ScopeProfile -eq 'Personal') 'Unknown ScopeProfile should fall back to Personal (full coverage).'
+    Assert-True ($unknownCfg.WindowsUpdate.Enabled -eq $true) 'Unknown ScopeProfile fallback must keep full coverage.'
 } finally {
     Remove-Item $tempCfgPath -Force -EA SilentlyContinue
 }

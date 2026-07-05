@@ -1,6 +1,7 @@
 {
   "_comment": "Example config. Copy to PatchManager.config.json and edit locally; do not commit personal runtime config.",
 
+  "_comment_scope": "ScopeProfile: Personal (full coverage, single machine), Commercial (full coverage + fleet behaviours - the safe default for organisations), or CommercialManaged (Intune/SCCM/RMM already owns OS/Office/browsers; PatchManager descopes those and covers the third-party gap).",
   "ScopeProfile": "Personal",
 
   "Descope": {

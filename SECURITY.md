@@ -9,8 +9,8 @@ before live use.
 
 | Version | Supported |
 |---|---|
-| 1.0.x (public beta) | ✅ |
-| Pre-1.0 internal builds | ❌ — upgrade to 1.0.0 |
+| 1.x (public beta) | ✅ |
+| Pre-1.0 internal builds | ❌ — upgrade to the latest release |
 
 Only the latest release on `main` receives fixes during the beta period.
 

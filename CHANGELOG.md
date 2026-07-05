@@ -4,6 +4,29 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-07-05
+
+### Changed
+- **The `Commercial` profile now patches everything.** Previously it assumed a
+  management platform (Intune/SCCM/RMM) already owned OS, Office, and browser
+  patching and silently descoped them — a presumption that left the
+  organisations most likely to need this tool with less coverage, not more.
+  `Commercial` now means full coverage (identical scope to `Personal`) plus
+  fleet behaviours (run-scoped BITS throttling, jitter staggering).
+- New **`CommercialManaged`** profile carries the old behaviour for estates
+  where a platform genuinely owns OS/Office/browser patching: those providers
+  are descoped with audit-visible reasons and PatchManager covers the
+  third-party gap. The inventory-wide CISA KEV scan still reports exposure in
+  the managed software.
+- Unknown `ScopeProfile` values now fail safe: a warning plus full `Personal`
+  coverage instead of silently partial behaviour.
+
+### Upgrade note
+If you deployed 1.0.0 with `"ScopeProfile": "Commercial"` *because* your
+platform already patches OS/Office/browsers, change it to
+`"CommercialManaged"` to keep that posture. If you picked `Commercial` just
+because you're an organisation, no action needed — you now get more coverage.
+
 ## [1.0.0] - 2026-07-05
 
 First public release (beta). PatchManager is a PowerShell-based patch
