@@ -562,9 +562,9 @@ function Set-ContentAtomic {
 #region --- User Experience / Scheduling ------------------------------------
 
 function Test-InteractiveSession {
-    # Decides whether dialogs may be shown. Deliberately does NOT rely on
-    # $env:SESSIONNAME: Task Scheduler processes never receive it, even when
-    # running in a fully interactive user session, which would wrongly suppress
+    # Decides whether dialogs may be shown. Deliberately does NOT rely on the
+    # session-name environment variable: Task Scheduler processes never receive
+    # it, even in a fully interactive user session, which would wrongly suppress
     # the completion popup on every scheduled run. Session 0 (services/SYSTEM)
     # is where dialogs must stay off; interactive users are session 1+.
     try {
