@@ -107,6 +107,7 @@ Assert-True ($html -match "querySelectorAll\('tr\.data-row'\)") 'HTML report fil
 Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count should describe all report rows.'
 Assert-True ($html -match 'margin:44px 0 52px') 'HTML report content should leave breathing room below the hero.'
 Assert-True ($html -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'HTML report should stay offline with no CDN, remote font, image, or GSAP dependency.'
+Assert-True ($html -notmatch 'hero-visual|telemetry-strip|pulseBars') 'HTML report should not include decorative animated hero telemetry.'
 Assert-True ($html -match '<noscript><style>\.reveal\{opacity:1') 'HTML report must stay readable when JavaScript is disabled.'
 Assert-True ($html -match '@media print\{[^@]*\.reveal\{opacity:1 !important') 'HTML report reveal sections must always print.'
 Assert-True ($html -match 'prefers-reduced-motion') 'HTML report should respect reduced-motion preferences.'
@@ -409,5 +410,6 @@ Assert-True ($fleetScript -match '<noscript><style>\.reveal\{opacity:1') 'Fleet 
 Assert-True ($fleetScript -match '\.reveal\{opacity:1 !important') 'Fleet report reveal sections must always print.'
 Assert-True ($fleetScript -match 'prefers-reduced-motion') 'Fleet report should respect reduced-motion preferences.'
 Assert-True ($fleetScript -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'Fleet report should stay offline with no CDN, remote font, image, or GSAP dependency.'
+Assert-True ($fleetScript -notmatch 'hero-visual|telemetry-strip|pulseBars') 'Fleet report should not include decorative animated hero telemetry.'
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
