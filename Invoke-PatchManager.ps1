@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.0.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.0.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Ring-based, network-aware patching for Windows, Microsoft 365, browsers,
@@ -95,7 +95,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.0.1'
+$script:VERSION       = '1.0.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
