@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc" font-family="'Segoe UI Variable Display','Segoe UI Semibold','Segoe UI',Arial,sans-serif">
+  <title id="title">PatchManager</title>
+  <desc id="desc">PatchManager social preview: evidence-led Windows patching for personal devices and commercial estates. Patch. Verify. Prove it.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#212c37"/>
+      <stop offset="1" stop-color="#0d131a"/>
+    </linearGradient>
+    <radialGradient id="glowG" cx="0.84" cy="0.12" r="0.65">
+      <stop offset="0" stop-color="#24744F" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#24744F" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0.05" cy="1" r="0.55">
+      <stop offset="0" stop-color="#18324A" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#18324A" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glowG)"/>
+  <rect width="1280" height="640" fill="url(#glowB)"/>
+
+  <!-- ghosted brand mark watermark -->
+  <g transform="translate(792 26) scale(4.6)" opacity="0.16">
+    <path d="M64 14 106 30v30c0 27-17 44-42 56-25-12-42-29-42-56V30l42-16Z" fill="#F6F2E8" opacity="0.5"/>
+    <path d="M64 25 94 36v24c0 19-11 33-30 43-19-10-30-24-30-43V36l30-11Z" fill="#0d131a" opacity="0.6"/>
+    <path d="M49 36h23l13 13v35H49V36Z" fill="none" stroke="#9fb4c9" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M72 36v14h13" fill="none" stroke="#9fb4c9" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M48 68 59 79 82 55" fill="none" stroke="#4fbf8b" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M38 93c7 8 16 14 26 19 10-5 19-11 26-19" fill="none" stroke="#C49A3D" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- brand mark tile -->
+  <g transform="translate(96 84) scale(1.172)">
+    <rect width="128" height="128" rx="28" fill="#F6F2E8"/>
+    <path d="M64 14 106 30v30c0 27-17 44-42 56-25-12-42-29-42-56V30l42-16Z" fill="#111513"/>
+    <path d="M64 25 94 36v24c0 19-11 33-30 43-19-10-30-24-30-43V36l30-11Z" fill="#F6F2E8"/>
+    <path d="M49 36h23l13 13v35H49V36Z" fill="#FFFFFF" stroke="#18324A" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M72 36v14h13" fill="none" stroke="#18324A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M48 68 59 79 82 55" fill="none" stroke="#24744F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M38 93c7 8 16 14 26 19 10-5 19-11 26-19" fill="none" stroke="#C49A3D" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <text x="278" y="150" fill="#F6F2E8" font-size="74" font-weight="800" letter-spacing="-1">PatchManager</text>
+  <text x="282" y="200" fill="#79D2A6" font-size="24" font-weight="700" letter-spacing="6">PATCH. VERIFY. PROVE IT.</text>
+
+  <!-- headline -->
+  <text x="96" y="352" fill="#F6F2E8" font-size="56" font-weight="800" letter-spacing="-0.5">Evidence-led Windows patching</text>
+  <text x="96" y="420" fill="#F6F2E8" font-size="56" font-weight="800" letter-spacing="-0.5">for personal devices &amp; whole estates.</text>
+
+  <!-- supporting line -->
+  <text x="98" y="480" fill="#C6D0DA" font-size="27" font-weight="500">One run covers Windows Update, WinGet, Microsoft Store, Microsoft 365, Chrome &amp; Edge.</text>
+
+  <!-- coverage chips -->
+  <g transform="translate(96 520)" font-size="21" font-weight="700">
+    <g><rect x="0" y="0" width="176" height="46" rx="10" fill="#18324A"/><text x="88" y="30" fill="#dbe6f2" text-anchor="middle">Auditable reports</text></g>
+    <g><rect x="192" y="0" width="150" height="46" rx="10" fill="#24744F"/><text x="267" y="30" fill="#eafaf1" text-anchor="middle">CISA KEV</text></g>
+    <g><rect x="358" y="0" width="182" height="46" rx="10" fill="#3a4652"/><text x="449" y="30" fill="#eef3f8" text-anchor="middle">Fleet dashboard</text></g>
+    <g><rect x="556" y="0" width="116" height="46" rx="10" fill="#3a4652"/><text x="614" y="30" fill="#eef3f8" text-anchor="middle">Personal</text></g>
+    <g><rect x="688" y="0" width="138" height="46" rx="10" fill="#3a4652"/><text x="757" y="30" fill="#eef3f8" text-anchor="middle">Commercial</text></g>
+  </g>
+
+  <!-- repo footer -->
+  <text x="96" y="612" fill="#7c8a99" font-size="20" font-family="'Cascadia Mono','Consolas',monospace">github.com/ciaranwhiteside/PatchManager</text>
+</svg>

@@ -17,6 +17,11 @@ the result with audit-ready reports.
   navigation, social previews, native prompts, and small lockups.
 - `patchmanager-wordmark.svg` is the preferred public README/header lockup.
 - `patchmanager-brand-board.svg` is the lightweight brand overview board.
+- `patchmanager-social.svg` is the 1280x640 social/OpenGraph card. Its rendered
+  raster, `patchmanager-social-preview.png`, is the file uploaded to GitHub's
+  social preview (Settings -> General -> Social preview) — the one place a raster
+  is required because GitHub does not accept SVG there. Regenerate the PNG from
+  the SVG rather than editing it directly.
 
 ## Palette
 
