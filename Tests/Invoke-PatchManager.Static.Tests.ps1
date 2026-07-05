@@ -107,6 +107,9 @@ Assert-True ($html -match "querySelectorAll\('tr\.data-row'\)") 'HTML report fil
 Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count should describe all report rows.'
 Assert-True ($html -match 'margin:44px 0 52px') 'HTML report content should leave breathing room below the hero.'
 Assert-True ($html -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'HTML report should stay offline with no CDN, remote font, image, or GSAP dependency.'
+Assert-True ($html -match '<noscript><style>\.reveal\{opacity:1') 'HTML report must stay readable when JavaScript is disabled.'
+Assert-True ($html -match '@media print\{[^@]*\.reveal\{opacity:1 !important') 'HTML report reveal sections must always print.'
+Assert-True ($html -match 'prefers-reduced-motion') 'HTML report should respect reduced-motion preferences.'
 
 $actionHtml = New-HTMLReport -Results $updatedRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{
     AvgDaysToApply = 'N/A'
@@ -399,6 +402,9 @@ Assert-True ($fleetScript -match 'data-profile=') 'Fleet report profile filter s
 Assert-True ($fleetScript -match 'data-sort="host"') 'Fleet report host table should keep sortable host columns.'
 Assert-True ($fleetScript -match '<th data-sort="invkev">Inv\. KEV</th>') 'Fleet report host table should keep the inventory KEV column.'
 Assert-True ($fleetScript -match 'https://github.com/ciaranwhiteside/PatchManager') 'Fleet report footer should link to the PatchManager repository.'
+Assert-True ($fleetScript -match '<noscript><style>\.reveal\{opacity:1') 'Fleet report must stay readable when JavaScript is disabled.'
+Assert-True ($fleetScript -match '\.reveal\{opacity:1 !important') 'Fleet report reveal sections must always print.'
+Assert-True ($fleetScript -match 'prefers-reduced-motion') 'Fleet report should respect reduced-motion preferences.'
 Assert-True ($fleetScript -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'Fleet report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.0.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.0.1 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Ring-based, network-aware patching for Windows, Microsoft 365, browsers,
@@ -95,7 +95,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.0.0'
+$script:VERSION       = '1.0.1'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -717,8 +717,8 @@ function Show-PatchManagerDialog {
         $evidenceLabel.Text = 'Evidence-led Windows patching'
         $evidenceLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
         $evidenceLabel.ForeColor = $brandMuted
-        $evidenceLabel.Location = New-Object System.Drawing.Point(26, 252)
-        $evidenceLabel.Size = New-Object System.Drawing.Size(240, 22)
+        $evidenceLabel.Location = New-Object System.Drawing.Point(26, 260)
+        $evidenceLabel.Size = New-Object System.Drawing.Size(200, 22)
         [void]$form.Controls.Add($evidenceLabel)
 
         $result = 'Secondary'
@@ -732,6 +732,7 @@ function Show-PatchManagerDialog {
         $primary.FlatAppearance.BorderSize = 0
         $primary.Add_Click({ $script:DialogResultValue = 'Primary'; $form.Close() })
         [void]$form.Controls.Add($primary)
+        $form.AcceptButton = $primary   # Enter activates the primary action
 
         if (-not [string]::IsNullOrWhiteSpace($SecondaryText)) {
             $secondary = New-Object System.Windows.Forms.Button
@@ -744,6 +745,7 @@ function Show-PatchManagerDialog {
             $secondary.FlatAppearance.BorderColor = $brandLine
             $secondary.Add_Click({ $script:DialogResultValue = 'Secondary'; $form.Close() })
             [void]$form.Controls.Add($secondary)
+            $form.CancelButton = $secondary   # Esc defers instead of being ignored
         }
 
         $script:DialogResultValue = $result
@@ -787,7 +789,9 @@ function Show-CompletionPopup {
     if (-not $script:CFG.UserExperience.CompletionPopup) { return }
     if ($DryRun -and -not $script:CFG.UserExperience.ShowOnDryRun) { return }
 
-    $message = "PatchManager finished this run and wrote the report evidence.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: $($script:Stats.UpdatesFailed)   Skipped: $($script:Stats.UpdatesSkipped)`r`n`r`nOpen the HTML report for the full details."
+    # Keep to two short paragraphs: the message label has a fixed height and
+    # ellipsizes anything longer, which reads as a broken dialog.
+    $message = "PatchManager finished this run and wrote the report evidence.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: $($script:Stats.UpdatesFailed)   Skipped: $($script:Stats.UpdatesSkipped)"
     $primaryText = if ($script:CFG.UserExperience.OpenReportPrompt) { 'Open report' } else { 'OK' }
     $secondaryText = if ($script:CFG.UserExperience.OpenReportPrompt) { 'Close' } else { '' }
     $choice = Show-PatchManagerDialog -Title 'PatchManager complete' `
@@ -3482,8 +3486,10 @@ function New-HTMLReport {
   .note{color:var(--muted);margin:0 0 14px;max-width:68ch;text-wrap:pretty}.danger-text{color:#842a25}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffaf0;box-shadow:inset 0 1px 0 rgba(255,255,255,.78)}.table-wrap.compact th,.table-wrap.compact td{padding:9px 10px}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.89rem}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#eee7d8;color:#4a453c;font-size:.73rem;font-weight:820;letter-spacing:0;white-space:nowrap;user-select:none;box-shadow:0 1px 0 var(--line)}th[data-sort]{cursor:pointer}th[data-sort]:after{content:" sort";color:#8f8678;font-weight:700;letter-spacing:0;margin-left:4px}tbody tr:last-child td{border-bottom:none}tbody tr{transition:transform .2s ease,filter .2s ease}tbody tr:hover td{background:#fffdf8}tbody tr:hover{transform:translateX(3px)}
   tr.ok td{background:linear-gradient(90deg,var(--green-bg),#fffaf0 34%)}tr.fail td{background:linear-gradient(90deg,var(--red-bg),#fffaf0 34%)}tr.planned td{background:linear-gradient(90deg,var(--steel-bg),#fffaf0 34%)}tr.skipped td,tr.breach td{background:linear-gradient(90deg,var(--amber-bg),#fffaf0 34%)}.status,.source-pill,.flag{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-size:.75rem;font-weight:820;white-space:nowrap}.status.ok{background:var(--green-bg);color:var(--green)}.status.fail{background:var(--red-bg);color:var(--red)}.status.planned{background:var(--steel-bg);color:var(--steel)}.status.skipped{background:var(--amber-bg);color:var(--amber)}.source-pill{background:#e9e1d1;color:#4f493f}.flag{margin-left:8px}.flag.danger{background:var(--red);color:#fff}.details{min-width:260px;max-width:620px;color:var(--muted);font-size:.82rem;line-height:1.35;white-space:normal}.details summary{cursor:pointer;font-weight:800;color:#4f493f}.details div{margin-top:6px}
   .mono{font-family:"Cascadia Mono","Consolas",monospace;font-size:.84rem}.nowrap{white-space:nowrap}.empty-state{border:1px dashed var(--line-strong);background:#fffaf0;border-radius:8px;padding:24px;max-width:780px}.empty-title{font-weight:820;margin-bottom:4px}.empty-state p{color:var(--muted);margin:0}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}.breakdown-grid{display:grid;grid-template-columns:1.12fr .94fr .94fr;gap:18px}.error-list{margin:0;padding-left:18px;color:#77221e}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.footer{margin-top:30px;padding:28px;border-radius:8px;background:#0d100f;color:#dce5df;display:flex;justify-content:space-between;gap:18px;align-items:center}.footer a{color:#fff;text-decoration-color:rgba(135,215,176,.65);text-underline-offset:3px}.footer a:hover{color:var(--accent)}
-  @media (max-width:1180px){.bento-board{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 3}.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.report-nav{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.hero-inner,.two-col{grid-template-columns:1fr}.hero-panel{max-width:620px}.report-lanes{display:grid;grid-template-columns:1fr 1fr}.lane:hover{flex:1;transform:none}}@media (max-width:620px){.report-nav,.hero,main{padding-left:18px;padding-right:18px}.toolbar,.meta-grid,.report-lanes{grid-template-columns:1fr}.bento-board{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 1;grid-row:auto}h1{font-size:clamp(2.45rem,14vw,3.4rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.report-nav,.hero:before,.hero-visual,.telemetry-strip,button,.skip-link{display:none}.hero{background:#fff;color:#000;min-height:auto;padding:18px 0;border-bottom:2px solid #000;box-shadow:none}.hero-summary,.meta-item span{color:#333}.bento-card,.meta-item,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.bento-board,.evidence-layout,.two-col,.breakdown-grid{display:block}.report-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}}
+  @media (max-width:1180px){.bento-board{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 3}.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.report-nav{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.hero-inner,.two-col{grid-template-columns:1fr}.hero-panel{max-width:620px}.report-lanes{display:grid;grid-template-columns:1fr 1fr}.lane:hover{flex:1;transform:none}}@media (max-width:620px){.report-nav,.hero,main{padding-left:18px;padding-right:18px}.toolbar,.meta-grid,.report-lanes{grid-template-columns:1fr}.bento-board{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 1;grid-row:auto}h1{font-size:clamp(2.45rem,14vw,3.4rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.report-nav,.hero:before,.hero-visual,.telemetry-strip,button,.skip-link{display:none}.hero{background:#fff;color:#000;min-height:auto;padding:18px 0;border-bottom:2px solid #000;box-shadow:none}.hero-summary,.meta-item span{color:#333}.bento-card,.meta-item,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.bento-board,.evidence-layout,.two-col,.breakdown-grid{display:block}.report-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
+  @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.reveal{opacity:1;transform:none;transition:none}}
 </style>
+<noscript><style>.reveal{opacity:1;transform:none}</style></noscript>
 </head>
 <body>
 <a class="skip-link" href="#updates">Skip to update table</a>
@@ -3767,6 +3773,14 @@ function Invoke-SelfUpdate {
         $backupPath = "$scriptPath.$((Get-Date).ToString('yyyyMMddHHmmss')).bak"
         Copy-Item -Path $scriptPath -Destination $backupPath -Force -EA Stop
         Copy-Item -Path $tempFile -Destination $scriptPath -Force -EA Stop
+
+        # Keep only the three most recent backups so updates don't accumulate
+        # stale copies of an elevated script indefinitely.
+        $scriptLeaf = Split-Path -Leaf $scriptPath
+        Get-ChildItem -Path $scriptDir -Filter "$scriptLeaf.*.bak" -File -EA SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -Skip 3 |
+            Remove-Item -Force -EA SilentlyContinue
         Write-Log "Self-update: applied $localVer -> $remoteVer. Backup: $backupPath. Takes effect on the next run." -Level SUCCESS
         Write-RunEvent -EventId 1030 -Type Information -Message "PatchManager self-updated on $($script:HOSTNAME): $localVer -> $remoteVer (effective next run)."
         $script:SelfUpdateStatus = "Applied ($localVer -> $remoteVer, effective next run)"
