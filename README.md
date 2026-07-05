@@ -29,8 +29,7 @@ SIEM-ready event logging.
 - [Feature overview](#feature-overview)
 - [What it updates](#what-it-updates)
 - [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [Personal machine setup](#personal-machine-setup)
+- [Get started](#get-started)
 - [Scheduled runs](#scheduled-runs)
 - [Configuration reference](#configuration-reference)
 - [Scope profiles: Personal vs Commercial](#scope-profiles-personal-vs-commercial)
@@ -114,29 +113,46 @@ What it deliberately does **not** do:
   module — when installed, upgrade discovery uses structured objects instead
   of parsing winget's text output (recommended on non-English systems)
 
-## Quick start
+## Get started
+
+Four commands in an **elevated PowerShell** (right-click Start → *Terminal
+(Admin)*):
 
 ```powershell
-# 1. Get the code
-git clone https://github.com/ciaranwhiteside/PatchManager.git
-cd PatchManager
+# 1. Get the code - straight into an admin-only-writable location
+git clone https://github.com/ciaranwhiteside/PatchManager.git C:\ProgramData\PatchManager
+cd C:\ProgramData\PatchManager
 
-# 2. Create your local config (optional - sensible defaults apply without it)
-Copy-Item .\PatchManager.config.example.json .\PatchManager.config.json
-notepad .\PatchManager.config.json
-
-# 3. See what would happen - no changes are made
+# 2. Preview - shows exactly what would be updated, changes nothing
 .\Invoke-PatchManager.ps1 -DryRun -Force
 
-# 4. Patch for real (bypassing the maintenance window with -Force)
+# 3. Patch for real
 .\Invoke-PatchManager.ps1 -Force
 
-# 5. Or just generate a compliance report without patching
-.\Invoke-PatchManager.ps1 -ReportOnly -Force
+# 4. Optional: keep it running automatically at startup/logon
+.\Invoke-PatchManager.ps1 -InstallStartupTask
 ```
 
-`-Force` only bypasses the **maintenance window** check — every other safety
-(pre-flight checks, dry-run semantics, restore point) still applies.
+That's it. Reports (HTML/JSON/CSV) land in
+`C:\ProgramData\PatchManager\Reports` — the completion popup offers to open
+the latest one for you.
+
+A few notes:
+
+- **No git?** Download the [latest release
+  ZIP](https://github.com/ciaranwhiteside/PatchManager/releases/latest),
+  extract it, and put the contents at `C:\ProgramData\PatchManager` (so the
+  script is `C:\ProgramData\PatchManager\Invoke-PatchManager.ps1`), then run
+  `Unblock-File C:\ProgramData\PatchManager\*.ps1` once before step 2.
+- **Configuration is optional.** The defaults suit a personal machine. To
+  customise (maintenance window, exclusions, central reporting), copy
+  `PatchManager.config.example.json` to `PatchManager.config.json` and edit —
+  see the [configuration reference](#configuration-reference).
+- **`-Force` only bypasses the maintenance-window wait** so your manual run
+  starts immediately — every other safety (pre-flight checks, dry-run
+  semantics, restore point) still applies.
+- **Just want a report?** `.\Invoke-PatchManager.ps1 -ReportOnly -Force`
+  audits without patching.
 
 ### Parameters
 
@@ -151,74 +167,24 @@ notepad .\PatchManager.config.json
 | `-UninstallStartupTask` | Remove that scheduled task. |
 | `-TaskName <name>` / `-TaskDelayMinutes <n>` | Customise the scheduled task. |
 
-## Personal machine setup
-
-Use an elevated PowerShell window for these steps. Stage the script somewhere
-admin-only-writable before creating the scheduled task; `C:\ProgramData` is a
-good default for a personal Windows 10/11 machine.
-
-```powershell
-# From the folder where you cloned or extracted PatchManager
-$installDir = 'C:\ProgramData\PatchManager'
-New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-
-Copy-Item .\Invoke-PatchManager.ps1, .\PatchManager.config.example.json -Destination $installDir -Force
-Copy-Item "$installDir\PatchManager.config.example.json" "$installDir\PatchManager.config.json" -Force
-
-# If the script came from a browser download or zip, unblock it once.
-Unblock-File "$installDir\Invoke-PatchManager.ps1" -ErrorAction SilentlyContinue
-
-# Optional: review the config. The defaults are already suitable for Personal.
-notepad "$installDir\PatchManager.config.json"
-
-# First run: see what would happen without changing installed software.
-& "$installDir\Invoke-PatchManager.ps1" -DryRun -Force
-
-# Second run: patch for real when you are ready.
-& "$installDir\Invoke-PatchManager.ps1" -Force
-
-# Install the startup/logon task so PatchManager keeps checking automatically.
-& "$installDir\Invoke-PatchManager.ps1" -InstallStartupTask -TaskName 'PatchManager Personal' -TaskDelayMinutes 2
-```
-
-Reports land in `C:\ProgramData\PatchManager\Reports`. To open the latest HTML
-report:
-
-```powershell
-Get-ChildItem 'C:\ProgramData\PatchManager\Reports\PatchReport_*.html' |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1 |
-    Invoke-Item
-```
-
-For a personal device, leave `ScopeProfile` as `"Personal"`. Consider enabling
-`PreFlight.RequireUserIdle` if you do not want scheduled runs to patch while
-you are actively using the machine.
-
 ## Scheduled runs
 
-For a personal device, install the built-in startup/logon task from an
-elevated prompt:
+`-InstallStartupTask` (step 4 above) registers a scheduled task that runs
+PatchManager elevated a couple of minutes after every startup and logon. It
+respects the maintenance window and pre-flight checks, and never overlaps
+itself thanks to the single-instance mutex. Enable
+`PreFlight.RequireUserIdle` in the config if you don't want it patching while
+you're actively using the machine.
 
-```powershell
-.\Invoke-PatchManager.ps1 -InstallStartupTask -TaskName 'PatchManager Personal' -TaskDelayMinutes 2
-```
-
-The task runs elevated with a startup trigger and a logon trigger, respects
-the maintenance window and pre-flight checks (enable
-`PreFlight.RequireUserIdle` if you don't want it patching while you type), and
-never overlaps itself thanks to the single-instance mutex.
-
-> **Place the script somewhere admin-only-writable first** (e.g.
-> `C:\ProgramData\PatchManager\`). The task runs elevated with
-> `-ExecutionPolicy Bypass`; if the script sits in your user profile, anything
-> running as your user could swap the file and gain admin at next logon. The
-> installer warns you if the path looks wrong.
+> **Why `C:\ProgramData\PatchManager`?** The task runs elevated with
+> `-ExecutionPolicy Bypass`. If the script sat somewhere your user account can
+> write to, anything running as you could swap the file and gain admin at next
+> logon. The installer warns if the path looks user-writable.
 
 To remove the task:
 
 ```powershell
-.\Invoke-PatchManager.ps1 -UninstallStartupTask -TaskName 'PatchManager Personal'
+.\Invoke-PatchManager.ps1 -UninstallStartupTask
 ```
 
 ## Configuration reference
