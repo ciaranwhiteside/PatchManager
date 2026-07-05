@@ -562,9 +562,14 @@ function Set-ContentAtomic {
 #region --- User Experience / Scheduling ------------------------------------
 
 function Test-InteractiveSession {
+    # Decides whether dialogs may be shown. Deliberately does NOT rely on
+    # $env:SESSIONNAME: Task Scheduler processes never receive it, even when
+    # running in a fully interactive user session, which would wrongly suppress
+    # the completion popup on every scheduled run. Session 0 (services/SYSTEM)
+    # is where dialogs must stay off; interactive users are session 1+.
     try {
         if (-not [Environment]::UserInteractive) { return $false }
-        if ([string]::IsNullOrWhiteSpace($env:SESSIONNAME)) { return $false }
+        if ((Get-Process -Id $PID).SessionId -le 0) { return $false }
         return $true
     } catch { return $false }
 }
@@ -862,7 +867,11 @@ function Install-PatchManagerStartupTask {
     # Trigger delays must be ISO 8601 duration strings (PT2M); assigning a
     # TimeSpan serialises as 00:02:00, which the Task Scheduler rejects.
     $delayIso = 'PT{0}M' -f [Math]::Max(0, $DelayMinutes)
-    $actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -Force"
+    # -WindowStyle Hidden keeps scheduled runs in the background instead of
+    # parking a console on the user's screen. (Windows may still flash the
+    # window for a moment at launch - a PowerShell limitation.) Completion
+    # popups still appear; they are separate WinForms windows.
+    $actionArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Force"
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
     $startupTrigger = New-ScheduledTaskTrigger -AtStartup
     $startupTrigger.Delay = $delayIso
