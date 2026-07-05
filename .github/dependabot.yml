@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Keep GitHub Actions (actions/checkout etc.) current automatically.
+  # PatchManager itself has no package dependencies - it is a single
+  # PowerShell script - so this is the only ecosystem to watch.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

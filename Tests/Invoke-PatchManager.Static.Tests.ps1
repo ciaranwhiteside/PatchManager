@@ -376,6 +376,7 @@ $publicFiles = @(
     'README.md'
     'SECURITY.md'
     'CHANGELOG.md'
+    'CODE_OF_CONDUCT.md'
     'CONTRIBUTING.md'
     'docs/brand/BRAND.md'
     'docs/brand/patchmanager-mark.svg'
