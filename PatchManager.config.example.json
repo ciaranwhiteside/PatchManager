@@ -28,7 +28,8 @@
       "Saturday",
       "Sunday"
     ],
-    "JitterMaxMinutes": 30
+    "_comment_jitter": "JitterMaxMinutes: null = decide by profile (Personal 0, Commercial 120). Jitter staggers fleet-wide runs; a single personal device does not need it.",
+    "JitterMaxMinutes": null
   },
 
   "Network": {

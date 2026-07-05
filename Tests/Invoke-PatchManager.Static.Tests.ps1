@@ -180,6 +180,7 @@ function New-TestDefaultCfg {
     [ordered]@{
         ScopeProfile = 'Personal'
         Descope = [ordered]@{ PackageIds = @(); PackageNamePatterns = @(); Providers = @(); Sources = @(); Reasons = [ordered]@{} }
+        MaintenanceWindow = [ordered]@{ Enabled = $true; JitterMaxMinutes = $null }
         Network = [ordered]@{ BITSThrottleEnabled = $null; BITSMaxBandwidthKbps = 4096 }
         WindowsUpdate = [ordered]@{ Enabled = $true }
         Microsoft365 = [ordered]@{ Enabled = $true }
@@ -207,11 +208,13 @@ try {
     Assert-True (-not $mergedCfg.Network.Contains('_comment')) 'Config merge: section-level _comment keys should be skipped.'
     Assert-True (-not $mergedCfg.Contains('UnknownSection')) 'Config merge: unknown sections should be ignored.'
     Assert-True ($mergedCfg.Network.BITSThrottleEnabled -eq $false) 'Personal profile should resolve BITSThrottleEnabled to false.'
+    Assert-True ($mergedCfg.MaintenanceWindow.JitterMaxMinutes -eq 0) 'Personal profile should resolve JitterMaxMinutes to 0 - a single device should not delay itself.'
 
     $script:DefaultCfg = New-TestDefaultCfg
     $script:DefaultCfg.ScopeProfile = 'Commercial'
     $commercialCfg = Import-Configuration -Path 'nonexistent-config.json'
     Assert-True ($commercialCfg.Network.BITSThrottleEnabled -eq $true) 'Commercial profile should resolve BITSThrottleEnabled to true.'
+    Assert-True ($commercialCfg.MaintenanceWindow.JitterMaxMinutes -eq 120) 'Commercial profile should resolve JitterMaxMinutes to 120 for fleet staggering.'
     Assert-True ($commercialCfg.WindowsUpdate.Enabled -eq $false) 'Commercial profile should disable Windows Update provider.'
     Assert-True ('Google.Chrome' -in $commercialCfg.Descope.PackageIds) 'Commercial profile should descope Chrome.'
 } finally {
