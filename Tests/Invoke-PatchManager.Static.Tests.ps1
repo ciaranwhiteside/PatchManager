@@ -358,6 +358,16 @@ Assert-True (-not (Test-SelfUpdateSource -Repository 'https://github.com/owner/r
 Assert-True (-not (Test-SelfUpdateSource -Repository 'owner/repo' -Ref '../main')) 'Self-update: ref traversal should be rejected.'
 Assert-True (-not (Test-SelfUpdateSource -Repository 'owner/repo' -Ref 'main?raw=1')) 'Self-update: refs with URL metacharacters should be rejected.'
 
+#-- Scheduled-run UX regressions -----------------------------------------------------
+# Live-session assertions would be flaky on session-0 CI runners, so assert on
+# the function/task-builder source instead.
+$interactiveFnText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-InteractiveSession'
+Assert-True ($interactiveFnText -notmatch 'SESSIONNAME') 'Test-InteractiveSession must not depend on SESSIONNAME - Task Scheduler never sets it, which suppressed all popups on scheduled runs.'
+Assert-True ($interactiveFnText -match 'SessionId') 'Test-InteractiveSession should gate on the process session id (session 0 = services).'
+
+$taskInstallText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Install-PatchManagerStartupTask'
+Assert-True ($taskInstallText -match '-WindowStyle Hidden') 'The startup task must run PowerShell hidden so scheduled runs stay in the background.'
+
 #-- Public file hygiene ---------------------------------------------------------------
 $publicFiles = @(
     'Invoke-PatchManager.ps1'

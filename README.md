@@ -211,6 +211,9 @@ PatchManager elevated a couple of minutes after every startup and logon.
 
 How the task behaves:
 
+- **It runs silently in the background** — no console window on your screen
+  (Windows may flash one briefly at launch). When a run finishes, the
+  completion popup still appears with the one-click *Open report* button.
 - **It patches right away rather than waiting for the maintenance window.**
   The task runs with `-Force` deliberately: a personal machine that's asleep
   overnight would otherwise never reach a 22:00–06:00 window. All other
