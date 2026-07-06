@@ -454,20 +454,32 @@ the HTML report directly.
 
 ### `SelfUpdate`
 
-Self-update is **off by default**. When enabled, PatchManager checks the
-configured GitHub repository for a newer `Invoke-PatchManager.ps1`, validates
-that the downloaded script parses as PowerShell, optionally verifies a pinned
-SHA256 hash, backs up the current script, and installs the new copy for the
-next run. It is skipped when running from a git clone; use `git pull` there.
+A stale patch tool is a liability, so self-update is **on by default for
+Personal and Commercial** and **off for CommercialManaged** (a managed estate's
+platform should own how PatchManager is deployed). By default it tracks the
+newest **published GitHub release** — never a moving branch, never a
+pre-release — so only cut, reviewed releases ship. It checks the release for a
+newer `Invoke-PatchManager.ps1`, refuses anything that isn't a strictly newer
+version, validates that the download parses as PowerShell, optionally verifies
+a pinned SHA256, backs up the current script, and installs the new copy **for
+the next run** (it never executes freshly downloaded code inline). Skipped when
+running from a git clone (use `git pull`) and in dry-run/report-only.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Enabled` | `false` | Enable self-update checks. Leave off unless the script is staged in an admin-only-writable location. |
+| `Enabled` | `null` → profile | `null` resolves by profile: Personal/Commercial **on**, CommercialManaged **off**. An explicit `true`/`false` always wins. Keep the script in an admin-only-writable directory when enabled. |
 | `Repository` | `"ciaranwhiteside/PatchManager"` | GitHub `owner/repo` to fetch from. URL values are rejected. |
-| `Ref` | `"main"` | Branch or tag to read from. Path traversal and URL metacharacters are rejected. |
+| `Ref` | `"latest"` | `latest` = newest published release tag (recommended). Pin a specific tag to freeze, or use `"main"` to track the branch. Path traversal and URL metacharacters are rejected. |
 | `AutoApply` | `true` | `true` installs a validated newer script; `false` only reports that an update is available. |
 | `ExpectedSha256` | `""` | Optional exact SHA256 hash pin for locked-down deployments. |
-| `TimeoutSec` | `30` | Download timeout. A self-update failure never fails the patch run. |
+| `TimeoutSec` | `30` | Per-request timeout. A self-update failure never fails the patch run. |
+
+> **Supply-chain note.** Enabling self-update means trusting the configured
+> repository's release process to run code as administrator — the same trust as
+> installing PatchManager in the first place. It only ever installs published,
+> version-newer, parse-valid releases. For maximum control, pin `ExpectedSha256`
+> or a specific `Ref`, set `AutoApply: false` to review first, or disable it and
+> deploy via your own tooling.
 
 ### `State`, `PreFlight`, `SystemRestore`, `CISAKEV`
 

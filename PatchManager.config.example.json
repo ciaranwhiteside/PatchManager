@@ -163,10 +163,10 @@
   },
 
   "SelfUpdate": {
-    "_comment": "Keep PatchManager itself current from GitHub. Opt-in: it replaces an elevated script from the internet. Downloads are version-gated and parse-validated; set ExpectedSha256 to pin an exact file hash. Skipped for git clones (use git pull). AutoApply=false reports updates without changing the script.",
-    "Enabled": false,
+    "_comment": "Keep PatchManager itself current from GitHub. Enabled: null = decide by profile (Personal and Commercial on, CommercialManaged off - a managed estate's platform should own how PatchManager is deployed). Ref 'latest' tracks the newest PUBLISHED release tag only (never a moving branch, never a pre-release); pin a specific tag, or use 'main' to track the branch. Downloads are version-gated and parse-validated; set ExpectedSha256 to lock an exact build. Skipped for git clones (use git pull). AutoApply=false reports updates without changing the script. A new script is never executed in the run that fetched it.",
+    "Enabled": null,
     "Repository": "ciaranwhiteside/PatchManager",
-    "Ref": "main",
+    "Ref": "latest",
     "AutoApply": true,
     "ExpectedSha256": "",
     "TimeoutSec": 30

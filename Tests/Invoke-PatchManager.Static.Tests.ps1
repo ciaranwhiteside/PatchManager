@@ -202,6 +202,7 @@ function New-TestDefaultCfg {
         Browsers = [ordered]@{ Enabled = $true; ChromeEnabled = $true; EdgeEnabled = $true }
         PackageManagers = [ordered]@{ ChocolateyEnabled = $null; ScoopEnabled = $true }
         VendorUpdaters = [ordered]@{ Enabled = $true }
+        SelfUpdate = [ordered]@{ Enabled = $null; Ref = 'latest' }
         SLA = [ordered]@{ Critical = 14 }
     }
 }
@@ -241,6 +242,7 @@ try {
     Assert-True ($commercialCfg.VendorUpdaters.Enabled -eq $true) 'Commercial profile must keep native vendor updaters enabled.'
     Assert-True ($commercialCfg.PackageManagers.ScoopEnabled -eq $true) 'Commercial profile must keep Scoop enabled.'
     Assert-True ($commercialCfg.PackageManagers.ChocolateyEnabled -eq $false) 'Commercial profile must leave Chocolatey off by default - enabling it is an explicit licence decision.'
+    Assert-True ($commercialCfg.SelfUpdate.Enabled -eq $true) 'Commercial profile should resolve self-update to on (no management platform owns the tool).'
 
     # CommercialManaged = the explicit "our platform owns OS/Office/browsers" posture.
     $script:DefaultCfg = New-TestDefaultCfg
@@ -255,11 +257,19 @@ try {
     Assert-True ($managedCfg.VendorUpdaters.Enabled -eq $false) 'CommercialManaged profile should disable native vendor updaters.'
     Assert-True ($managedCfg.PackageManagers.ScoopEnabled -eq $false) 'CommercialManaged profile should disable Scoop.'
     Assert-True ($managedCfg.PackageManagers.ChocolateyEnabled -eq $false) 'CommercialManaged profile should leave Chocolatey off.'
+    Assert-True ($managedCfg.SelfUpdate.Enabled -eq $false) 'CommercialManaged profile should resolve self-update to off (the platform owns deployment).'
 
     # Personal resolves the licensing-gated Chocolatey default to on (free use).
     $script:DefaultCfg = New-TestDefaultCfg
     $personalCfg = Import-Configuration -Path 'nonexistent-config.json'
     Assert-True ($personalCfg.PackageManagers.ChocolateyEnabled -eq $true) 'Personal profile should resolve Chocolatey to on (the CLI is free for personal use).'
+    Assert-True ($personalCfg.SelfUpdate.Enabled -eq $true) 'Personal profile should resolve self-update to on by default.'
+
+    # An explicit SelfUpdate.Enabled value must override the profile default.
+    $script:DefaultCfg = New-TestDefaultCfg
+    $script:DefaultCfg.SelfUpdate.Enabled = $false
+    $explicitSu = Import-Configuration -Path 'nonexistent-config.json'
+    Assert-True ($explicitSu.SelfUpdate.Enabled -eq $false) 'An explicit SelfUpdate.Enabled=false must win over the profile default.'
 
     # An explicit Chocolatey value in config must override the profile default.
     $script:DefaultCfg = New-TestDefaultCfg
@@ -484,6 +494,16 @@ Assert-True (Test-SelfUpdateSource -Repository 'owner-name/repo.name' -Ref 'rele
 Assert-True (-not (Test-SelfUpdateSource -Repository 'https://github.com/owner/repo' -Ref 'main')) 'Self-update: repository must be owner/name, not a URL.'
 Assert-True (-not (Test-SelfUpdateSource -Repository 'owner/repo' -Ref '../main')) 'Self-update: ref traversal should be rejected.'
 Assert-True (-not (Test-SelfUpdateSource -Repository 'owner/repo' -Ref 'main?raw=1')) 'Self-update: refs with URL metacharacters should be rejected.'
+Assert-True (Test-SelfUpdateSource -Repository 'ciaranwhiteside/PatchManager' -Ref 'latest') 'Self-update: the default "latest" ref should validate.'
+Assert-True (Test-SelfUpdateSource -Repository 'ciaranwhiteside/PatchManager' -Ref 'v1.2.0') 'Self-update: a resolved release tag should validate.'
+
+# Latest-release tag extraction + ref resolution.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-LatestReleaseTagFromJson')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-SelfUpdateRef')
+Assert-True ((Get-LatestReleaseTagFromJson -Json '{"tag_name":"v1.2.0","name":"x"}') -eq 'v1.2.0') 'Self-update: tag_name should be extracted from the releases API JSON.'
+Assert-True ($null -eq (Get-LatestReleaseTagFromJson -Json '{"name":"no tag"}')) 'Self-update: missing tag_name should yield null.'
+Assert-True ($null -eq (Get-LatestReleaseTagFromJson -Json 'not json')) 'Self-update: malformed JSON should yield null, not throw.'
+Assert-True ((Resolve-SelfUpdateRef -Repository 'owner/repo' -Ref 'v9.9.9' -TimeoutSec 5) -eq 'v9.9.9') 'Self-update: a non-latest ref must pass through without a network call.'
 
 #-- Scheduled-run UX regressions -----------------------------------------------------
 # Live-session assertions would be flaky on session-0 CI runners, so assert on

@@ -25,6 +25,13 @@ All notable changes to PatchManager are documented here. The format follows
   patches, and excluded from applied/failed counts.
 
 ### Changed
+- **Self-update is now on by default for Personal and Commercial** (off for
+  CommercialManaged) and tracks the **latest published GitHub release** rather
+  than the `main` branch — only cut, non-pre-release builds ship, and downloads
+  remain version-gated and parse-validated. A stale patch tool is a liability;
+  this keeps the fix-delivery current while never auto-shipping unreviewed
+  commits. Pin `ExpectedSha256`/`Ref`, set `AutoApply: false`, or disable it for
+  stricter control.
 - Scope profiles extended: the new patching providers are on for Personal and
   Commercial and off under `CommercialManaged` (which now also defers Scoop and
   vendor updaters to the management platform). The staleness scanner stays on

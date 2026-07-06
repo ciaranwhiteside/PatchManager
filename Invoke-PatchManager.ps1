@@ -323,11 +323,18 @@ $script:DefaultCfg = [ordered]@{
     }
 
     SelfUpdate = [ordered]@{
-        # Keep PatchManager itself current from GitHub. Off by default: this
-        # replaces an elevated script from the internet, so it is opt-in.
-        Enabled        = $false
+        # Keep PatchManager itself current from GitHub - a stale patch tool is a
+        # liability. $null = decide by profile: Personal and Commercial on,
+        # CommercialManaged off (a managed estate's platform should own how
+        # PatchManager is deployed, not self-update from the internet).
+        # Ref 'latest' tracks the latest PUBLISHED release tag (never a moving
+        # branch and never a pre-release), so only cut releases ship. Set Ref to
+        # a specific tag to pin, or to 'main' to track the branch. Downloads are
+        # version-gated and parse-validated; pin ExpectedSha256 to lock an exact
+        # build. A new script is never executed in the run that fetched it.
+        Enabled        = $null
         Repository     = 'ciaranwhiteside/PatchManager'
-        Ref            = 'main'
+        Ref            = 'latest'
         AutoApply      = $true    # $false = only report that an update exists
         ExpectedSha256 = ''       # Pin the expected file hash for locked-down estates
         TimeoutSec     = 30
@@ -477,6 +484,12 @@ function Set-ScopeProfileDefaults {
     $pkgMgr = Get-ObjectPropertyValue $Config 'PackageManagers' $null
     if ($null -ne $pkgMgr -and $null -eq (Get-ObjectPropertyValue $pkgMgr 'ChocolateyEnabled' $null)) {
         $Config.PackageManagers.ChocolateyEnabled = (-not $isFleet)
+    }
+    # Self-update: on for Personal and Commercial, off for CommercialManaged
+    # (a managed estate's platform should own PatchManager's deployment).
+    $su = Get-ObjectPropertyValue $Config 'SelfUpdate' $null
+    if ($null -ne $su -and $null -eq (Get-ObjectPropertyValue $su 'Enabled' $null)) {
+        $Config.SelfUpdate.Enabled = ($scopeProfile -ine 'CommercialManaged')
     }
 }
 
@@ -4342,11 +4355,42 @@ function Test-SelfUpdateSource {
     return $true
 }
 
+function Get-LatestReleaseTagFromJson {
+    # Extracts tag_name from a GitHub releases/latest API response. Standalone
+    # and side-effect-free for unit testing.
+    param([string]$Json)
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
+    try {
+        $tag = [string]($Json | ConvertFrom-Json).tag_name
+        if ([string]::IsNullOrWhiteSpace($tag)) { return $null }
+        return $tag
+    } catch { return $null }
+}
+
+function Resolve-SelfUpdateRef {
+    # 'latest' resolves to the newest PUBLISHED release tag (the API excludes
+    # drafts and pre-releases). Any other value is used verbatim (pin a tag, or
+    # 'main' to track the branch). Returns $null on failure so the caller skips.
+    param([string]$Repository, [string]$Ref, [int]$TimeoutSec)
+    if ($Ref -ne 'latest') { return $Ref }
+    $api = "https://api.github.com/repos/$Repository/releases/latest"
+    try {
+        $resp = Invoke-WebRequest -Uri $api -UseBasicParsing -TimeoutSec $TimeoutSec `
+                    -Headers @{ 'User-Agent' = 'PatchManager-SelfUpdate'; 'Accept' = 'application/vnd.github+json' } -EA Stop
+        return (Get-LatestReleaseTagFromJson -Json ([string]$resp.Content))
+    } catch {
+        Write-Log "Self-update: could not resolve the latest release tag: $_" -Level WARN
+        return $null
+    }
+}
+
 function Invoke-SelfUpdate {
-    # Optionally refresh PatchManager itself from GitHub. Security posture:
-    #   - Opt-in (Enabled=false by default).
+    # Refresh PatchManager itself from GitHub. Security posture:
+    #   - On for Personal/Commercial, off for CommercialManaged (resolved by profile).
+    #   - Tracks PUBLISHED releases by default (Ref 'latest'): a moving branch or a
+    #     momentary bad commit never auto-ships; drafts/pre-releases are excluded.
     #   - HTTPS only (TLS 1.2 enforced at startup) to a validated GitHub repo/ref.
-    #   - Version-gated: only a strictly newer [version] is considered.
+    #   - Version-gated: only a strictly newer [version] is considered (no downgrades).
     #   - The download is PARSE-VALIDATED before it is installed, and its hash is
     #     checked against ExpectedSha256 when that is pinned.
     #   - The current on-disk script is backed up to a timestamped .bak; the new version is
@@ -4381,11 +4425,19 @@ function Invoke-SelfUpdate {
         return
     }
 
-    $rawUrl  = "https://raw.githubusercontent.com/$repo/$ref/Invoke-PatchManager.ps1"
+    # Resolve 'latest' to the newest published release tag (published releases only).
+    $resolvedRef = Resolve-SelfUpdateRef -Repository $repo -Ref $ref -TimeoutSec $timeout
+    if ([string]::IsNullOrWhiteSpace($resolvedRef) -or -not (Test-SelfUpdateSource -Repository $repo -Ref $resolvedRef)) {
+        Write-Log "Self-update: could not resolve a valid release ref from '$ref'; skipping." -Level WARN
+        $script:SelfUpdateStatus = 'Skipped (no release found)'
+        return
+    }
+
+    $rawUrl  = "https://raw.githubusercontent.com/$repo/$resolvedRef/Invoke-PatchManager.ps1"
 
     $tempFile = Join-Path $scriptDir ".PatchManager.selfupdate.$([guid]::NewGuid().ToString('N')).tmp"
     try {
-        Write-Log "Self-update: checking $repo@$ref for a newer version..." -Level INFO
+        Write-Log "Self-update: checking $repo@$resolvedRef for a newer version..." -Level INFO
         Invoke-WebRequest -Uri $rawUrl -OutFile $tempFile -UseBasicParsing -TimeoutSec $timeout -EA Stop
 
         $remoteContent = Get-Content $tempFile -Raw
