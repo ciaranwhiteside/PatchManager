@@ -125,6 +125,7 @@ $script:BITSPolicyBackup = $null
 $script:BITSPolicyApplied = $false
 $script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
+$script:StalenessFindings = @()
 $script:SelfUpdateStatus = 'Not checked'
 
 $script:Stats = [ordered]@{
@@ -264,6 +265,18 @@ $script:DefaultCfg = [ordered]@{
         UseCimFallback   = $true
         CaptureAppxDiff  = $true
         PostUpdateSettleSeconds = 20
+    }
+
+    StalenessReport = [ordered]@{
+        # Report-only exposure checks. Never patches anything - findings appear
+        # in their own report section so they never affect applied/failed counts.
+        # On for all profiles (evidence and safety net, like the inventory KEV scan).
+        Enabled                 = $true
+        DefenderSignatures      = $true
+        DefenderMaxAgeDays      = 7
+        FeatureUpdateLag        = $true
+        FeatureUpdateMaxAgeDays = 365
+        DevRuntimes             = $true
     }
 
     SLA = [ordered]@{
@@ -2895,6 +2908,110 @@ function Invoke-VendorUpdaterProvider {
 
 #endregion
 
+#region -- Staleness Report (report-only) ---------------------------------------------
+
+function New-StalenessFinding {
+    # Shape for a report-only exposure finding. Severity 'review' = needs
+    # attention; 'info' = evidence only (e.g. installed runtime versions).
+    param(
+        [string]$Category,
+        [string]$Item,
+        [string]$Detail,
+        [ValidateSet('review', 'info')] [string]$Severity = 'info',
+        [string]$Recommendation = ''
+    )
+    return [PSCustomObject]@{
+        Category       = $Category
+        Item           = $Item
+        Detail         = $Detail
+        Severity       = $Severity
+        Recommendation = $Recommendation
+        Timestamp      = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    }
+}
+
+function Test-IsStale {
+    # True when $LastUpdated is older than $MaxAgeDays. Null/unknown date is not
+    # treated as stale (we cannot prove staleness without a date).
+    param([datetime]$LastUpdated, [int]$MaxAgeDays)
+    if ($null -eq $LastUpdated -or $LastUpdated -eq [datetime]::MinValue) { return $false }
+    return ((Get-Date) - $LastUpdated).TotalDays -gt $MaxAgeDays
+}
+
+function Invoke-StalenessReport {
+    # Report-only. Returns an array of findings; NEVER patches. Findings are
+    # surfaced in their own report section and excluded from applied/failed counts.
+    $cfg = Get-ObjectPropertyValue $script:CFG 'StalenessReport' $null
+    if ($null -eq $cfg -or -not [bool](Get-ObjectPropertyValue $cfg 'Enabled' $false)) { return @() }
+
+    $findings = [System.Collections.Generic.List[pscustomobject]]::new()
+
+    # --- Microsoft Defender signature age ---
+    if ([bool](Get-ObjectPropertyValue $cfg 'DefenderSignatures' $true)) {
+        try {
+            $mp = Get-MpComputerStatus -EA Stop
+            $maxAge = [int](Get-ObjectPropertyValue $cfg 'DefenderMaxAgeDays' 7)
+            $lastUpdated = [datetime]$mp.AntivirusSignatureLastUpdated
+            $ageDays = [Math]::Round(((Get-Date) - $lastUpdated).TotalDays, 1)
+            if (Test-IsStale -LastUpdated $lastUpdated -MaxAgeDays $maxAge) {
+                $findings.Add((New-StalenessFinding -Category 'Antivirus definitions' -Item 'Microsoft Defender' -Detail "Signatures last updated $($lastUpdated.ToString('yyyy-MM-dd HH:mm')) (${ageDays} days ago), older than the ${maxAge}-day threshold." -Severity 'review' -Recommendation 'Run Update-MpSignature or check the Defender update channel.'))
+            } else {
+                $findings.Add((New-StalenessFinding -Category 'Antivirus definitions' -Item 'Microsoft Defender' -Detail "Signatures current (updated ${ageDays} days ago)." -Severity 'info'))
+            }
+        } catch {
+            Write-Log "Staleness: Defender status unavailable: $_" -Level DEBUG
+        }
+    }
+
+    # --- Windows feature-update lag ---
+    if ([bool](Get-ObjectPropertyValue $cfg 'FeatureUpdateLag' $true)) {
+        try {
+            $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -EA Stop
+            $display = [string](Get-ObjectPropertyValue $cv 'DisplayVersion' (Get-ObjectPropertyValue $cv 'ReleaseId' ''))
+            $build = "$([string]$cv.CurrentBuild).$([string](Get-ObjectPropertyValue $cv 'UBR' '0'))"
+            $installEpoch = [int64](Get-ObjectPropertyValue $cv 'InstallDate' 0)
+            $maxAge = [int](Get-ObjectPropertyValue $cfg 'FeatureUpdateMaxAgeDays' 365)
+            if ($installEpoch -gt 0) {
+                $installed = [System.DateTimeOffset]::FromUnixTimeSeconds($installEpoch).LocalDateTime
+                $ageDays = [Math]::Round(((Get-Date) - $installed).TotalDays, 0)
+                if (Test-IsStale -LastUpdated $installed -MaxAgeDays $maxAge) {
+                    $findings.Add((New-StalenessFinding -Category 'Windows feature version' -Item "Windows $display (build $build)" -Detail "This feature update was installed ${ageDays} days ago, past the ${maxAge}-day threshold. A newer Windows feature version may be available." -Severity 'review' -Recommendation 'Review Windows feature-update eligibility; PatchManager does not apply feature updates automatically.'))
+                } else {
+                    $findings.Add((New-StalenessFinding -Category 'Windows feature version' -Item "Windows $display (build $build)" -Detail "Feature version installed ${ageDays} days ago." -Severity 'info'))
+                }
+            }
+        } catch {
+            Write-Log "Staleness: Windows version info unavailable: $_" -Level DEBUG
+        }
+    }
+
+    # --- Dev runtime inventory (informational; no network 'latest' claim) ---
+    if ([bool](Get-ObjectPropertyValue $cfg 'DevRuntimes' $true)) {
+        $runtimes = @(
+            @{ Item = '.NET SDK'; Exe = 'dotnet'; Args = @('--version') }
+            @{ Item = 'Python';   Exe = 'python'; Args = @('--version') }
+            @{ Item = 'Node.js';  Exe = 'node';   Args = @('--version') }
+        )
+        foreach ($rt in $runtimes) {
+            $cmd = Get-Command $rt.Exe -EA SilentlyContinue
+            if (-not $cmd) { continue }
+            try {
+                $res = Invoke-CapturedProcess -FilePath $cmd.Source -Arguments $rt.Args -TimeoutSeconds 30
+                $ver = (([string]$res.Output -replace '\s+', ' ').Trim())
+                if ($ver) {
+                    $findings.Add((New-StalenessFinding -Category 'Developer runtime' -Item $rt.Item -Detail "Installed: $ver. Verify against the vendor's supported-version lifecycle." -Severity 'info'))
+                }
+            } catch { }
+        }
+    }
+
+    $reviewCount = @($findings | Where-Object { $_.Severity -eq 'review' }).Count
+    Write-Log "Staleness report: $($findings.Count) finding(s), $reviewCount need review." -Level $(if ($reviewCount -gt 0) { 'WARN' } else { 'INFO' })
+    return @($findings)
+}
+
+#endregion
+
 #region -- Microsoft Store Client -----------------------------------------------------
 
 function Resolve-StoreCliPath {
@@ -3556,6 +3673,7 @@ function New-ComplianceReport {
             Updates     = $Results
             KEVMatches  = $KEVMatches
             InventoryKEVMatches = @($script:InventoryKEVMatches)
+            StalenessFindings = @($script:StalenessFindings)
             SLABreaches = $SLABreaches
         } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8
         Write-Log "JSON report: $jsonPath" -Level INFO
@@ -3573,6 +3691,17 @@ function New-ComplianceReport {
         } catch {
             Write-Log "CSV report generation failed: $_" -Level WARN
         }
+        if (@($script:StalenessFindings).Count -gt 0) {
+            try {
+                $stalenessCsv = Join-Path $rptDir "$base.staleness.csv"
+                @($script:StalenessFindings) |
+                    Select-Object Category, Item, Severity, Detail, Recommendation, Timestamp |
+                    Export-Csv -Path $stalenessCsv -NoTypeInformation -Encoding UTF8
+                Write-Log "Staleness CSV: $stalenessCsv" -Level INFO
+            } catch {
+                Write-Log "Staleness CSV generation failed: $_" -Level WARN
+            }
+        }
     }
 
     if ($script:CFG.Reporting.GenerateHTML) {
@@ -3580,7 +3709,8 @@ function New-ComplianceReport {
         try {
             New-HTMLReport -Results $Results -KEVMatches $KEVMatches `
                            -SLABreaches $SLABreaches -Elapsed $elapsed -Metrics $Metrics `
-                           -InventoryKEVMatches @($script:InventoryKEVMatches) |
+                           -InventoryKEVMatches @($script:InventoryKEVMatches) `
+                           -StalenessFindings @($script:StalenessFindings) |
                 Set-Content $htmlPath -Encoding UTF8 -EA Stop
             Write-Log "HTML report: $htmlPath" -Level INFO
         } catch {
@@ -3610,7 +3740,7 @@ function New-ComplianceReport {
 
 
 function New-HTMLReport {
-    param([array]$Results, [array]$KEVMatches, [array]$SLABreaches, [double]$Elapsed, [object]$Metrics, [array]$InventoryKEVMatches = @())
+    param([array]$Results, [array]$KEVMatches, [array]$SLABreaches, [double]$Elapsed, [object]$Metrics, [array]$InventoryKEVMatches = @(), [array]$StalenessFindings = @())
 
     function ConvertTo-ReportHtml {
         param($Value)
@@ -3819,6 +3949,18 @@ function New-HTMLReport {
         "<section class='panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV - installed software</p><h2>No inventory KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>The full software inventory was scanned against the KEV catalogue; nothing matched beyond the actionable items above.</p></section>"
     }
 
+    $stalenessReview = @($StalenessFindings | Where-Object { $_.Severity -eq 'review' })
+    $stalenessRows = ($StalenessFindings | ForEach-Object {
+        $sev = if ($_.Severity -eq 'review') { "<span class='status skipped'>Review</span>" } else { "<span class='status ok'>OK</span>" }
+        $detail = (($_.Detail, $_.Recommendation | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
+        "<tr><td>$(ConvertTo-ReportHtml $_.Category)</td><td><strong>$(ConvertTo-ReportHtml $_.Item)</strong></td><td>$sev</td><td class='details'>$(ConvertTo-ReportHtml $detail)</td></tr>"
+    }) -join "`n"
+    $stalenessSection = if ($StalenessFindings.Count -gt 0) {
+        $tone = if ($stalenessReview.Count -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($stalenessReview.Count -gt 0) { 'danger' } else { 'good' }
+        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>Environment staleness</p><h2>Report-only exposure checks</h2></div><span class='count $countTone'>$($stalenessReview.Count)</span></div><p class='note'>These checks never change the machine and are not counted as updates. $($stalenessReview.Count) of $($StalenessFindings.Count) finding(s) need review (antivirus definitions, Windows feature version, developer runtimes).</p><div class='table-wrap'><table><thead><tr><th>Category</th><th>Item</th><th>State</th><th>Detail</th></tr></thead><tbody>$stalenessRows</tbody></table></div></section>"
+    } else { '' }
+
     $kevSection = if ($KEVMatches.Count -gt 0) {
         "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>Actionable KEV matches</h2></div><span class='count danger'>$kevCount</span></div><p class='note danger-text'>These upgrade candidates match the CISA Known Exploited Vulnerabilities catalogue and were prioritised.</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$kevRows</tbody></table></div></section>"
     } else {
@@ -3949,6 +4091,7 @@ function New-HTMLReport {
       <div class="reveal">$skippedSection</div>
       <div id="security" class="two-col reveal">$kevSection$slaSection</div>
       <div class="reveal">$invKevSection</div>
+      <div class="reveal">$stalenessSection</div>
       <div id="runtime" class="reveal">$errSection</div>
       <section class="panel reveal"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p></section>
     </div>
@@ -4350,6 +4493,9 @@ function Invoke-Main {
     }
     $slaBreaches = @(Get-SLABreaches -State $patchState)
     $script:Stats.SLABreaches = $slaBreaches.Count
+
+    #-- Report-only staleness scan (never patches; own report section) --------
+    $script:StalenessFindings = @(Invoke-StalenessReport)
 
     #-- Metrics + reporting ---------------------------------------------------
     $metrics = Get-PatchMetrics -State $patchState

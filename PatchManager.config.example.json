@@ -115,6 +115,16 @@
     "PostUpdateSettleSeconds": 20
   },
 
+  "StalenessReport": {
+    "_comment": "Report-only exposure checks - never patches. Findings appear in their own report section and are excluded from applied/failed counts. On for all profiles (a safety net, like the inventory KEV scan). Covers Microsoft Defender signature age, Windows feature-update lag, and installed developer runtime versions.",
+    "Enabled": true,
+    "DefenderSignatures": true,
+    "DefenderMaxAgeDays": 7,
+    "FeatureUpdateLag": true,
+    "FeatureUpdateMaxAgeDays": 365,
+    "DevRuntimes": true
+  },
+
   "SLA": {
     "Critical": 14,
     "High": 14,

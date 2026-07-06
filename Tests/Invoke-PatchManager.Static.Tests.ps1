@@ -310,6 +310,25 @@ $DryRun = [System.Management.Automation.SwitchParameter]::new($true)
 $braveEntry = @($catalogue | Where-Object { $_.Provider -eq 'brave-update' })[0]
 Assert-True ($braveEntry.WinGetOverlapId -eq 'BraveSoftware.BraveBrowser') 'Brave entry should declare its WinGet overlap id for the defer check.'
 
+#-- Staleness report (report-only) --------------------------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-IsStale')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-StalenessFinding')
+Assert-True (Test-IsStale -LastUpdated (Get-Date).AddDays(-10) -MaxAgeDays 7) 'Test-IsStale: a 10-day-old date should be stale against a 7-day threshold.'
+Assert-True (-not (Test-IsStale -LastUpdated (Get-Date).AddDays(-2) -MaxAgeDays 7)) 'Test-IsStale: a 2-day-old date should not be stale against a 7-day threshold.'
+Assert-True (-not (Test-IsStale -LastUpdated ([datetime]::MinValue) -MaxAgeDays 7)) 'Test-IsStale: an unknown date must not be treated as stale.'
+$finding = New-StalenessFinding -Category 'Antivirus definitions' -Item 'Microsoft Defender' -Detail 'old' -Severity 'review' -Recommendation 'update'
+Assert-True ($finding.Severity -eq 'review' -and $finding.Category -eq 'Antivirus definitions') 'New-StalenessFinding should carry category and severity.'
+
+# HTML report renders the staleness panel and keeps findings out of the update counts.
+$stalenessFindings = @(
+    (New-StalenessFinding -Category 'Antivirus definitions' -Item 'Microsoft Defender' -Detail 'Signatures 12 days old.' -Severity 'review' -Recommendation 'Run Update-MpSignature.')
+    (New-StalenessFinding -Category 'Developer runtime' -Item 'Node.js' -Detail 'Installed: v20.10.0.' -Severity 'info')
+)
+$stalenessHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings $stalenessFindings
+Assert-True ($stalenessHtml -match 'Environment staleness') 'HTML report should render the Environment staleness panel when findings exist.'
+Assert-True ($stalenessHtml -match 'Report-only exposure checks') 'Staleness panel should state it is report-only.'
+Assert-True ($stalenessHtml -match 'Microsoft Defender') 'Staleness panel should list the Defender finding.'
+
 #-- Descoping -----------------------------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-DescopeReason')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-IsDescoped')
