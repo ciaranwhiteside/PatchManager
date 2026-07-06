@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.2.2 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.2.3 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -108,7 +108,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.2.2'
+$script:VERSION       = '1.2.3'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -2601,46 +2601,58 @@ function Resolve-FirstExistingPath {
 
 function Invoke-CapturedProcess {
     # Runs an external command with a hard timeout and captures merged stdout+stderr.
-    # A lean sibling of Invoke-StoreCliCommand (no stdin). Returns:
-    #   { ExitCode (nullable); TimedOut [bool]; Output [string] }
+    # Returns: { ExitCode (nullable); TimedOut [bool]; Output [string] }
+    #
+    # Uses System.Diagnostics.Process directly rather than Start-Process -PassThru:
+    # in Windows PowerShell 5.1, Start-Process -PassThru leaves .ExitCode $null when
+    # the standard streams are redirected, even on a clean exit. Every consumer here
+    # keys success/reboot handling off the exit code, so an unreliable code silently
+    # misclassifies successful runs (e.g. choco upgrades reported as Failed, or a
+    # 0-outdated discovery reported as "failed to run"). A direct Process returns the
+    # real code. ProcessStartInfo.ArgumentList does not exist on .NET Framework 4.x,
+    # so arguments are quoted into the .Arguments string as Invoke-StoreCliCommand does.
     param(
         [Parameter(Mandatory)] [string]$FilePath,
         [string[]]$Arguments = @(),
         [Parameter(Mandatory)] [int]$TimeoutSeconds
     )
 
-    $tempOut = $null; $tempErr = $null
+    $proc = $null
     try {
-        $tempOut = [System.IO.Path]::GetTempFileName()
-        $tempErr = [System.IO.Path]::GetTempFileName()
+        $escaped = @($Arguments | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+        }) -join ' '
 
-        $startArgs = @{
-            FilePath               = $FilePath
-            NoNewWindow            = $true
-            PassThru               = $true
-            RedirectStandardOutput = $tempOut
-            RedirectStandardError  = $tempErr
-            ErrorAction            = 'Stop'
-        }
-        if ($Arguments -and $Arguments.Count -gt 0) { $startArgs.ArgumentList = $Arguments }
-        $proc = Start-Process @startArgs
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName               = $FilePath
+        $psi.Arguments              = $escaped
+        $psi.UseShellExecute        = $false
+        $psi.CreateNoWindow         = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+
+        # Read both streams asynchronously so a full pipe buffer cannot deadlock the
+        # child, and so the timeout below is honoured even if the child never exits.
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
 
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
             try { $proc.Kill() } catch { }
             return [PSCustomObject]@{ ExitCode = $null; TimedOut = $true; Output = "Timed out after ${TimeoutSeconds}s." }
         }
-        # Second WaitForExit() guarantees the exit code is flushed - a known
-        # Start-Process quirk when standard streams are redirected.
+        # Second WaitForExit() ensures the async stream reads have fully flushed.
         $proc.WaitForExit()
 
-        $outputText = ((Get-Content $tempOut -Raw -EA SilentlyContinue) +
-                       (Get-Content $tempErr -Raw -EA SilentlyContinue)) -join ''
+        $outputText = [string]$outTask.Result + [string]$errTask.Result
         return [PSCustomObject]@{ ExitCode = $proc.ExitCode; TimedOut = $false; Output = $outputText }
     } catch {
         return [PSCustomObject]@{ ExitCode = $null; TimedOut = $false; Output = "Exception: $_" }
     } finally {
-        if ($tempOut) { Remove-Item $tempOut -Force -EA SilentlyContinue }
-        if ($tempErr) { Remove-Item $tempErr -Force -EA SilentlyContinue }
+        if ($proc) { $proc.Dispose() }
     }
 }
 

@@ -312,6 +312,23 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorU
     Assert-True ($null -eq (Resolve-FirstExistingPath -Candidates @('C:\definitely\missing\a.exe', 'C:\definitely\missing\b.exe'))) 'Resolve-FirstExistingPath must return $null (not throw) when no candidate exists under StrictMode.'
 }
 
+#-- Captured-process exit-code reliability ------------------------------------------
+# Regression guard: Start-Process -PassThru leaves .ExitCode $null with redirected
+# streams on PS 5.1, which made every choco upgrade look Failed and choco discovery
+# look "failed to run". Invoke-CapturedProcess must return the real exit code.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+$cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+if (Test-Path $cmdExe) {
+    $cpZero = Invoke-CapturedProcess -FilePath $cmdExe -Arguments @('/c', 'exit 0') -TimeoutSeconds 30
+    Assert-True ($cpZero.ExitCode -eq 0) 'Invoke-CapturedProcess must capture exit code 0 (not $null) on a clean exit.'
+    $cpReboot = Invoke-CapturedProcess -FilePath $cmdExe -Arguments @('/c', 'exit 3010') -TimeoutSeconds 30
+    Assert-True ($cpReboot.ExitCode -eq 3010) 'Invoke-CapturedProcess must capture a non-zero exit code (e.g. reboot code 3010).'
+    $cpOut = Invoke-CapturedProcess -FilePath $cmdExe -Arguments @('/c', 'echo captured-stdout') -TimeoutSeconds 30
+    Assert-True ($cpOut.Output -match 'captured-stdout') 'Invoke-CapturedProcess must capture stdout.'
+}
+$cpMissing = Invoke-CapturedProcess -FilePath 'C:\definitely\missing\nope.exe' -Arguments @('x') -TimeoutSeconds 5
+Assert-True ($null -eq $cpMissing.ExitCode -and $cpMissing.Output -match 'Exception') 'Invoke-CapturedProcess must report a launch failure as $null exit code with an Exception marker.'
+
 # Disabled provider yields nothing.
 $script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $false; NativeTimeoutSeconds = 60; ExtraCatalogue = @() } }
 Assert-True (@(Invoke-VendorUpdaterProvider).Count -eq 0) 'Vendor updater provider must return nothing when disabled.'

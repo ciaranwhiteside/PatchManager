@@ -4,6 +4,19 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.3] - 2026-07-07
+
+### Fixed
+- **External-command exit codes are now captured reliably.** In Windows
+  PowerShell 5.1, `Start-Process -PassThru` leaves `.ExitCode` `$null` when the
+  standard streams are redirected, even on a clean exit. The shared
+  `Invoke-CapturedProcess` helper now uses `System.Diagnostics.Process`
+  directly. This fixes: Chocolatey discovery falsely reported as "failed to
+  run"; **successful Chocolatey upgrades misclassified as `Failed`** (a null
+  code matched neither success nor a reboot code); and the same misclassification
+  in the OEM firmware apply path. Output streams are read asynchronously so the
+  timeout is still honoured and a full pipe buffer cannot deadlock the child.
+
 ## [1.2.2] - 2026-07-06
 
 ### Fixed
