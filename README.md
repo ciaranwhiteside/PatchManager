@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.2.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.2.2).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -462,8 +462,14 @@ pre-release — so only cut, reviewed releases ship. It checks the release for a
 newer `Invoke-PatchManager.ps1`, refuses anything that isn't a strictly newer
 version, validates that the download parses as PowerShell, optionally verifies
 a pinned SHA256, backs up the current script, and installs the new copy **for
-the next run** (it never executes freshly downloaded code inline). Skipped when
-running from a git clone (use `git pull`) and in dry-run/report-only.
+the next run** (it never executes freshly downloaded code inline). Git-clone
+installs are supported: self-update replaces only `Invoke-PatchManager.ps1`, so
+use `git pull` when you want the full repo, docs, config example, and tests
+refreshed. Apply is skipped in dry-run/report-only.
+
+> Existing git-clone installs on v1.2.1 or earlier need one manual `git pull`
+> to receive this updater fix, because those older scripts exited before
+> checking GitHub. After that, clone installs can self-update the script.
 
 | Key | Default | Purpose |
 |---|---|---|

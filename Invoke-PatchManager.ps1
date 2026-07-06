@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.2.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.2.2 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -108,7 +108,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.2.1'
+$script:VERSION       = '1.2.2'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -4414,7 +4414,8 @@ function Invoke-SelfUpdate {
     #     checked against ExpectedSha256 when that is pinned.
     #   - The current on-disk script is backed up to a timestamped .bak; the new version is
     #     NEVER executed in this run - the next run picks it up.
-    #   - Skipped for git clones (use 'git pull') and in DryRun/ReportOnly.
+    #   - Works for clone and zip installs; in a clone it updates only Invoke-PatchManager.ps1.
+    #   - Apply is skipped in DryRun/ReportOnly.
     $su = Get-ObjectPropertyValue $script:CFG 'SelfUpdate' $null
     if ($null -eq $su -or -not [bool](Get-ObjectPropertyValue $su 'Enabled' $false)) {
         $script:SelfUpdateStatus = 'Disabled'
@@ -4429,11 +4430,7 @@ function Invoke-SelfUpdate {
     }
 
     $scriptDir = Split-Path -Parent $scriptPath
-    if (Test-Path (Join-Path $scriptDir '.git')) {
-        Write-Log 'Self-update: running from a git clone. Use "git pull" instead; skipping self-update.' -Level INFO
-        $script:SelfUpdateStatus = 'Skipped (git clone - use git pull)'
-        return
-    }
+    $isGitClone = Test-Path (Join-Path $scriptDir '.git')
 
     $repo    = [string](Get-ObjectPropertyValue $su 'Repository' 'ciaranwhiteside/PatchManager')
     $ref     = [string](Get-ObjectPropertyValue $su 'Ref' 'main')
@@ -4521,6 +4518,9 @@ function Invoke-SelfUpdate {
         # Apply: back up the current script, then swap in the validated download.
         # The running process keeps executing the old version; the next run uses
         # the new one - we never execute freshly downloaded elevated code inline.
+        if ($isGitClone) {
+            Write-Log 'Self-update: git clone install detected; replacing Invoke-PatchManager.ps1 only. Use git pull to refresh docs/config/tests.' -Level INFO
+        }
         $backupPath = "$scriptPath.$((Get-Date).ToString('yyyyMMddHHmmss')).bak"
         Copy-Item -Path $scriptPath -Destination $backupPath -Force -EA Stop
         Copy-Item -Path $tempFile -Destination $scriptPath -Force -EA Stop

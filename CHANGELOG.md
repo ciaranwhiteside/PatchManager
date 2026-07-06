@@ -4,6 +4,15 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-07-06
+
+### Fixed
+- Self-update now works for the documented git-clone install path. Clone
+  installs update only `Invoke-PatchManager.ps1`; use `git pull` when you want
+  the full repo, docs, config example, and tests refreshed.
+- Existing git-clone installs on v1.2.1 or earlier need one manual `git pull`
+  to receive this fix because their local updater exits before checking GitHub.
+
 ## [1.2.1] - 2026-07-06
 
 ### Fixed

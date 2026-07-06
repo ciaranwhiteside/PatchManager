@@ -489,6 +489,10 @@ Assert-True ($null -eq (Get-ScriptVersionFromContent -Content '')) 'Self-update:
 $selfVer = Get-ScriptVersionFromContent -Content (Get-Content -Path $scriptPath -Raw)
 Assert-True ($null -ne $selfVer) 'Self-update: the current script must expose a version literal.'
 Assert-True ($null -ne ([version]$selfVer)) 'Self-update: the current script version must parse as [version].'
+$selfUpdateFnText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-SelfUpdate'
+Assert-True ($selfUpdateFnText -notmatch 'Skipped \(git clone') 'Self-update: git-clone installs must not be skipped because the documented install path uses git clone.'
+Assert-True ($selfUpdateFnText -notmatch 'running from a git clone') 'Self-update: legacy git-clone skip message must not return.'
+Assert-True ($selfUpdateFnText -match 'replacing Invoke-PatchManager\.ps1 only') 'Self-update: git-clone installs should make clear that only the runnable script is replaced.'
 Assert-True (Test-SelfUpdateSource -Repository 'ciaranwhiteside/PatchManager' -Ref 'main') 'Self-update: default GitHub source should validate.'
 Assert-True (Test-SelfUpdateSource -Repository 'owner-name/repo.name' -Ref 'release/v1.2.3') 'Self-update: normal branch/tag refs should validate.'
 Assert-True (-not (Test-SelfUpdateSource -Repository 'https://github.com/owner/repo' -Ref 'main')) 'Self-update: repository must be owner/name, not a URL.'

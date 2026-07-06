@@ -163,7 +163,7 @@
   },
 
   "SelfUpdate": {
-    "_comment": "Keep PatchManager itself current from GitHub. Enabled: null = decide by profile (Personal and Commercial on, CommercialManaged off - a managed estate's platform should own how PatchManager is deployed). Ref 'latest' tracks the newest PUBLISHED release tag only (never a moving branch, never a pre-release); pin a specific tag, or use 'main' to track the branch. Downloads are version-gated and parse-validated; set ExpectedSha256 to lock an exact build. Skipped for git clones (use git pull). AutoApply=false reports updates without changing the script. A new script is never executed in the run that fetched it.",
+    "_comment": "Keep PatchManager itself current from GitHub. Enabled: null = decide by profile (Personal and Commercial on, CommercialManaged off - a managed estate's platform should own how PatchManager is deployed). Ref 'latest' tracks the newest PUBLISHED release tag only (never a moving branch, never a pre-release); pin a specific tag, or use 'main' to track the branch. Downloads are version-gated and parse-validated; set ExpectedSha256 to lock an exact build. Git-clone installs are supported: self-update replaces only Invoke-PatchManager.ps1; use git pull when you want the full repo refreshed. AutoApply=false reports updates without changing the script. A new script is never executed in the run that fetched it.",
     "Enabled": null,
     "Repository": "ciaranwhiteside/PatchManager",
     "Ref": "latest",
