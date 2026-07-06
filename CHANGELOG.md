@@ -4,6 +4,20 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-07-06
+
+### Fixed
+- **Scoop provider could not run when Scoop was on PATH**: PowerShell resolves
+  `scoop` to its `.ps1` shim, which `Start-Process` with stream redirection
+  cannot execute. The provider now prefers the `.cmd` shim.
+- **Chocolatey discovery no longer reports false success**: if `choco outdated`
+  fails to launch, the source row is now `Failed` with the error instead of a
+  clean "0 outdated package(s)".
+- **HP firmware report folder** used a literal `%TEMP%` that nothing in the
+  invocation chain expands; it is now resolved via the environment.
+- A `VendorUpdaters.ExtraCatalogue` entry with no `UpdaterArgs` no longer
+  crashes the vendor updater provider.
+
 ## [1.2.0] - 2026-07-06
 
 ### Added
