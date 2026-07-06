@@ -200,6 +200,8 @@ function New-TestDefaultCfg {
         WindowsUpdate = [ordered]@{ Enabled = $true }
         Microsoft365 = [ordered]@{ Enabled = $true }
         Browsers = [ordered]@{ Enabled = $true; ChromeEnabled = $true; EdgeEnabled = $true }
+        PackageManagers = [ordered]@{ ChocolateyEnabled = $null; ScoopEnabled = $true }
+        VendorUpdaters = [ordered]@{ Enabled = $true }
         SLA = [ordered]@{ Critical = 14 }
     }
 }
@@ -236,6 +238,9 @@ try {
     Assert-True ($commercialCfg.Microsoft365.Enabled -eq $true) 'Commercial profile must keep Microsoft 365 enabled.'
     Assert-True ($commercialCfg.Browsers.ChromeEnabled -eq $true) 'Commercial profile must keep browser patching enabled.'
     Assert-True ('Google.Chrome' -notin $commercialCfg.Descope.PackageIds) 'Commercial profile must not descope Chrome - only CommercialManaged assumes a platform owns it.'
+    Assert-True ($commercialCfg.VendorUpdaters.Enabled -eq $true) 'Commercial profile must keep native vendor updaters enabled.'
+    Assert-True ($commercialCfg.PackageManagers.ScoopEnabled -eq $true) 'Commercial profile must keep Scoop enabled.'
+    Assert-True ($commercialCfg.PackageManagers.ChocolateyEnabled -eq $false) 'Commercial profile must leave Chocolatey off by default - enabling it is an explicit licence decision.'
 
     # CommercialManaged = the explicit "our platform owns OS/Office/browsers" posture.
     $script:DefaultCfg = New-TestDefaultCfg
@@ -247,6 +252,21 @@ try {
     Assert-True ($managedCfg.Microsoft365.Enabled -eq $false) 'CommercialManaged profile should disable Microsoft 365 provider.'
     Assert-True ($managedCfg.Browsers.ChromeEnabled -eq $false) 'CommercialManaged profile should disable Chrome native updates.'
     Assert-True ('Google.Chrome' -in $managedCfg.Descope.PackageIds) 'CommercialManaged profile should descope Chrome.'
+    Assert-True ($managedCfg.VendorUpdaters.Enabled -eq $false) 'CommercialManaged profile should disable native vendor updaters.'
+    Assert-True ($managedCfg.PackageManagers.ScoopEnabled -eq $false) 'CommercialManaged profile should disable Scoop.'
+    Assert-True ($managedCfg.PackageManagers.ChocolateyEnabled -eq $false) 'CommercialManaged profile should leave Chocolatey off.'
+
+    # Personal resolves the licensing-gated Chocolatey default to on (free use).
+    $script:DefaultCfg = New-TestDefaultCfg
+    $personalCfg = Import-Configuration -Path 'nonexistent-config.json'
+    Assert-True ($personalCfg.PackageManagers.ChocolateyEnabled -eq $true) 'Personal profile should resolve Chocolatey to on (the CLI is free for personal use).'
+
+    # An explicit Chocolatey value in config must override the profile default.
+    $script:DefaultCfg = New-TestDefaultCfg
+    $script:DefaultCfg.ScopeProfile = 'Commercial'
+    $script:DefaultCfg.PackageManagers.ChocolateyEnabled = $true
+    $explicitChoco = Import-Configuration -Path 'nonexistent-config.json'
+    Assert-True ($explicitChoco.PackageManagers.ChocolateyEnabled -eq $true) 'An explicit ChocolateyEnabled=true must win over the commercial-off default.'
 
     # Unknown profile values must fail SAFE: full Personal coverage.
     $script:DefaultCfg = New-TestDefaultCfg
@@ -257,6 +277,17 @@ try {
 } finally {
     Remove-Item $tempCfgPath -Force -EA SilentlyContinue
 }
+
+#-- Chocolatey outdated parser ------------------------------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertFrom-ChocoOutdated')
+$chocoLines = Get-Content -Path (Join-Path $PSScriptRoot 'Fixtures\choco-outdated.txt')
+$chocoParsed = @(ConvertFrom-ChocoOutdated -Lines $chocoLines)
+Assert-True ($chocoParsed.Count -eq 5) "Choco parser: expected 5 valid package rows (pinned filtering happens in the provider), got $($chocoParsed.Count)."
+$chocoGit = $chocoParsed | Where-Object { $_.Id -eq 'git' }
+Assert-True ($null -ne $chocoGit -and $chocoGit.Available -eq '2.44.0.2') 'Choco parser: git available version should parse.'
+Assert-True (@($chocoParsed | Where-Object { $_.Id -eq 'notepadplusplus' })[0].Pinned) 'Choco parser: pinned flag should be captured.'
+Assert-True (@($chocoParsed | Where-Object { $_.Id -eq 'somebrokenline' }).Count -eq 0) 'Choco parser: malformed lines should be ignored.'
+Assert-True (@(ConvertFrom-ChocoOutdated -Lines @()).Count -eq 0) 'Choco parser: empty input should yield no rows.'
 
 #-- Descoping -----------------------------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-DescopeReason')

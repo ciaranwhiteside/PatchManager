@@ -1,0 +1,8 @@
+Chocolatey v2.2.2
+7zip|19.0|23.1.0|false
+git|2.40.0|2.44.0.2|false
+notepadplusplus|8.5|8.6|true
+googlechrome|125.0.6422|126.0.6478|false
+Did not detect any outdated packages.
+somebrokenline
+pinnedonly|1.0|1.0|true

@@ -59,6 +59,15 @@
     "MaxRetries": 2
   },
 
+  "PackageManagers": {
+    "_comment_choco": "ChocolateyEnabled: null = decide by profile (Personal on - the CLI is free; Commercial/CommercialManaged off). The choco CLI is free, but Chocolatey for Business is a paid product - enabling it in a commercial context is your explicit licence decision. Set true/false to override the profile default.",
+    "ChocolateyEnabled": null,
+    "_comment_scoop": "Scoop is per-user and only runs in a user-context session (never SYSTEM). Off under CommercialManaged.",
+    "ScoopEnabled": true,
+    "TimeoutSeconds": 300,
+    "MaxUpdatesPerRun": 0
+  },
+
   "WindowsUpdate": {
     "Enabled": true,
     "IncludeDrivers": false,

@@ -3,11 +3,12 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.1.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.2.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
-    packages, and Microsoft Store apps, with audit-ready reporting.
+    packages, Microsoft Store apps, alternate package managers, native vendor
+    updaters, and (opt-in) OEM firmware, with audit-ready reporting.
 
     Key features:
       - Ring-based staged rollout: Pilot -> Early -> Broad
@@ -19,6 +20,8 @@
       - System restore points before patching
       - Pre-flight checks: disk, battery, connectivity, pending reboot, winget
       - Optional webhook notifications and validated opt-in self-update
+      - Extra sources: Chocolatey/Scoop, native vendor updaters (Adobe, Zoom),
+        opt-in OEM firmware (Dell/HP/Lenovo), and report-only staleness checks
       - Commercial profile extras: run-scoped BITS throttling and
         hostname-seeded jitter to stagger estate-wide concurrent runs
 
@@ -105,7 +108,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.1.1'
+$script:VERSION       = '1.2.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -199,6 +202,17 @@ $script:DefaultCfg = [ordered]@{
         MaxUpdatesPerRun      = 0
         SuppressReboot        = $true    # Add /norestart - PatchManager flags reboots, never forces them
         MaxRetries            = 2        # Attempts per package (1 = no retry) for transient failures
+    }
+
+    PackageManagers = [ordered]@{
+        # Chocolatey: the CLI is free, but Chocolatey for Business is a paid
+        # product. $null = decide by profile - Personal on (free use), Commercial
+        # /CommercialManaged off pending an explicit opt-in, so enabling it in a
+        # commercial context is a conscious licence decision that is yours to make.
+        ChocolateyEnabled = $null
+        ScoopEnabled      = $true        # Scoop is per-user; only runs in a user-context session
+        TimeoutSeconds    = 300
+        MaxUpdatesPerRun  = 0            # 0 = unlimited
     }
 
     WindowsUpdate = [ordered]@{
@@ -406,6 +420,14 @@ function Set-ScopeProfileDefaults {
         $Config.Microsoft365.Enabled = $false
         $Config.Browsers.ChromeEnabled = $false
         $Config.Browsers.EdgeEnabled = $false
+        # Patching providers added in 1.2.0 follow the same managed-estate rule:
+        # a management platform is assumed to own them. Report-only checks stay on.
+        if ($null -ne (Get-ObjectPropertyValue $Config 'PackageManagers' $null)) {
+            $Config.PackageManagers.ScoopEnabled = $false
+        }
+        if ($null -ne (Get-ObjectPropertyValue $Config 'VendorUpdaters' $null)) {
+            $Config.VendorUpdaters.Enabled = $false
+        }
     }
 
     # Resolve profile-dependent defaults left as $null in the base config.
@@ -415,6 +437,12 @@ function Set-ScopeProfileDefaults {
     }
     if ($null -eq (Get-ObjectPropertyValue $Config.MaintenanceWindow 'JitterMaxMinutes' $null)) {
         $Config.MaintenanceWindow.JitterMaxMinutes = if ($isFleet) { 120 } else { 0 }
+    }
+    # Chocolatey: Personal on (free), any commercial profile off pending an
+    # explicit licence opt-in. An explicit true/false in config always wins.
+    $pkgMgr = Get-ObjectPropertyValue $Config 'PackageManagers' $null
+    if ($null -ne $pkgMgr -and $null -eq (Get-ObjectPropertyValue $pkgMgr 'ChocolateyEnabled' $null)) {
+        $Config.PackageManagers.ChocolateyEnabled = (-not $isFleet)
     }
 }
 
@@ -2497,6 +2525,74 @@ function Resolve-BrowserUpdater {
     return @($paths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)[0]
 }
 
+# --- Generic native-updater helpers (used by the vendor/firmware providers) ---
+# Generalisations of Get-BrowserVersion / Resolve-BrowserUpdater. The browser
+# provider keeps its own tested copies; these serve the newer providers.
+
+function Get-RegistryVersion {
+    # Reads the first available version-style value from a list of registry keys.
+    param([string[]]$Paths, [string]$ValueName = 'version')
+    foreach ($path in @($Paths | Where-Object { $_ })) {
+        try {
+            $item = Get-ItemProperty -Path $path -EA Stop
+            $val = $item.$ValueName
+            if ($val) { return [string]$val }
+        } catch { }
+    }
+    return ''
+}
+
+function Resolve-FirstExistingPath {
+    # Returns the first candidate path that exists on disk, or $null.
+    param([string[]]$Candidates)
+    return @($Candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)[0]
+}
+
+function Invoke-CapturedProcess {
+    # Runs an external command with a hard timeout and captures merged stdout+stderr.
+    # A lean sibling of Invoke-StoreCliCommand (no stdin). Returns:
+    #   { ExitCode (nullable); TimedOut [bool]; Output [string] }
+    param(
+        [Parameter(Mandatory)] [string]$FilePath,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory)] [int]$TimeoutSeconds
+    )
+
+    $tempOut = $null; $tempErr = $null
+    try {
+        $tempOut = [System.IO.Path]::GetTempFileName()
+        $tempErr = [System.IO.Path]::GetTempFileName()
+
+        $startArgs = @{
+            FilePath               = $FilePath
+            NoNewWindow            = $true
+            PassThru               = $true
+            RedirectStandardOutput = $tempOut
+            RedirectStandardError  = $tempErr
+            ErrorAction            = 'Stop'
+        }
+        if ($Arguments -and $Arguments.Count -gt 0) { $startArgs.ArgumentList = $Arguments }
+        $proc = Start-Process @startArgs
+
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill() } catch { }
+            return [PSCustomObject]@{ ExitCode = $null; TimedOut = $true; Output = "Timed out after ${TimeoutSeconds}s." }
+        }
+        # Second WaitForExit() guarantees the exit code is flushed - a known
+        # Start-Process quirk when standard streams are redirected.
+        $proc.WaitForExit()
+
+        $outputText = ((Get-Content $tempOut -Raw -EA SilentlyContinue) +
+                       (Get-Content $tempErr -Raw -EA SilentlyContinue)) -join ''
+        return [PSCustomObject]@{ ExitCode = $proc.ExitCode; TimedOut = $false; Output = $outputText }
+    } catch {
+        return [PSCustomObject]@{ ExitCode = $null; TimedOut = $false; Output = "Exception: $_" }
+    } finally {
+        if ($tempOut) { Remove-Item $tempOut -Force -EA SilentlyContinue }
+        if ($tempErr) { Remove-Item $tempErr -Force -EA SilentlyContinue }
+    }
+}
+
 function Invoke-BrowserProvider {
     param(
         [ValidateSet('Chrome','Edge')] [string]$Browser,
@@ -2546,6 +2642,152 @@ function Invoke-BrowserProvider {
         return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Browser provider exception: $_"))
     }
 }
+
+#endregion
+
+#region -- Alternate Package Managers (Chocolatey, Scoop) -----------------------------
+
+function Resolve-ChocoPath {
+    $cmd = Get-Command 'choco.exe' -EA SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $cmd = Get-Command 'choco' -EA SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $candidate = Join-Path $env:ProgramData 'chocolatey\bin\choco.exe'
+    if (Test-Path $candidate) { return $candidate }
+    return $null
+}
+
+function ConvertFrom-ChocoOutdated {
+    # Parses `choco outdated -r --nocolor` machine-readable output. Each real
+    # row is `id|current|available|pinned`. Non-conforming lines (warnings,
+    # blanks, summaries) are ignored. Side-effect-free for unit testing.
+    param([AllowEmptyCollection()] [string[]]$Lines)
+    $items = [System.Collections.Generic.List[pscustomobject]]::new()
+    foreach ($line in @($Lines)) {
+        $line = [string]$line
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line.Split('|')
+        if ($parts.Count -lt 4) { continue }
+        $id = $parts[0].Trim()
+        if (-not $id) { continue }
+        # 'available' column must look like a version to be a real row
+        if ($parts[2].Trim() -notmatch '\d') { continue }
+        $items.Add([pscustomobject]@{
+            Id        = $id
+            Current   = $parts[1].Trim()
+            Available = $parts[2].Trim()
+            Pinned    = ($parts[3].Trim() -ieq 'true')
+        })
+    }
+    return @($items)
+}
+
+function Invoke-ChocolateyProvider {
+    $provider = 'chocolatey'
+    if (-not [bool](Get-ObjectPropertyValue $script:CFG.PackageManagers 'ChocolateyEnabled' $false)) { return @() }
+
+    $choco = Resolve-ChocoPath
+    if (-not $choco) {
+        Write-Log 'Chocolatey: choco.exe not found; provider skipped.' -Level DEBUG
+        return @()   # choco isn't installed on most machines - stay silent
+    }
+
+    $timeout = [Math]::Max(30, [int](Get-ObjectPropertyValue $script:CFG.PackageManagers 'TimeoutSeconds' 300))
+    Write-Log "Chocolatey: discovering outdated packages ($choco outdated)." -Level INFO
+    $discovery = Invoke-CapturedProcess -FilePath $choco -Arguments @('outdated', '-r', '--nocolor') -TimeoutSeconds $timeout
+
+    $results = [System.Collections.Generic.List[pscustomobject]]::new()
+    if ($discovery.TimedOut) {
+        $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Failed' -Evidence "Chocolatey outdated discovery timed out after ${timeout}s."))
+        return @($results)
+    }
+
+    $outdated = @(ConvertFrom-ChocoOutdated -Lines ([string]$discovery.Output -split '\r?\n') | Where-Object { -not $_.Pinned })
+    $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Completed' -Success $true -Evidence "Chocolatey checked; $($outdated.Count) outdated package(s) found."))
+
+    if ($outdated.Count -eq 0) { return @($results) }
+
+    $applied = 0
+    $max = [int](Get-ObjectPropertyValue $script:CFG.PackageManagers 'MaxUpdatesPerRun' 0)
+    foreach ($pkg in $outdated) {
+        $reason = ''
+        if (Test-IsDescoped -Item ([PSCustomObject]@{ Name=$pkg.Id; PackageId=$pkg.Id; Provider=$provider; Source=$provider }) -Reason ([ref]$reason)) {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Descoped' -Evidence $reason))
+            continue
+        }
+        if ($max -gt 0 -and $applied -ge $max) {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Skipped' -Evidence "Per-run update cap ($max) reached; deferred to next run."))
+            continue
+        }
+        if ($DryRun) {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Planned' -Evidence "Would run: choco upgrade $($pkg.Id) -y."))
+            continue
+        }
+
+        Write-Log "Chocolatey: upgrading $($pkg.Id) $($pkg.Current) -> $($pkg.Available)." -Level INFO
+        $upg = Invoke-CapturedProcess -FilePath $choco -Arguments @('upgrade', $pkg.Id, '-y', '--no-progress', '--nocolor', '-r') -TimeoutSeconds $timeout
+        $applied++
+        $summary = (([string]$upg.Output -replace '\s+', ' ').Trim())
+        if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+        # choco: 0 = success; 1641/3010 = success + reboot required
+        $rebootCodes = @(1641, 3010)
+        if ($upg.TimedOut) {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "choco upgrade timed out after ${timeout}s."))
+        } elseif ($upg.ExitCode -eq 0 -or $upg.ExitCode -in $rebootCodes) {
+            $reboot = $upg.ExitCode -in $rebootCodes
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -ConfirmedVersion $pkg.Available -Status 'Succeeded' -Success $true -RebootRequired $reboot -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
+        } else {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
+        }
+    }
+    return @($results)
+}
+
+function Resolve-ScoopCommand {
+    # Scoop is a per-user PowerShell shim. Only resolvable from the user's own
+    # session - never from a SYSTEM-context scheduled run.
+    $cmd = Get-Command 'scoop' -EA SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $userShim = Join-Path $env:USERPROFILE 'scoop\shims\scoop.cmd'
+    if (Test-Path $userShim) { return $userShim }
+    return $null
+}
+
+function Invoke-ScoopProvider {
+    $provider = 'scoop'
+    if (-not [bool](Get-ObjectPropertyValue $script:CFG.PackageManagers 'ScoopEnabled' $false)) { return @() }
+
+    $scoop = Resolve-ScoopCommand
+    if (-not $scoop) {
+        Write-Log 'Scoop: not found in the current user session; provider skipped.' -Level DEBUG
+        return @()   # no scoop for this user (or SYSTEM context) - stay silent
+    }
+
+    $timeout = [Math]::Max(30, [int](Get-ObjectPropertyValue $script:CFG.PackageManagers 'TimeoutSeconds' 300))
+    if ($DryRun) {
+        return @((New-PatchResult -Name 'Scoop apps' -PackageId 'Scoop.Apps' -Provider $provider -Source $provider -Status 'Planned' -Evidence "Would refresh buckets and run: scoop update * ($scoop)."))
+    }
+
+    # Scoop has no machine-readable outdated format that is stable across
+    # versions, so per-app descoping is not available here - the whole provider
+    # is the control (disable it, or use `scoop hold <app>`). Refresh buckets,
+    # then update all apps, and report one summary result.
+    Write-Log "Scoop: refreshing buckets and updating all apps ($scoop update *)." -Level INFO
+    $null = Invoke-CapturedProcess -FilePath $scoop -Arguments @('update') -TimeoutSeconds $timeout
+    $upd = Invoke-CapturedProcess -FilePath $scoop -Arguments @('update', '*') -TimeoutSeconds $timeout
+    $summary = (([string]$upd.Output -replace '\s+', ' ').Trim())
+    if ($summary.Length -gt 600) { $summary = $summary.Substring(0, 600) + '...' }
+
+    if ($upd.TimedOut) {
+        return @((New-PatchResult -Name 'Scoop apps' -PackageId 'Scoop.Apps' -Provider $provider -Source $provider -Status 'Failed' -Evidence "scoop update timed out after ${timeout}s."))
+    }
+    $ok = ($upd.ExitCode -eq 0)
+    return @((New-PatchResult -Name 'Scoop apps' -PackageId 'Scoop.Apps' -Provider $provider -Source $provider -Status $(if ($ok) { 'Completed' } else { 'Failed' }) -Success $ok -Evidence "scoop update * exit code=$($upd.ExitCode). $summary"))
+}
+
+#endregion
+
+#region -- Microsoft Store Client -----------------------------------------------------
 
 function Resolve-StoreCliPath {
     $cmd = Get-Command 'store.exe' -EA SilentlyContinue
@@ -3983,7 +4225,9 @@ function Invoke-Main {
                          @(Invoke-Microsoft365Provider) +
                          @(Invoke-BrowserProvider -Browser Chrome -WinGetCandidates $filteredUpgrades) +
                          @(Invoke-BrowserProvider -Browser Edge -WinGetCandidates $filteredUpgrades) +
-                         @(Invoke-MicrosoftStoreClientUpdates)
+                         @(Invoke-MicrosoftStoreClientUpdates) +
+                         @(Invoke-ChocolateyProvider) +
+                         @(Invoke-ScoopProvider)
 
     }
 
