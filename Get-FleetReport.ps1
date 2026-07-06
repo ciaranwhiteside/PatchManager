@@ -330,8 +330,6 @@ $html = @"
   var clearFilters = document.getElementById('clearFleetFilters');
   var printReport = document.getElementById('printFleetReport');
   var resultCount = document.getElementById('fleetResultCount');
-  var rail = document.querySelector('.fleet-evidence');
-  var revealItems = Array.prototype.slice.call(document.querySelectorAll('.reveal'));
   var numericSorts = ['last','age','applied','failed','kev','invkev','sla','errors','reboot'];
   function appendOption(select, value){if(!select || !value){return;}var exists = Array.prototype.some.call(select.options,function(option){return option.value === value;});if(exists){return;}var option = document.createElement('option');option.value = value;option.textContent = value;select.appendChild(option);}
   rows.forEach(function(row){appendOption(ringFilter, row.getAttribute('data-ring') || '');appendOption(profileFilter, row.getAttribute('data-profile') || '');});
@@ -343,10 +341,6 @@ $html = @"
   [search,postureFilter,ringFilter,profileFilter].forEach(function(control){if(control){control.addEventListener('input', applyFilters);control.addEventListener('change', applyFilters);}});
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';postureFilter.value = '';ringFilter.value = '';profileFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}
-  if('IntersectionObserver' in window){var observer = new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target);}});},{threshold:.12});revealItems.forEach(function(item){observer.observe(item);});}else{revealItems.forEach(function(item){item.classList.add('is-visible');});}
-  function updateScrollProgress(){if(!rail){return;}var total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);var progress = Math.min(1, Math.max(0, window.scrollY / total));rail.style.setProperty('--scroll-progress', progress.toFixed(3));}
-  window.addEventListener('scroll', updateScrollProgress, {passive:true});
-  updateScrollProgress();
   applyFilters();
 })();
 </script>

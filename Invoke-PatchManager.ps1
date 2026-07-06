@@ -3618,16 +3618,6 @@ function New-HTMLReport {
   var printReport = document.getElementById('printReport');
   var sources = [];
   var providers = [];
-  var revealItems = Array.prototype.slice.call(document.querySelectorAll('.reveal'));
-  var rail = document.querySelector('.evidence-rail');
-  if('IntersectionObserver' in window){
-    var observer = new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target);}});},{threshold:.12});
-    revealItems.forEach(function(item){observer.observe(item);});
-  } else {
-    revealItems.forEach(function(item){item.classList.add('is-visible');});
-  }
-  function updateScrollProgress(){if(!rail){return;}var total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);var progress = Math.min(1, Math.max(0, window.scrollY / total));rail.style.setProperty('--scroll-progress', progress.toFixed(3));}
-  window.addEventListener('scroll', updateScrollProgress, {passive:true});
   rows.forEach(function(row){var source = row.getAttribute('data-source') || '';if(source && sources.indexOf(source) === -1){sources.push(source);}});
   rows.forEach(function(row){var provider = row.getAttribute('data-provider') || '';if(provider && providers.indexOf(provider) === -1){providers.push(provider);}});
   function appendUniqueOption(select, value){if(!select || !value){return;}var exists = Array.prototype.some.call(select.options, function(option){return option.value === value;});if(exists){return;}var option = document.createElement('option');option.value = value;option.textContent = value;select.appendChild(option);}
@@ -3638,7 +3628,6 @@ function New-HTMLReport {
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';statusFilter.value = '';sourceFilter.value = '';providerFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}
   document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(th, index){th.addEventListener('click', function(){var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('data-direction') === 'asc' ? 'desc' : 'asc';document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(other){other.removeAttribute('data-direction');});th.setAttribute('data-direction', direction);updateRows.sort(function(a,b){var av = (a.children[index].innerText || '').trim();var bv = (b.children[index].innerText || '').trim();return direction === 'asc' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});updateRows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
-  updateScrollProgress();
   applyFilters();
 })();
 </script>
