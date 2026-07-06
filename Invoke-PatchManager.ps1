@@ -2752,6 +2752,12 @@ function Invoke-ChocolateyProvider {
         $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Failed' -Evidence "Chocolatey outdated discovery timed out after ${timeout}s."))
         return @($results)
     }
+    if ($null -eq $discovery.ExitCode) {
+        # The process never launched (or died before returning a code) - do not
+        # report a clean "0 outdated" when discovery itself failed.
+        $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Failed' -Evidence "Chocolatey outdated discovery failed to run: $($discovery.Output)"))
+        return @($results)
+    }
 
     $outdated = @(ConvertFrom-ChocoOutdated -Lines ([string]$discovery.Output -split '\r?\n') | Where-Object { -not $_.Pinned })
     $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Completed' -Success $true -Evidence "Chocolatey checked; $($outdated.Count) outdated package(s) found."))
@@ -2795,10 +2801,19 @@ function Invoke-ChocolateyProvider {
 }
 
 function Resolve-ScoopCommand {
-    # Scoop is a per-user PowerShell shim. Only resolvable from the user's own
-    # session - never from a SYSTEM-context scheduled run.
+    # Scoop is a per-user shim. Only resolvable from the user's own session -
+    # never from a SYSTEM-context scheduled run. Prefer the .cmd shim: PowerShell
+    # resolves 'scoop' to the .ps1 shim, which Start-Process (raw CreateProcess,
+    # used by Invoke-CapturedProcess for stream redirection) cannot execute.
     $cmd = Get-Command 'scoop' -EA SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if ($cmd -and $cmd.Source) {
+        if ($cmd.Source -like '*.ps1') {
+            $sibling = [System.IO.Path]::ChangeExtension($cmd.Source, '.cmd')
+            if (Test-Path $sibling) { return $sibling }
+        } else {
+            return $cmd.Source
+        }
+    }
     $userShim = Join-Path $env:USERPROFILE 'scoop\shims\scoop.cmd'
     if (Test-Path $userShim) { return $userShim }
     return $null
@@ -2912,7 +2927,11 @@ function Invoke-VendorUpdaterProvider {
 
         try {
             Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
-            $proc = Start-Process -FilePath $updater -ArgumentList $updaterArgs -PassThru -WindowStyle Hidden
+            # -ArgumentList rejects an empty array, and an ExtraCatalogue entry
+            # may legitimately declare an updater that takes no arguments.
+            $startArgs = @{ FilePath = $updater; PassThru = $true; WindowStyle = 'Hidden' }
+            if ($updaterArgs.Count -gt 0) { $startArgs.ArgumentList = $updaterArgs }
+            $proc = Start-Process @startArgs
             $completed = $proc.WaitForExit($timeout * 1000)
             if (-not $completed) {
                 try { $proc.Kill() } catch { }
@@ -3079,8 +3098,8 @@ function Get-FirmwareCatalogue {
                 (Join-Path ${env:ProgramFiles} 'HP\HPIA\HPImageAssistant.exe')
                 (Join-Path ${env:ProgramFiles(x86)} 'HP\HPIA\HPImageAssistant.exe')
             )
-            ScanArgs  = @('/Operation:Analyze', '/Silent', '/Category:BIOS,Firmware', '/ReportFolder:%TEMP%\HPIA')
-            ApplyArgs = @('/Operation:Install', '/Silent', '/Category:BIOS,Firmware', '/ReportFolder:%TEMP%\HPIA')
+            ScanArgs  = @('/Operation:Analyze', '/Silent', '/Category:BIOS,Firmware', "/ReportFolder:$env:TEMP\HPIA")
+            ApplyArgs = @('/Operation:Install', '/Silent', '/Category:BIOS,Firmware', "/ReportFolder:$env:TEMP\HPIA")
         }
         [PSCustomObject]@{
             Match     = 'Lenovo'
