@@ -4,6 +4,26 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-07-07
+
+### Added
+- **End-of-life intelligence from [endoflife.date](https://endoflife.date/)**
+  (`EndOfLife` config, report-only). Surfaces software whose whole release line
+  is out of support — fully patchable, yet no longer receiving fixes — in a new
+  dedicated report section (HTML panel + JSON key + `.endoflife.csv`), excluded
+  from applied/failed counts. Three sources:
+  - **Windows OS** — authoritatively flags an out-of-support Windows feature
+    version, mapping the running build + edition to the exact release (so a
+    consumer 23H2 shows EOL while enterprise 23H2 shows supported).
+  - **Developer runtimes** — .NET / Python / Node.js, upgraded from "verify
+    manually" to the release's end-of-support date and latest supported version.
+  - **Best-effort inventory scan** — matches the whole software inventory against
+    endoflife.date's ~460 products; only actual EOL/near-EOL is surfaced (capped
+    by `InventoryMaxLookups`), so uncertain matches never raise false alarms.
+  Data is cached (`CacheHours`, default 7 days) and offline-safe: a stale cache
+  is used if a fetch fails, and `Offline: true` never touches the network. On for
+  all profiles. `WarnWithinDays` (default 90) flags releases nearing end-of-life.
+
 ## [1.2.3] - 2026-07-07
 
 ### Fixed

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.2.1",
+  "result": {
+    "name": "python",
+    "label": "Python",
+    "releases": [
+      { "name": "3.13", "isEol": false, "eolFrom": "2029-10-31", "latest": { "name": "3.13.14" } },
+      { "name": "3.12", "isEol": false, "eolFrom": "2028-10-31", "latest": { "name": "3.12.13" } },
+      { "name": "3.9", "isEol": true, "eolFrom": "2025-10-31", "latest": { "name": "3.9.25" } },
+      { "name": "3.8", "isEol": true, "eolFrom": "2024-10-07", "latest": { "name": "3.8.20" } }
+    ]
+  }
+}

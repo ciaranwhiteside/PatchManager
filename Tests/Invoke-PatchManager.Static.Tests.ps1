@@ -363,6 +363,67 @@ Assert-True ($stalenessHtml -match 'Environment staleness') 'HTML report should 
 Assert-True ($stalenessHtml -match 'Report-only exposure checks') 'Staleness panel should state it is report-only.'
 Assert-True ($stalenessHtml -match 'Microsoft Defender') 'Staleness panel should list the Defender finding.'
 
+#-- End-of-life report (report-only; endoflife.date) --------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-VersionCycleKeys')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ReleaseLatestName')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-EolReleaseForVersion')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-WindowsEolRelease')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-EolStatus')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-EndOfLifeFinding')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-EolFindingFromRelease')
+
+# Cycle-key extraction: most specific first.
+Assert-True (((ConvertTo-VersionCycleKeys '3.9.13') -join ',') -eq '3.9,3') 'Cycle keys: 3.9.13 -> 3.9,3.'
+Assert-True (((ConvertTo-VersionCycleKeys 'v20.11.1') -join ',') -eq '20.11,20') 'Cycle keys: v20.11.1 -> 20.11,20 (strips leading v).'
+Assert-True (@(ConvertTo-VersionCycleKeys '').Count -eq 0) 'Cycle keys: empty input yields nothing.'
+
+$winReleases = @((Get-Content -Path (Join-Path $fixtureDir 'eol-windows.json') -Raw | ConvertFrom-Json).result.releases)
+$pyReleases  = @((Get-Content -Path (Join-Path $fixtureDir 'eol-python.json')  -Raw | ConvertFrom-Json).result.releases)
+
+# Runtime major.minor mapping.
+$py39 = Resolve-EolReleaseForVersion -Releases $pyReleases -InstalledVersion '3.9.13'
+Assert-True ($py39.name -eq '3.9') 'Python 3.9.13 should resolve to cycle 3.9.'
+Assert-True ((Test-EolStatus -Release $py39).Status -eq 'EOL') 'Python 3.9 is past its EOL date -> EOL.'
+$py313 = Resolve-EolReleaseForVersion -Releases $pyReleases -InstalledVersion '3.13.1'
+Assert-True ((Test-EolStatus -Release $py313).Status -eq 'Supported') 'Python 3.13 is supported.'
+
+# Windows build + edition disambiguation (consumer W vs enterprise E share a build).
+$w23Pro = Resolve-WindowsEolRelease -Releases $winReleases -Build '22631' -Edition 'Professional'
+Assert-True ($w23Pro.name -eq '11-23h2-w') 'Windows build 22631 on Pro should map to the consumer 23H2 (W) cycle.'
+Assert-True ((Test-EolStatus -Release $w23Pro).Status -eq 'EOL') 'Windows 23H2 (W) is out of support -> EOL.'
+$w23Ent = Resolve-WindowsEolRelease -Releases $winReleases -Build '22631' -Edition 'Enterprise'
+Assert-True ($w23Ent.name -eq '11-23h2-e') 'Windows build 22631 on Enterprise should map to the 23H2 (E) cycle.'
+Assert-True ((Test-EolStatus -Release $w23Ent).Status -eq 'Supported') 'Windows 23H2 (E) is still supported.'
+$w25Pro = Resolve-WindowsEolRelease -Releases $winReleases -Build '26200' -Edition 'Professional'
+Assert-True ($w25Pro.name -eq '11-25h2-w') 'Windows build 26200 on Pro should map to the supported 25H2 (W) cycle.'
+Assert-True ($null -eq (Resolve-WindowsEolRelease -Releases $winReleases -Build '99999' -Edition 'Professional')) 'An unknown build resolves to $null (no crash under StrictMode).'
+Assert-True ($null -eq (Resolve-EolReleaseForVersion -Releases @() -InstalledVersion '1.0')) 'Empty release list resolves to $null.'
+
+# Test-EolStatus boundaries around the warning window (deterministic, now-relative).
+$relPast   = [pscustomobject]@{ name='x'; isEol=$true;  eolFrom=(Get-Date).AddDays(-5).ToString('yyyy-MM-dd');  latest=[pscustomobject]@{ name='9' } }
+$relNear   = [pscustomobject]@{ name='x'; isEol=$false; eolFrom=(Get-Date).AddDays(30).ToString('yyyy-MM-dd');  latest=[pscustomobject]@{ name='9' } }
+$relFuture = [pscustomobject]@{ name='x'; isEol=$false; eolFrom=(Get-Date).AddDays(400).ToString('yyyy-MM-dd'); latest=[pscustomobject]@{ name='9' } }
+Assert-True ((Test-EolStatus -Release $relPast   -WarnWithinDays 90).Status -eq 'EOL')       'Test-EolStatus: past eolFrom -> EOL.'
+Assert-True ((Test-EolStatus -Release $relNear   -WarnWithinDays 90).Status -eq 'NearEOL')   'Test-EolStatus: within the warning window -> NearEOL.'
+Assert-True ((Test-EolStatus -Release $relFuture -WarnWithinDays 90).Status -eq 'Supported') 'Test-EolStatus: beyond the warning window -> Supported.'
+Assert-True ((Test-EolStatus -Release $null).Status -eq 'Unknown') 'Test-EolStatus: a null release -> Unknown.'
+
+# Finding shape: EOL is a review finding; supported is info.
+$eolFinding = New-EolFindingFromRelease -Product 'python' -Item 'Python' -InstalledVersion '3.9.13' -Release $py39 -WarnWithinDays 90 -Recommendation 'Upgrade Python.'
+Assert-True ($eolFinding.Severity -eq 'review' -and $eolFinding.Status -eq 'EOL' -and $eolFinding.LatestSupported -eq '3.9.25') 'EOL finding should be a review with latest-supported populated.'
+$okFinding = New-EolFindingFromRelease -Product 'python' -Item 'Python' -InstalledVersion '3.13.1' -Release $py313 -WarnWithinDays 90
+Assert-True ($okFinding.Severity -eq 'info' -and $okFinding.Status -eq 'Supported') 'Supported finding should be info.'
+
+# HTML report renders the End-of-life panel when findings exist.
+$eolFindings = @(
+    (New-EolFindingFromRelease -Product 'windows' -Item 'Windows 23H2 (build 22631)' -InstalledVersion '22631' -Release $w23Pro -WarnWithinDays 90 -Recommendation 'Upgrade Windows.')
+    $okFinding
+)
+$eolHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings $eolFindings
+Assert-True ($eolHtml -match 'End-of-life') 'HTML report should render the End-of-life panel when findings exist.'
+Assert-True ($eolHtml -match 'endoflife\.date') 'EOL panel should credit its data source.'
+Assert-True ($eolHtml -match 'End of life') 'EOL panel should show the End of life status badge for an EOL row.'
+
 #-- Firmware provider (opt-in, off by default) --------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-FirmwareCatalogue')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-FirmwareProvider')

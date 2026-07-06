@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.2.1",
+  "result": {
+    "name": "windows",
+    "label": "Microsoft Windows",
+    "releases": [
+      { "name": "11-25h2-w", "label": "11 25H2 (W)", "isEol": false, "eolFrom": "2027-10-12", "isMaintained": true, "latest": { "name": "10.0.26200" } },
+      { "name": "11-25h2-e", "label": "11 25H2 (E)", "isEol": false, "eolFrom": "2028-10-10", "isMaintained": true, "latest": { "name": "10.0.26200" } },
+      { "name": "11-23h2-w", "label": "11 23H2 (W)", "isEol": true, "eolFrom": "2025-11-11", "isMaintained": false, "latest": { "name": "10.0.22631" } },
+      { "name": "11-23h2-e", "label": "11 23H2 (E)", "isEol": false, "eolFrom": "2026-11-10", "isMaintained": true, "latest": { "name": "10.0.22631" } },
+      { "name": "10-22h2", "label": "10 22H2", "isEol": true, "eolFrom": "2025-10-14", "isMaintained": true, "latest": { "name": "10.0.19045" } },
+      { "name": "10-21h2-iot-lts", "label": "10 21H2 IoT (LTS)", "isEol": false, "eolFrom": "2032-01-13", "isMaintained": true, "latest": { "name": "10.0.19044" } }
+    ]
+  }
+}

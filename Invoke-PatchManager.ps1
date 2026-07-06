@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.2.3 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.3.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -22,6 +22,8 @@
       - Optional webhook notifications and validated opt-in self-update
       - Extra sources: Chocolatey/Scoop, native vendor updaters (Adobe, Zoom),
         opt-in OEM firmware (Dell/HP/Lenovo), and report-only staleness checks
+      - End-of-life intelligence from endoflife.date: flags out-of-support
+        Windows, dev runtimes, and inventory software (report-only, cached)
       - Commercial profile extras: run-scoped BITS throttling and
         hostname-seeded jitter to stagger estate-wide concurrent runs
 
@@ -108,7 +110,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.2.3'
+$script:VERSION       = '1.3.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -126,6 +128,7 @@ $script:BITSPolicyApplied = $false
 $script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
 $script:StalenessFindings = @()
+$script:EndOfLifeFindings = @()
 $script:SelfUpdateStatus = 'Not checked'
 
 $script:Stats = [ordered]@{
@@ -277,6 +280,25 @@ $script:DefaultCfg = [ordered]@{
         FeatureUpdateLag        = $true
         FeatureUpdateMaxAgeDays = 365
         DevRuntimes             = $true
+    }
+
+    EndOfLife = [ordered]@{
+        # Report-only end-of-life/end-of-support intelligence from endoflife.date.
+        # Flags software whose whole release line is no longer supported (an app
+        # can be fully patched yet sit on an abandoned major version). Never
+        # patches - EOL means "plan a major-version upgrade" - so findings appear
+        # in their own report section and never affect applied/failed counts.
+        # On for all profiles. Data is cached and the run stays offline-safe.
+        Enabled             = $true
+        ApiBaseUrl          = 'https://endoflife.date/api/v1'
+        CacheHours          = 168     # 7 days; lifecycle data changes slowly
+        CachePath           = 'C:\ProgramData\PatchManager\Cache'
+        WarnWithinDays      = 90      # near-EOL warning window before the EOL date
+        CheckWindows        = $true   # authoritative Windows OS end-of-support
+        CheckRuntimes       = $true   # .NET / Python / Node.js cycles
+        InventoryScan       = $true   # best-effort match of the full software inventory
+        InventoryMaxLookups = 40      # cap network lookups per run (noise/perf guard)
+        Offline             = $false  # $true = use cache only, never fetch
     }
 
     Firmware = [ordered]@{
@@ -3070,6 +3092,314 @@ function Invoke-StalenessReport {
 
 #endregion
 
+#region -- End-of-Life (report-only) --------------------------------------------------
+# Authoritative end-of-life / end-of-support data from endoflife.date. Report-only:
+# an app can be fully patched yet sit on a release line the vendor abandoned. EOL
+# means "plan a major-version upgrade", never an automatic patch, so findings live
+# in their own report section and never affect applied/failed counts.
+
+function Get-EndOfLifeCached {
+    # Generic cached GET against endoflife.date. Returns the parsed JSON envelope
+    # object, or $null. Caching/TTL/offline/stale-fallback mirror Get-CISAKEVData.
+    param(
+        [Parameter(Mandatory)] [string]$RelativePath,
+        [Parameter(Mandatory)] [string]$CacheKey,
+        [Parameter(Mandatory)] $Cfg
+    )
+    $cacheDir = [string](Get-ObjectPropertyValue $Cfg 'CachePath' 'C:\ProgramData\PatchManager\Cache')
+    if (-not (Test-Path $cacheDir)) {
+        try { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null } catch { }
+    }
+    $safeKey    = ($CacheKey -replace '[^A-Za-z0-9._-]', '_')
+    $cacheFile  = Join-Path $cacheDir "$safeKey.json"
+    $cacheHours = [double](Get-ObjectPropertyValue $Cfg 'CacheHours' 168)
+    $offline    = [bool](Get-ObjectPropertyValue $Cfg 'Offline' $false)
+
+    if (Test-Path $cacheFile) {
+        $age = ((Get-Date) - (Get-Item $cacheFile).LastWriteTime).TotalHours
+        if ($offline -or $age -lt $cacheHours) {
+            try { return (Get-Content $cacheFile -Raw | ConvertFrom-Json) } catch { }
+        }
+    } elseif ($offline) {
+        return $null   # offline with nothing cached
+    }
+
+    $base = [string](Get-ObjectPropertyValue $Cfg 'ApiBaseUrl' 'https://endoflife.date/api/v1')
+    $uri  = "$base/$RelativePath"
+    try {
+        $resp = Invoke-RestMethod -Uri $uri -TimeoutSec 30 `
+                    -Headers @{ 'User-Agent' = 'PatchManager-EOL'; 'Accept' = 'application/json' } -EA Stop
+        try { $resp | ConvertTo-Json -Depth 12 | Set-Content $cacheFile -Encoding UTF8 } catch { }
+        return $resp
+    } catch {
+        Write-Log "End-of-life: fetch '$RelativePath' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level DEBUG
+        if (Test-Path $cacheFile) {
+            try { return (Get-Content $cacheFile -Raw | ConvertFrom-Json) } catch { }
+        }
+        return $null
+    }
+}
+
+function Get-EndOfLifeProduct {
+    # Returns one product's .result object (with .releases), or $null.
+    param([Parameter(Mandatory)] [string]$Name, [Parameter(Mandatory)] $Cfg)
+    $envelope = Get-EndOfLifeCached -RelativePath "products/$Name" -CacheKey "eol_$Name" -Cfg $Cfg
+    if ($null -eq $envelope) { return $null }
+    return (Get-ObjectPropertyValue $envelope 'result' $null)
+}
+
+function Get-EndOfLifeIndex {
+    # Returns the product index (.result array of {name,aliases,label,...}), or @().
+    param([Parameter(Mandatory)] $Cfg)
+    $envelope = Get-EndOfLifeCached -RelativePath 'products' -CacheKey 'eol_index' -Cfg $Cfg
+    if ($null -eq $envelope) { return @() }
+    return @(Get-ObjectPropertyValue $envelope 'result' @())
+}
+
+function New-EndOfLifeFinding {
+    # Shape for a report-only end-of-life finding. Severity 'review' = out of (or
+    # near) support and needs action; 'info' = supported/evidence only.
+    param(
+        [string]$Product,
+        [string]$Item,
+        [string]$InstalledVersion,
+        [string]$Cycle = '',
+        [ValidateSet('EOL', 'NearEOL', 'Supported', 'Unknown')] [string]$Status = 'Unknown',
+        [string]$EolDate = '',
+        [object]$DaysRemaining = $null,
+        [string]$LatestSupported = '',
+        [ValidateSet('review', 'info')] [string]$Severity = 'info',
+        [string]$Detail = '',
+        [string]$Recommendation = ''
+    )
+    return [PSCustomObject]@{
+        Product          = $Product
+        Item             = $Item
+        InstalledVersion = $InstalledVersion
+        Cycle            = $Cycle
+        Status           = $Status
+        EolDate          = $EolDate
+        DaysRemaining    = $DaysRemaining
+        LatestSupported  = $LatestSupported
+        Severity         = $Severity
+        Detail           = $Detail
+        Recommendation   = $Recommendation
+        Timestamp        = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    }
+}
+
+function ConvertTo-VersionCycleKeys {
+    # Candidate endoflife cycle names for an installed version, most specific first:
+    # "3.9.13" -> @('3.9','3'); "v20.11" -> @('20.11','20'); "8.0.10" -> @('8.0','8').
+    param([string]$Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return @() }
+    $m = [regex]::Match($Version, '(\d+)(?:\.(\d+))?')
+    if (-not $m.Success) { return @() }
+    $maj = $m.Groups[1].Value
+    $keys = @()
+    if ($m.Groups[2].Success) { $keys += "$maj.$($m.Groups[2].Value)" }
+    $keys += $maj
+    return $keys
+}
+
+function Get-ReleaseLatestName {
+    # Safely reads release.latest.name ('' when absent) under StrictMode.
+    param($Release)
+    $latest = Get-ObjectPropertyValue $Release 'latest' $null
+    if ($null -eq $latest) { return '' }
+    return [string](Get-ObjectPropertyValue $latest 'name' '')
+}
+
+function Resolve-EolReleaseForVersion {
+    # Picks the release whose cycle name matches the installed major(.minor).
+    # Returns the release object, or $null. Pure - unit-testable with fixtures.
+    param([array]$Releases, [string]$InstalledVersion)
+    if (-not $Releases -or $Releases.Count -eq 0) { return $null }
+    foreach ($key in (ConvertTo-VersionCycleKeys -Version $InstalledVersion)) {
+        $match = $Releases | Where-Object { [string]$_.name -ieq $key } | Select-Object -First 1
+        if ($match) { return $match }
+    }
+    return $null
+}
+
+function Resolve-WindowsEolRelease {
+    # Maps a running Windows build to its endoflife release. Multiple cycles can
+    # share a build (consumer 'W' vs enterprise 'E' vs 'LTS'/'IoT'); disambiguate
+    # by edition. Pure - unit-testable with fixtures.
+    param([array]$Releases, [string]$Build, [string]$Edition)
+    if (-not $Releases -or [string]::IsNullOrWhiteSpace($Build)) { return $null }
+    $buildPattern = "(^|\.)$([regex]::Escape($Build))$"
+    $buildMatches = @($Releases | Where-Object { (Get-ReleaseLatestName $_) -match $buildPattern })
+    if ($buildMatches.Count -eq 0) { return $null }
+
+    $isEnterprise = $Edition -match 'Enterprise|Education'
+    $suffix = if ($isEnterprise) { '-e' } else { '-w' }
+    # Prefer the edition-matching client cycle (exclude LTS/IoT for a normal SKU).
+    $preferred = $buildMatches |
+        Where-Object { ([string]$_.name -like "*$suffix") -and (-not ([string]$_.name -match 'lts|iot')) } |
+        Select-Object -First 1
+    if ($preferred) { return $preferred }
+    $nonLts = $buildMatches | Where-Object { -not ([string]$_.name -match 'lts|iot') } | Select-Object -First 1
+    if ($nonLts) { return $nonLts }
+    return ($buildMatches | Select-Object -First 1)
+}
+
+function Test-EolStatus {
+    # Classifies a release: EOL / NearEOL / Supported / Unknown from isEol + eolFrom.
+    # isEol (when present) is authoritative; the date refines NearEOL vs Supported.
+    param($Release, [int]$WarnWithinDays = 90)
+    if ($null -eq $Release) {
+        return [PSCustomObject]@{ Status = 'Unknown'; EolDate = ''; DaysRemaining = $null }
+    }
+    $isEol     = Get-ObjectPropertyValue $Release 'isEol' $null
+    $eolFromRaw = [string](Get-ObjectPropertyValue $Release 'eolFrom' '')
+
+    $days = $null
+    if ($eolFromRaw -match '^\d{4}-\d{2}-\d{2}') {
+        try {
+            $eolDate = [datetime]::ParseExact($eolFromRaw.Substring(0, 10), 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+            $days = [int][Math]::Floor(($eolDate - (Get-Date).Date).TotalDays)
+        } catch { }
+    }
+
+    $status = 'Unknown'
+    if ($isEol -eq $true) {
+        $status = 'EOL'
+    } elseif ($isEol -eq $false) {
+        $status = if ($null -ne $days -and $days -le $WarnWithinDays) { 'NearEOL' } else { 'Supported' }
+    } elseif ($null -ne $days) {
+        $status = if ($days -lt 0) { 'EOL' } elseif ($days -le $WarnWithinDays) { 'NearEOL' } else { 'Supported' }
+    }
+    return [PSCustomObject]@{ Status = $status; EolDate = $eolFromRaw; DaysRemaining = $days }
+}
+
+function New-EolFindingFromRelease {
+    # Composes Test-EolStatus + New-EndOfLifeFinding for one resolved release.
+    param(
+        [string]$Product, [string]$Item, [string]$InstalledVersion,
+        $Release, [int]$WarnWithinDays = 90, [string]$Recommendation = ''
+    )
+    if ($null -eq $Release) {
+        return New-EndOfLifeFinding -Product $Product -Item $Item -InstalledVersion $InstalledVersion `
+            -Status 'Unknown' -Severity 'info' `
+            -Detail 'No matching endoflife.date release for the installed version.'
+    }
+    $cycle  = [string](Get-ObjectPropertyValue $Release 'name' '')
+    $latest = Get-ReleaseLatestName $Release
+    $st     = Test-EolStatus -Release $Release -WarnWithinDays $WarnWithinDays
+    $sev    = if ($st.Status -in @('EOL', 'NearEOL')) { 'review' } else { 'info' }
+    $detail = switch ($st.Status) {
+        'EOL'       { "Release $cycle reached end-of-life on $($st.EolDate). Latest supported: $latest." }
+        'NearEOL'   { "Release $cycle reaches end-of-life on $($st.EolDate) (in $($st.DaysRemaining) day(s)). Latest supported: $latest." }
+        'Supported' { "Release $cycle is supported$(if ($st.EolDate) { " until $($st.EolDate)" }). Latest: $latest." }
+        default     { "Lifecycle status could not be determined for release $cycle." }
+    }
+    $rec = if ($sev -eq 'review') { $Recommendation } else { '' }
+    return New-EndOfLifeFinding -Product $Product -Item $Item -InstalledVersion $InstalledVersion `
+        -Cycle $cycle -Status $st.Status -EolDate $st.EolDate -DaysRemaining $st.DaysRemaining `
+        -LatestSupported $latest -Severity $sev -Detail $detail -Recommendation $rec
+}
+
+function Invoke-EndOfLifeReport {
+    # Report-only. Returns findings; NEVER patches. Each lookup is wrapped so a
+    # network hiccup yields an Unknown/info note rather than failing the run.
+    $cfg = Get-ObjectPropertyValue $script:CFG 'EndOfLife' $null
+    if ($null -eq $cfg -or -not [bool](Get-ObjectPropertyValue $cfg 'Enabled' $false)) { return @() }
+
+    $warn     = [int](Get-ObjectPropertyValue $cfg 'WarnWithinDays' 90)
+    $findings = [System.Collections.Generic.List[pscustomobject]]::new()
+    $curated  = @('windows', 'dotnet', 'python', 'nodejs')
+
+    # --- Windows OS end-of-support (authoritative) ---
+    if ([bool](Get-ObjectPropertyValue $cfg 'CheckWindows' $true)) {
+        try {
+            $cv      = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -EA Stop
+            $build   = [string]$cv.CurrentBuild
+            $display = [string](Get-ObjectPropertyValue $cv 'DisplayVersion' (Get-ObjectPropertyValue $cv 'ReleaseId' ''))
+            $edition = [string](Get-ObjectPropertyValue $cv 'EditionID' '')
+            $product = Get-EndOfLifeProduct -Name 'windows' -Cfg $cfg
+            if ($product) {
+                $rel = Resolve-WindowsEolRelease -Releases @($product.releases) -Build $build -Edition $edition
+                $findings.Add((New-EolFindingFromRelease -Product 'windows' -Item "Windows $display (build $build)" `
+                    -InstalledVersion $build -Release $rel -WarnWithinDays $warn `
+                    -Recommendation 'Upgrade to a supported Windows feature version.'))
+            }
+        } catch { Write-Log "End-of-life: Windows check failed: $_" -Level DEBUG }
+    }
+
+    # --- Developer runtimes (.NET / Python / Node.js) ---
+    if ([bool](Get-ObjectPropertyValue $cfg 'CheckRuntimes' $true)) {
+        $runtimes = @(
+            @{ Item = '.NET';    Product = 'dotnet'; Exe = 'dotnet'; Args = @('--version') }
+            @{ Item = 'Python';  Product = 'python'; Exe = 'python'; Args = @('--version') }
+            @{ Item = 'Node.js'; Product = 'nodejs'; Exe = 'node';   Args = @('--version') }
+        )
+        foreach ($rt in $runtimes) {
+            $cmd = Get-Command $rt.Exe -EA SilentlyContinue
+            if (-not $cmd) { continue }
+            $ver = ''
+            try {
+                $res = Invoke-CapturedProcess -FilePath $cmd.Source -Arguments $rt.Args -TimeoutSeconds 30
+                $ver = ([string]$res.Output -split '\r?\n' | ForEach-Object { ([regex]::Match($_, '\d+\.\d+(\.\d+)?')).Value } | Where-Object { $_ } | Select-Object -First 1)
+            } catch { }
+            if (-not $ver) { continue }
+            $product = Get-EndOfLifeProduct -Name $rt.Product -Cfg $cfg
+            if (-not $product) { continue }
+            $rel = Resolve-EolReleaseForVersion -Releases @($product.releases) -InstalledVersion $ver
+            $findings.Add((New-EolFindingFromRelease -Product $rt.Product -Item $rt.Item `
+                -InstalledVersion $ver -Release $rel -WarnWithinDays $warn `
+                -Recommendation "Upgrade $($rt.Item) to a supported release."))
+        }
+    }
+
+    # --- Best-effort inventory scan (informational; only EOL/NearEOL surfaced) ---
+    if ([bool](Get-ObjectPropertyValue $cfg 'InventoryScan' $false)) {
+        try {
+            $index = Get-EndOfLifeIndex -Cfg $cfg
+            if ($index.Count -gt 0) {
+                $maxLookups = [int](Get-ObjectPropertyValue $cfg 'InventoryMaxLookups' 40)
+                $checked    = [System.Collections.Generic.HashSet[string]]::new()
+                $lookups    = 0
+                foreach ($app in @(Get-SoftwareInventory)) {
+                    if ($lookups -ge $maxLookups) { break }
+                    $name = [string]$app.Name
+                    $ver  = [string]$app.Version
+                    if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($ver)) { continue }
+
+                    $prod = $index | Where-Object {
+                        $pn = [string]$_.name
+                        if ($curated -contains $pn) { return $false }
+                        $label = [string](Get-ObjectPropertyValue $_ 'label' '')
+                        $aliasHit = @(@(Get-ObjectPropertyValue $_ 'aliases' @()) | Where-Object { ([string]$_).Length -ge 4 -and (Test-WordMatch $name ([string]$_)) }).Count -gt 0
+                        ($label.Length -ge 4 -and (Test-WordMatch $name $label)) -or
+                        ($pn.Length    -ge 4 -and (Test-WordMatch $name $pn))    -or
+                        $aliasHit
+                    } | Select-Object -First 1
+                    if (-not $prod) { continue }
+                    if (-not $checked.Add([string]$prod.name)) { continue }   # one finding per product
+                    $lookups++
+
+                    $full = Get-EndOfLifeProduct -Name ([string]$prod.name) -Cfg $cfg
+                    if (-not $full) { continue }
+                    $rel = Resolve-EolReleaseForVersion -Releases @($full.releases) -InstalledVersion $ver
+                    $st  = Test-EolStatus -Release $rel -WarnWithinDays $warn
+                    if ($st.Status -in @('EOL', 'NearEOL')) {
+                        $findings.Add((New-EolFindingFromRelease -Product ([string]$prod.name) -Item $name `
+                            -InstalledVersion $ver -Release $rel -WarnWithinDays $warn `
+                            -Recommendation "Plan an upgrade of $name to a supported release."))
+                    }
+                }
+            }
+        } catch { Write-Log "End-of-life: inventory scan failed: $_" -Level DEBUG }
+    }
+
+    $reviewCount = @($findings | Where-Object { $_.Severity -eq 'review' }).Count
+    Write-Log "End-of-life report: $($findings.Count) finding(s), $reviewCount out of (or near) support." -Level $(if ($reviewCount -gt 0) { 'WARN' } else { 'INFO' })
+    return @($findings)
+}
+
+#endregion
+
 #region -- Firmware / BIOS (opt-in) ---------------------------------------------------
 
 function Test-OnACPower {
@@ -3842,6 +4172,7 @@ function New-ComplianceReport {
             KEVMatches  = $KEVMatches
             InventoryKEVMatches = @($script:InventoryKEVMatches)
             StalenessFindings = @($script:StalenessFindings)
+            EndOfLifeFindings = @($script:EndOfLifeFindings)
             SLABreaches = $SLABreaches
         } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8
         Write-Log "JSON report: $jsonPath" -Level INFO
@@ -3870,6 +4201,18 @@ function New-ComplianceReport {
                 Write-Log "Staleness CSV generation failed: $_" -Level WARN
             }
         }
+        if (@($script:EndOfLifeFindings).Count -gt 0) {
+            try {
+                $eolCsv = Join-Path $rptDir "$base.endoflife.csv"
+                @($script:EndOfLifeFindings) |
+                    Select-Object Product, Item, InstalledVersion, Cycle, Status, EolDate,
+                                  DaysRemaining, LatestSupported, Severity, Detail, Recommendation, Timestamp |
+                    Export-Csv -Path $eolCsv -NoTypeInformation -Encoding UTF8
+                Write-Log "End-of-life CSV: $eolCsv" -Level INFO
+            } catch {
+                Write-Log "End-of-life CSV generation failed: $_" -Level WARN
+            }
+        }
     }
 
     if ($script:CFG.Reporting.GenerateHTML) {
@@ -3878,7 +4221,8 @@ function New-ComplianceReport {
             New-HTMLReport -Results $Results -KEVMatches $KEVMatches `
                            -SLABreaches $SLABreaches -Elapsed $elapsed -Metrics $Metrics `
                            -InventoryKEVMatches @($script:InventoryKEVMatches) `
-                           -StalenessFindings @($script:StalenessFindings) |
+                           -StalenessFindings @($script:StalenessFindings) `
+                           -EndOfLifeFindings @($script:EndOfLifeFindings) |
                 Set-Content $htmlPath -Encoding UTF8 -EA Stop
             Write-Log "HTML report: $htmlPath" -Level INFO
         } catch {
@@ -3908,7 +4252,7 @@ function New-ComplianceReport {
 
 
 function New-HTMLReport {
-    param([array]$Results, [array]$KEVMatches, [array]$SLABreaches, [double]$Elapsed, [object]$Metrics, [array]$InventoryKEVMatches = @(), [array]$StalenessFindings = @())
+    param([array]$Results, [array]$KEVMatches, [array]$SLABreaches, [double]$Elapsed, [object]$Metrics, [array]$InventoryKEVMatches = @(), [array]$StalenessFindings = @(), [array]$EndOfLifeFindings = @())
 
     function ConvertTo-ReportHtml {
         param($Value)
@@ -4129,6 +4473,23 @@ function New-HTMLReport {
         "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>Environment staleness</p><h2>Report-only exposure checks</h2></div><span class='count $countTone'>$($stalenessReview.Count)</span></div><p class='note'>These checks never change the machine and are not counted as updates. $($stalenessReview.Count) of $($StalenessFindings.Count) finding(s) need review (antivirus definitions, Windows feature version, developer runtimes).</p><div class='table-wrap'><table><thead><tr><th>Category</th><th>Item</th><th>State</th><th>Detail</th></tr></thead><tbody>$stalenessRows</tbody></table></div></section>"
     } else { '' }
 
+    $eolReview = @($EndOfLifeFindings | Where-Object { $_.Severity -eq 'review' })
+    $eolRows = ($EndOfLifeFindings | ForEach-Object {
+        $statusHtml = switch ($_.Status) {
+            'EOL'       { "<span class='status failed'>End of life</span>" }
+            'NearEOL'   { "<span class='status skipped'>Near EOL</span>" }
+            'Supported' { "<span class='status ok'>Supported</span>" }
+            default     { "<span class='status'>Unknown</span>" }
+        }
+        $detail = (($_.Detail, $_.Recommendation | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
+        "<tr><td>$(ConvertTo-ReportHtml $_.Item)</td><td class='mono'>$(ConvertTo-ReportHtml $_.InstalledVersion)</td><td class='mono'>$(ConvertTo-ReportHtml $_.Cycle)</td><td>$statusHtml</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.EolDate)</td><td class='mono'>$(ConvertTo-ReportHtml $_.LatestSupported)</td><td class='details'>$(ConvertTo-ReportHtml $detail)</td></tr>"
+    }) -join "`n"
+    $eolSection = if ($EndOfLifeFindings.Count -gt 0) {
+        $tone = if ($eolReview.Count -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($eolReview.Count -gt 0) { 'danger' } else { 'good' }
+        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>End-of-life</p><h2>Support-lifecycle exposure</h2></div><span class='count $countTone'>$($eolReview.Count)</span></div><p class='note'>Authoritative end-of-support data from endoflife.date. Report-only - out-of-support software is fully patchable yet no longer receives fixes, so plan a major-version upgrade. $($eolReview.Count) of $($EndOfLifeFindings.Count) finding(s) are out of (or near) support.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Cycle</th><th>Status</th><th>EOL date</th><th>Latest supported</th><th>Detail</th></tr></thead><tbody>$eolRows</tbody></table></div></section>"
+    } else { '' }
+
     $kevSection = if ($KEVMatches.Count -gt 0) {
         "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>Actionable KEV matches</h2></div><span class='count danger'>$kevCount</span></div><p class='note danger-text'>These upgrade candidates match the CISA Known Exploited Vulnerabilities catalogue and were prioritised.</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$kevRows</tbody></table></div></section>"
     } else {
@@ -4260,6 +4621,7 @@ function New-HTMLReport {
       <div id="security" class="two-col reveal">$kevSection$slaSection</div>
       <div class="reveal">$invKevSection</div>
       <div class="reveal">$stalenessSection</div>
+      <div class="reveal">$eolSection</div>
       <div id="runtime" class="reveal">$errSection</div>
       <section class="panel reveal"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p></section>
     </div>
@@ -4704,6 +5066,9 @@ function Invoke-Main {
 
     #-- Report-only staleness scan (never patches; own report section) --------
     $script:StalenessFindings = @(Invoke-StalenessReport)
+
+    #-- Report-only end-of-life scan (endoflife.date; never patches) ----------
+    $script:EndOfLifeFindings = @(Invoke-EndOfLifeReport)
 
     #-- Metrics + reporting ---------------------------------------------------
     $metrics = Get-PatchMetrics -State $patchState

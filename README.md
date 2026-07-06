@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.2.3).** PatchManager runs elevated and changes installed
+> **Public beta (v1.3.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -97,6 +97,7 @@ closes that gap with one auditable script:
 | Native vendor updaters | ✅ On | Headless "apply update now" updaters for apps with no actionable WinGet candidate (built-in: Brave; extend via `VendorUpdaters.ExtraCatalogue`). |
 | OEM firmware / BIOS | ⛔ Off | Opt-in only. Dell Command Update / HP Image Assistant / Lenovo System Update. Skipped on battery; never reboots on its own. |
 | Environment staleness | 🔎 Report-only | Never patches. Flags stale Microsoft Defender signatures, Windows feature-update lag, and installed dev-runtime versions in their own report section. |
+| End-of-life (endoflife.date) | 🔎 Report-only | Never patches. Flags software past (or nearing) end-of-support — out-of-support Windows, dev runtimes, and a best-effort scan of the whole inventory — in its own report section. Cached and offline-safe. |
 
 Commercial profiles keep everything above on except Chocolatey (licence
 opt-in). `CommercialManaged` additionally defers Windows Update, Microsoft 365,
@@ -386,6 +387,27 @@ are excluded from the applied/failed counts. On for all profiles.
 | `DefenderSignatures` / `DefenderMaxAgeDays` | `true` / `7` | Flag Microsoft Defender if signatures are older than N days. |
 | `FeatureUpdateLag` / `FeatureUpdateMaxAgeDays` | `true` / `365` | Flag the installed Windows feature version if it's older than N days. |
 | `DevRuntimes` | `true` | Report installed .NET SDK / Python / Node.js versions as evidence. |
+
+### `EndOfLife`
+
+Report-only — never patches. Adds authoritative **end-of-support** intelligence
+from [endoflife.date](https://endoflife.date/): software can be fully patched yet
+sit on a release line the vendor no longer fixes. Findings appear in their own
+report section (HTML panel + JSON + a `.endoflife.csv`) and are excluded from the
+applied/failed counts. On for all profiles. Product data is cached and the run is
+offline-safe — a stale cache is used if a fetch fails, and `Offline: true` never
+touches the network.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `true` | Master switch for the end-of-life checks. |
+| `ApiBaseUrl` | `https://endoflife.date/api/v1` | endoflife.date v1 API base. |
+| `CacheHours` / `CachePath` | `168` / `…\Cache` | Per-product cache TTL (7 days; lifecycle data moves slowly) and location (shared with the KEV cache). |
+| `WarnWithinDays` | `90` | Flag releases whose end-of-support falls within this window as *near-EOL*. |
+| `CheckWindows` | `true` | Authoritatively flag an out-of-support Windows feature version (build + edition aware). |
+| `CheckRuntimes` | `true` | Flag out-of-support .NET / Python / Node.js, with the latest supported version. |
+| `InventoryScan` / `InventoryMaxLookups` | `true` / `40` | Best-effort match of the whole software inventory against endoflife.date; only actual EOL/near-EOL is surfaced, capped at N network lookups per run. |
+| `Offline` | `false` | `true` = use the cache only, never fetch (air-gapped estates). |
 
 ### `UserExperience`
 

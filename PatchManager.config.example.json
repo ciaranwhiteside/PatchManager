@@ -125,6 +125,20 @@
     "DevRuntimes": true
   },
 
+  "EndOfLife": {
+    "_comment": "Report-only end-of-life/end-of-support intelligence from endoflife.date. Flags software whose whole release line is out of support (fully patched yet no longer receiving fixes) - so plan a major-version upgrade. Never patches; findings appear in their own report section, excluded from applied/failed counts. On for all profiles. WarnWithinDays flags releases nearing EOL. CheckWindows/CheckRuntimes are precise; InventoryScan is a best-effort match of the whole software inventory against endoflife.date products (only actual EOL/near-EOL is surfaced, capped by InventoryMaxLookups). Data is cached for CacheHours and the run stays offline-safe (stale cache is used if a fetch fails; set Offline:true for cache-only/air-gapped).",
+    "Enabled": true,
+    "ApiBaseUrl": "https://endoflife.date/api/v1",
+    "CacheHours": 168,
+    "CachePath": "C:\\ProgramData\\PatchManager\\Cache",
+    "WarnWithinDays": 90,
+    "CheckWindows": true,
+    "CheckRuntimes": true,
+    "InventoryScan": true,
+    "InventoryMaxLookups": 40,
+    "Offline": false
+  },
+
   "Firmware": {
     "_comment": "OEM firmware/BIOS/driver updates via Dell Command Update / HP Image Assistant / Lenovo System Update. OFF by default for every profile - firmware can require AC power and reboots and carries real risk. Enable deliberately. Skipped on battery; never reboots on its own.",
     "Enabled": false,

@@ -48,6 +48,13 @@ You can expect an acknowledgement within a week during the beta period.
   for stricter control pin `ExpectedSha256` or a specific `Ref`, set
   `AutoApply: false` to review first, or disable it and deploy via your own
   tooling.
+- **Outbound data services.** PatchManager queries a few public feeds over
+  HTTPS for read-only intelligence: the CISA KEV catalogue, and — new in 1.3.0 —
+  [endoflife.date](https://endoflife.date/) for end-of-support dates. Both send
+  no device data (only product-name lookups), are cached on disk, and fall back
+  to the cache when unreachable, so a run never blocks on them. In an air-gapped
+  estate set `CISAKEV.Enabled: false` and `EndOfLife.Offline: true` (or
+  `EndOfLife.Enabled: false`).
 - Machine-wide changes (the BITS bandwidth policy) are snapshotted and
   restored on exit, including crash paths.
 
