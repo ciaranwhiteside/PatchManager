@@ -295,6 +295,13 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-RegistryVe
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-VendorUpdaterCatalogue')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider')
 
+# Resolvers must return $null (never throw) when nothing matches - @()[0] throws
+# under Set-StrictMode -Version Latest, which is how the script runs.
+& {
+    Set-StrictMode -Version Latest
+    Assert-True ($null -eq (Resolve-FirstExistingPath -Candidates @('C:\definitely\missing\a.exe', 'C:\definitely\missing\b.exe'))) 'Resolve-FirstExistingPath must return $null (not throw) when no candidate exists under StrictMode.'
+}
+
 # Disabled provider yields nothing.
 $script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $false; NativeTimeoutSeconds = 60; ExtraCatalogue = @() } }
 Assert-True (@(Invoke-VendorUpdaterProvider).Count -eq 0) 'Vendor updater provider must return nothing when disabled.'

@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.1.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.2.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -92,6 +92,16 @@ closes that gap with one auditable script:
 | Microsoft Store (`msstore` + Store client) | ✅ On | Store CLI bulk updates when available, Windows MDM bridge fallback, verified against before/after AppX snapshots. |
 | Microsoft 365 Apps | ✅ On | Click-to-Run updater, detected automatically; never force-closes Office apps unless configured. |
 | Chrome / Edge | ✅ On | Native updaters, used only when the browser is not already covered by an actionable WinGet candidate. |
+| Chocolatey | ⚙️ Personal on | `choco outdated` discovery + per-package upgrade. The choco CLI is free, but Chocolatey for Business is paid — so it's **off in commercial profiles pending your explicit licence opt-in** (Personal on). |
+| Scoop | ✅ On (user context) | Per-user manager; refreshes buckets and updates all apps. Only runs in a user-context session (never SYSTEM). |
+| Native vendor updaters | ✅ On | Headless "apply update now" updaters for apps with no actionable WinGet candidate (built-in: Brave; extend via `VendorUpdaters.ExtraCatalogue`). |
+| OEM firmware / BIOS | ⛔ Off | Opt-in only. Dell Command Update / HP Image Assistant / Lenovo System Update. Skipped on battery; never reboots on its own. |
+| Environment staleness | 🔎 Report-only | Never patches. Flags stale Microsoft Defender signatures, Windows feature-update lag, and installed dev-runtime versions in their own report section. |
+
+Commercial profiles keep everything above on except Chocolatey (licence
+opt-in). `CommercialManaged` additionally defers Windows Update, Microsoft 365,
+browsers, Scoop, and vendor updaters to your management platform — see
+[Scope profiles](#scope-profiles-personal-vs-commercial).
 
 What it deliberately does **not** do:
 
@@ -341,6 +351,42 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `Enabled` / `ChromeEnabled` / `EdgeEnabled` | `true` (Chrome/Edge `false` on CommercialManaged) | Native browser updaters, used only when WinGet has no actionable candidate. |
 | `NativeTimeoutSeconds` | `900` | Native updater timeout. |
 
+### `PackageManagers`
+
+| Key | Default | Purpose |
+|---|---|---|
+| `ChocolateyEnabled` | `null` → profile | `null` resolves by profile: Personal **on** (the choco CLI is free), Commercial/CommercialManaged **off** pending your explicit opt-in. Chocolatey for Business is a paid product — enabling it commercially is your licence decision. An explicit `true`/`false` always wins. |
+| `ScoopEnabled` | `true` (`false` on CommercialManaged) | Per-user Scoop; only runs in a user-context session. |
+| `TimeoutSeconds` | `300` | Per-command timeout for both managers. |
+| `MaxUpdatesPerRun` | `0` | Cap Chocolatey upgrades per run (`0` = unlimited). |
+
+### `VendorUpdaters`
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `true` (`false` on CommercialManaged) | Drives headless "apply update now" updaters for apps with no actionable WinGet candidate. |
+| `NativeTimeoutSeconds` | `900` | Updater timeout. |
+| `ExtraCatalogue` | `[]` | Add your own Omaha-style updaters. Each entry: `Name`, `PackageId`, `Provider`, `WinGetOverlapId`, `VersionRegistryPaths`, `VersionValueName`, `UpdaterPathCandidates`, `UpdaterArgs`. Built-in: Brave. |
+
+### `Firmware`
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `false` (**all profiles**) | OEM firmware/BIOS/driver updates via Dell Command Update / HP Image Assistant / Lenovo System Update. Opt-in only — firmware carries real risk. Skipped on battery; never reboots on its own. |
+| `TimeoutSeconds` | `1800` | Per-command (scan + apply) timeout. |
+
+### `StalenessReport`
+
+Report-only — never patches. Findings appear in their own report section and
+are excluded from the applied/failed counts. On for all profiles.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `true` | Master switch for the staleness checks. |
+| `DefenderSignatures` / `DefenderMaxAgeDays` | `true` / `7` | Flag Microsoft Defender if signatures are older than N days. |
+| `FeatureUpdateLag` / `FeatureUpdateMaxAgeDays` | `true` / `365` | Flag the installed Windows feature version if it's older than N days. |
+| `DevRuntimes` | `true` | Report installed .NET SDK / Python / Node.js versions as evidence. |
+
 ### `UserExperience`
 
 | Key | Default | Purpose |
@@ -450,7 +496,8 @@ a vulnerability regardless of the size of your organisation.
 
 `CommercialManaged` automatically:
 
-- disables the Windows Update, Microsoft 365, Chrome, and Edge providers,
+- disables the Windows Update, Microsoft 365, Chrome, Edge, Scoop, and native
+  vendor-updater providers,
 - descopes Chrome/Edge/WebView2/Office/Teams/OneDrive WinGet packages (with
   audit-visible reasons in every report — a decision, not a miss).
 

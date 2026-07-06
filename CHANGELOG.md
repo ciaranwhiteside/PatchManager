@@ -4,6 +4,32 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-07-06
+
+### Added
+- **Chocolatey** and **Scoop** providers, extending coverage to software WinGet
+  doesn't track. Chocolatey is licence-gated: the CLI is free, but Chocolatey
+  for Business is paid, so it defaults on for Personal and off for commercial
+  profiles pending an explicit opt-in (`PackageManagers` config). Scoop is
+  per-user and runs only in a user-context session.
+- **Native vendor updater** provider (`VendorUpdaters`): a data-driven,
+  user-extensible catalogue of headless "apply update now" updaters for apps
+  with no actionable WinGet candidate. Built-in: Brave. Reuses the Chrome/Edge
+  updater pattern and defers to WinGet when it already covers the app.
+- **Opt-in OEM firmware/BIOS** provider (`Firmware`): Dell Command Update, HP
+  Image Assistant, and Lenovo System Update. Off by default for every profile,
+  skipped on battery, and never reboots on its own.
+- **Report-only staleness scanner** (`StalenessReport`): flags stale Microsoft
+  Defender signatures, Windows feature-update lag, and installed dev-runtime
+  versions in a dedicated report section (HTML panel + JSON + CSV). Never
+  patches, and excluded from applied/failed counts.
+
+### Changed
+- Scope profiles extended: the new patching providers are on for Personal and
+  Commercial and off under `CommercialManaged` (which now also defers Scoop and
+  vendor updaters to the management platform). The staleness scanner stays on
+  for all profiles as a safety net.
+
 ## [1.1.1] - 2026-07-06
 
 ### Changed

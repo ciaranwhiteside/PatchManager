@@ -2556,7 +2556,9 @@ function Resolve-BrowserUpdater {
             (Join-Path $env:LOCALAPPDATA 'Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe')
         )
     }
-    return @($paths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)[0]
+    # Select-Object -First 1 yields the item or nothing; do not index with [0],
+    # which throws on an empty result under Set-StrictMode -Version Latest.
+    return ($paths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)
 }
 
 # --- Generic native-updater helpers (used by the vendor/firmware providers) ---
@@ -2578,8 +2580,10 @@ function Get-RegistryVersion {
 
 function Resolve-FirstExistingPath {
     # Returns the first candidate path that exists on disk, or $null.
+    # (Select-Object -First 1 yields the item or nothing - never index an
+    # array here, since @()[0] throws under Set-StrictMode -Version Latest.)
     param([string[]]$Candidates)
-    return @($Candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)[0]
+    return ($Candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)
 }
 
 function Invoke-CapturedProcess {
@@ -3084,7 +3088,7 @@ function Invoke-FirmwareProvider {
 
     $manufacturer = ''
     try { $manufacturer = [string](Get-CimInstance -ClassName Win32_ComputerSystem -EA Stop).Manufacturer } catch { }
-    $entry = @(Get-FirmwareCatalogue | Where-Object { $manufacturer -imatch $_.Match } | Select-Object -First 1)[0]
+    $entry = Get-FirmwareCatalogue | Where-Object { $manufacturer -imatch $_.Match } | Select-Object -First 1
 
     if (-not $entry) {
         return @((New-PatchResult -Name 'Firmware' -PackageId 'Firmware.OEM' -Provider 'firmware' -Source 'firmware' -Status 'Skipped' -Evidence "Firmware provider enabled, but manufacturer '$manufacturer' has no supported OEM tool mapping (Dell, HP, Lenovo)."))
