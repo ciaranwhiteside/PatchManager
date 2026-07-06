@@ -125,6 +125,12 @@
     "DevRuntimes": true
   },
 
+  "Firmware": {
+    "_comment": "OEM firmware/BIOS/driver updates via Dell Command Update / HP Image Assistant / Lenovo System Update. OFF by default for every profile - firmware can require AC power and reboots and carries real risk. Enable deliberately. Skipped on battery; never reboots on its own.",
+    "Enabled": false,
+    "TimeoutSeconds": 1800
+  },
+
   "SLA": {
     "Critical": 14,
     "High": 14,

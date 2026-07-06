@@ -279,6 +279,16 @@ $script:DefaultCfg = [ordered]@{
         DevRuntimes             = $true
     }
 
+    Firmware = [ordered]@{
+        # OEM firmware/BIOS/driver updates via the vendor's CLI (Dell Command
+        # Update, HP Image Assistant, Lenovo System Update). OFF by default for
+        # EVERY profile: firmware can require AC power and reboots and carries
+        # real risk. Enable deliberately. Never reboots on its own; PatchManager
+        # flags reboot-required as usual. Skipped when the device is on battery.
+        Enabled        = $false
+        TimeoutSeconds = 1800
+    }
+
     SLA = [ordered]@{
         # Days from update becoming available to it being applied
         # Same window for all severities - if an update exists, apply it promptly
@@ -3012,6 +3022,116 @@ function Invoke-StalenessReport {
 
 #endregion
 
+#region -- Firmware / BIOS (opt-in) ---------------------------------------------------
+
+function Test-OnACPower {
+    # True if on AC power or no battery (desktop/VM). Firmware updates on battery
+    # are dangerous, so the firmware provider refuses to run without AC.
+    try {
+        $batteries = @(Get-CimInstance -ClassName Win32_Battery -EA SilentlyContinue)
+        if ($batteries.Count -eq 0) { return $true }   # no battery = desktop = wired
+        # BatteryStatus 2 = "AC / plugged in" per the CIM schema.
+        return @($batteries | Where-Object { $_.BatteryStatus -eq 2 }).Count -gt 0
+    } catch {
+        return $true   # can't tell -> don't block (pre-flight already guards this)
+    }
+}
+
+function Get-FirmwareCatalogue {
+    # Maps system manufacturer to its OEM update CLI. Scan then apply with reboots
+    # suppressed. Reboot-required is surfaced via the result, never auto-actioned.
+    return @(
+        [PSCustomObject]@{
+            Match     = 'Dell'
+            Name      = 'Dell firmware & drivers'
+            Provider  = 'firmware-dell'
+            Tool      = 'Dell Command | Update'
+            Paths     = @(
+                (Join-Path ${env:ProgramFiles(x86)} 'Dell\CommandUpdate\dcu-cli.exe')
+                (Join-Path ${env:ProgramFiles} 'Dell\CommandUpdate\dcu-cli.exe')
+            )
+            ScanArgs  = @('/scan')
+            ApplyArgs = @('/applyUpdates', '-reboot=disable')
+        }
+        [PSCustomObject]@{
+            Match     = 'HP|Hewlett'
+            Name      = 'HP firmware & drivers'
+            Provider  = 'firmware-hp'
+            Tool      = 'HP Image Assistant'
+            Paths     = @(
+                (Join-Path ${env:ProgramFiles} 'HP\HPIA\HPImageAssistant.exe')
+                (Join-Path ${env:ProgramFiles(x86)} 'HP\HPIA\HPImageAssistant.exe')
+            )
+            ScanArgs  = @('/Operation:Analyze', '/Silent', '/Category:BIOS,Firmware', '/ReportFolder:%TEMP%\HPIA')
+            ApplyArgs = @('/Operation:Install', '/Silent', '/Category:BIOS,Firmware', '/ReportFolder:%TEMP%\HPIA')
+        }
+        [PSCustomObject]@{
+            Match     = 'Lenovo'
+            Name      = 'Lenovo firmware & drivers'
+            Provider  = 'firmware-lenovo'
+            Tool      = 'Lenovo System Update'
+            Paths     = @(
+                (Join-Path ${env:ProgramFiles(x86)} 'Lenovo\System Update\tvsu.exe')
+            )
+            ScanArgs  = @('/CM', '-search', 'A', '-action', 'LIST', '-noicon')
+            ApplyArgs = @('/CM', '-search', 'A', '-action', 'INSTALL', '-noreboot', '-noicon')
+        }
+    )
+}
+
+function Invoke-FirmwareProvider {
+    if (-not [bool](Get-ObjectPropertyValue (Get-ObjectPropertyValue $script:CFG 'Firmware' $null) 'Enabled' $false)) { return @() }
+
+    $manufacturer = ''
+    try { $manufacturer = [string](Get-CimInstance -ClassName Win32_ComputerSystem -EA Stop).Manufacturer } catch { }
+    $entry = @(Get-FirmwareCatalogue | Where-Object { $manufacturer -imatch $_.Match } | Select-Object -First 1)[0]
+
+    if (-not $entry) {
+        return @((New-PatchResult -Name 'Firmware' -PackageId 'Firmware.OEM' -Provider 'firmware' -Source 'firmware' -Status 'Skipped' -Evidence "Firmware provider enabled, but manufacturer '$manufacturer' has no supported OEM tool mapping (Dell, HP, Lenovo)."))
+    }
+
+    $provider = $entry.Provider
+    if (-not (Test-OnACPower)) {
+        return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Skipped' -Evidence 'Firmware updates skipped: device is on battery. Connect AC power and rerun.'))
+    }
+
+    $tool = Resolve-FirstExistingPath -Candidates @($entry.Paths)
+    if (-not $tool) {
+        return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Skipped' -Evidence "$($entry.Tool) is not installed. Install it to enable OEM firmware/driver updates."))
+    }
+
+    if ($DryRun) {
+        return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Planned' -Evidence "Would run: $tool $($entry.ScanArgs -join ' ') then $($entry.ApplyArgs -join ' ')."))
+    }
+
+    $timeout = [Math]::Max(120, [int](Get-ObjectPropertyValue $script:CFG.Firmware 'TimeoutSeconds' 1800))
+    try {
+        Write-Log "$($entry.Name): scanning ($tool $($entry.ScanArgs -join ' '))." -Level INFO
+        $scan = Invoke-CapturedProcess -FilePath $tool -Arguments @($entry.ScanArgs) -TimeoutSeconds $timeout
+        Write-Log "$($entry.Name): applying updates (reboot suppressed)." -Level INFO
+        $apply = Invoke-CapturedProcess -FilePath $tool -Arguments @($entry.ApplyArgs) -TimeoutSeconds $timeout
+
+        $summary = (("scan=$($scan.ExitCode); apply=$($apply.ExitCode); " + ([string]$apply.Output -replace '\s+', ' ')).Trim())
+        if ($summary.Length -gt 600) { $summary = $summary.Substring(0, 600) + '...' }
+
+        if ($apply.TimedOut) {
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Failed' -Evidence "OEM firmware tool timed out after ${timeout}s."))
+        }
+        # OEM tools use vendor-specific reboot codes; 0 = success, common reboot
+        # codes (1/2/5) mean the apply succeeded but a restart completes it.
+        $rebootCodes = @(1, 2, 5)
+        if ($apply.ExitCode -eq 0 -or $apply.ExitCode -in $rebootCodes) {
+            $reboot = $apply.ExitCode -in $rebootCodes
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Completed' -Success $true -RebootRequired $reboot -Evidence "OEM firmware apply completed. $summary"))
+        }
+        return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Failed' -Evidence "OEM firmware apply reported exit code $($apply.ExitCode). $summary"))
+    } catch {
+        return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Failed' -Evidence "Firmware provider exception: $_"))
+    }
+}
+
+#endregion
+
 #region -- Microsoft Store Client -----------------------------------------------------
 
 function Resolve-StoreCliPath {
@@ -4479,7 +4599,8 @@ function Invoke-Main {
                          @(Invoke-MicrosoftStoreClientUpdates) +
                          @(Invoke-ChocolateyProvider) +
                          @(Invoke-ScoopProvider) +
-                         @(Invoke-VendorUpdaterProvider -WinGetCandidates $filteredUpgrades)
+                         @(Invoke-VendorUpdaterProvider -WinGetCandidates $filteredUpgrades) +
+                         @(Invoke-FirmwareProvider)
 
     }
 

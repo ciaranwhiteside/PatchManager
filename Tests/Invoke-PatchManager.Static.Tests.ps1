@@ -329,6 +329,23 @@ Assert-True ($stalenessHtml -match 'Environment staleness') 'HTML report should 
 Assert-True ($stalenessHtml -match 'Report-only exposure checks') 'Staleness panel should state it is report-only.'
 Assert-True ($stalenessHtml -match 'Microsoft Defender') 'Staleness panel should list the Defender finding.'
 
+#-- Firmware provider (opt-in, off by default) --------------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-FirmwareCatalogue')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-FirmwareProvider')
+
+# Disabled everywhere by default: an absent or Enabled=$false Firmware config yields nothing.
+$script:CFG = [pscustomobject]@{ Firmware = [pscustomobject]@{ Enabled = $false; TimeoutSeconds = 60 } }
+Assert-True (@(Invoke-FirmwareProvider).Count -eq 0) 'Firmware provider must return nothing when disabled (the default for all profiles).'
+$script:CFG = [pscustomobject]@{}
+Assert-True (@(Invoke-FirmwareProvider).Count -eq 0) 'Firmware provider must return nothing when the config section is absent.'
+
+# OEM catalogue maps the three supported manufacturers.
+$fwCat = @(Get-FirmwareCatalogue)
+Assert-True (@($fwCat | Where-Object { 'Dell Inc.' -imatch $_.Match }).Count -eq 1) 'Firmware catalogue should match Dell systems.'
+Assert-True (@($fwCat | Where-Object { 'HP' -imatch $_.Match }).Count -eq 1) 'Firmware catalogue should match HP systems.'
+Assert-True (@($fwCat | Where-Object { 'LENOVO' -imatch $_.Match }).Count -eq 1) 'Firmware catalogue should match Lenovo systems.'
+Assert-True (@($fwCat | Where-Object { 'VMware, Inc.' -imatch $_.Match }).Count -eq 0) 'Firmware catalogue should not match a non-OEM manufacturer.'
+
 #-- Descoping -----------------------------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-DescopeReason')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-IsDescoped')
