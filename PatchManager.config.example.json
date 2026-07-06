@@ -90,6 +90,13 @@
     "NativeTimeoutSeconds": 900
   },
 
+  "VendorUpdaters": {
+    "_comment": "Drives silent 'apply update now' updaters for apps not covered by an actionable WinGet candidate (built-in: Brave). Off under CommercialManaged. Add your own Omaha-style updaters via ExtraCatalogue, each with: Name, PackageId, Provider, WinGetOverlapId, VersionRegistryPaths, VersionValueName, UpdaterPathCandidates, UpdaterArgs.",
+    "Enabled": true,
+    "NativeTimeoutSeconds": 900,
+    "ExtraCatalogue": []
+  },
+
   "UserExperience": {
     "Enabled": true,
     "PromptOnAppInUse": true,

@@ -237,6 +237,17 @@ $script:DefaultCfg = [ordered]@{
         NativeTimeoutSeconds  = 900
     }
 
+    VendorUpdaters = [ordered]@{
+        # Drives the silent updaters shipped by specific vendors (Adobe, Zoom...)
+        # for apps not covered by an actionable WinGet candidate. Off under
+        # CommercialManaged. Add your own entries via ExtraCatalogue (same shape
+        # as the built-in entries: Name, PackageId, Provider, WinGetOverlapId,
+        # VersionRegistryPaths, VersionValueName, UpdaterPathCandidates, UpdaterArgs).
+        Enabled              = $true
+        NativeTimeoutSeconds = 900
+        ExtraCatalogue       = @()
+    }
+
     UserExperience = [ordered]@{
         Enabled              = $true
         PromptOnAppInUse     = $true
@@ -2787,6 +2798,103 @@ function Invoke-ScoopProvider {
 
 #endregion
 
+#region -- Native Vendor Updaters -----------------------------------------------------
+
+function Get-VendorUpdaterCatalogue {
+    # Built-in catalogue of apps that ship a headless "apply update now" updater
+    # (Omaha-style, same interface as Chrome/Edge). Each entry declares how to
+    # read the installed version, where the updater lives, and how to run it.
+    # Users extend this via VendorUpdaters.ExtraCatalogue (identical shape).
+    $builtIn = @(
+        [PSCustomObject]@{
+            Name                 = 'Brave Browser'
+            PackageId            = 'BraveSoftware.BraveBrowser'
+            Provider             = 'brave-update'
+            WinGetOverlapId      = 'BraveSoftware.BraveBrowser'
+            VersionRegistryPaths = @(
+                'HKLM:\SOFTWARE\WOW6432Node\BraveSoftware\Brave-Browser\BLBeacon'
+                'HKCU:\SOFTWARE\BraveSoftware\Brave-Browser\BLBeacon'
+            )
+            VersionValueName     = 'version'
+            UpdaterPathCandidates = @(
+                (Join-Path ${env:ProgramFiles(x86)} 'BraveSoftware\Update\BraveUpdate.exe')
+                (Join-Path ${env:ProgramFiles} 'BraveSoftware\Update\BraveUpdate.exe')
+                (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Update\BraveUpdate.exe')
+            )
+            UpdaterArgs          = @('/ua', '/installsource', 'scheduler')
+        }
+    )
+    $extra = @(Get-ObjectPropertyValue $script:CFG.VendorUpdaters 'ExtraCatalogue' @())
+    return @($builtIn + $extra)
+}
+
+function Invoke-VendorUpdaterProvider {
+    param([array]$WinGetCandidates = @())
+
+    if (-not [bool](Get-ObjectPropertyValue $script:CFG.VendorUpdaters 'Enabled' $false)) { return @() }
+
+    $timeout = [Math]::Max(30, [int](Get-ObjectPropertyValue $script:CFG.VendorUpdaters 'NativeTimeoutSeconds' 900))
+    $results = [System.Collections.Generic.List[pscustomobject]]::new()
+
+    foreach ($entry in @(Get-VendorUpdaterCatalogue)) {
+        $name      = [string]$entry.Name
+        $packageId = [string]$entry.PackageId
+        $provider  = [string]$entry.Provider
+        if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($provider)) { continue }
+
+        # Locate the installed app's updater; if absent, the app isn't installed - stay silent.
+        $updater = Resolve-FirstExistingPath -Candidates @($entry.UpdaterPathCandidates)
+        if (-not $updater) {
+            Write-Log "Vendor updater '$name': updater not found; app not installed." -Level DEBUG
+            continue
+        }
+
+        # Defer to WinGet when it already has an actionable candidate for this app.
+        $overlapId = [string](Get-ObjectPropertyValue $entry 'WinGetOverlapId' '')
+        if ($overlapId -and @($WinGetCandidates | Where-Object { $_.PackageId -like "$overlapId*" }).Count -gt 0) {
+            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -Status 'Skipped' -Evidence 'Already represented by an actionable WinGet candidate.'))
+            continue
+        }
+
+        $currentVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName ([string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version'))
+
+        $reason = ''
+        if (Test-IsDescoped -Item ([PSCustomObject]@{ Name=$name; PackageId=$packageId; Provider=$provider; Source=$provider }) -Reason ([ref]$reason)) {
+            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Descoped' -Evidence $reason))
+            continue
+        }
+
+        $updaterArgs = @($entry.UpdaterArgs)
+        if ($DryRun) {
+            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Planned' -Evidence "Would run native updater: $updater $($updaterArgs -join ' ')."))
+            continue
+        }
+
+        try {
+            Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
+            $proc = Start-Process -FilePath $updater -ArgumentList $updaterArgs -PassThru -WindowStyle Hidden
+            $completed = $proc.WaitForExit($timeout * 1000)
+            if (-not $completed) {
+                try { $proc.Kill() } catch { }
+                $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after ${timeout}s."))
+                continue
+            }
+            $afterVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName ([string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version'))
+            # If we can read a version delta, report Updated/AlreadyCurrent; otherwise
+            # the vendor updater ran headlessly and we report Completed.
+            $status = if ($currentVersion -and $afterVersion) {
+                if ($afterVersion -ne $currentVersion) { 'Updated' } else { 'AlreadyCurrent' }
+            } else { 'Completed' }
+            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -AvailableVersion $afterVersion -ConfirmedVersion $afterVersion -Status $status -Success $true -Evidence "Native updater exit code=$($proc.ExitCode); Before=$currentVersion; After=$afterVersion."))
+        } catch {
+            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Vendor updater exception: $_"))
+        }
+    }
+    return @($results)
+}
+
+#endregion
+
 #region -- Microsoft Store Client -----------------------------------------------------
 
 function Resolve-StoreCliPath {
@@ -4227,7 +4335,8 @@ function Invoke-Main {
                          @(Invoke-BrowserProvider -Browser Edge -WinGetCandidates $filteredUpgrades) +
                          @(Invoke-MicrosoftStoreClientUpdates) +
                          @(Invoke-ChocolateyProvider) +
-                         @(Invoke-ScoopProvider)
+                         @(Invoke-ScoopProvider) +
+                         @(Invoke-VendorUpdaterProvider -WinGetCandidates $filteredUpgrades)
 
     }
 

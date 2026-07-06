@@ -289,6 +289,27 @@ Assert-True (@($chocoParsed | Where-Object { $_.Id -eq 'notepadplusplus' })[0].P
 Assert-True (@($chocoParsed | Where-Object { $_.Id -eq 'somebrokenline' }).Count -eq 0) 'Choco parser: malformed lines should be ignored.'
 Assert-True (@(ConvertFrom-ChocoOutdated -Lines @()).Count -eq 0) 'Choco parser: empty input should yield no rows.'
 
+#-- Vendor updater provider ---------------------------------------------------------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-FirstExistingPath')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-RegistryVersion')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-VendorUpdaterCatalogue')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider')
+
+# Disabled provider yields nothing.
+$script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $false; NativeTimeoutSeconds = 60; ExtraCatalogue = @() } }
+Assert-True (@(Invoke-VendorUpdaterProvider).Count -eq 0) 'Vendor updater provider must return nothing when disabled.'
+
+# Catalogue includes the built-in Brave entry plus any ExtraCatalogue entries.
+$script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $true; NativeTimeoutSeconds = 60; ExtraCatalogue = @([pscustomobject]@{ Name = 'Test App'; Provider = 'test-update' }) } }
+$catalogue = @(Get-VendorUpdaterCatalogue)
+Assert-True (@($catalogue | Where-Object { $_.Provider -eq 'brave-update' }).Count -eq 1) 'Vendor catalogue should include the built-in Brave entry.'
+Assert-True (@($catalogue | Where-Object { $_.Provider -eq 'test-update' }).Count -eq 1) 'Vendor catalogue should include user ExtraCatalogue entries.'
+
+# WinGet overlap: a matching candidate makes the vendor entry defer with a Skipped row.
+$DryRun = [System.Management.Automation.SwitchParameter]::new($true)
+$braveEntry = @($catalogue | Where-Object { $_.Provider -eq 'brave-update' })[0]
+Assert-True ($braveEntry.WinGetOverlapId -eq 'BraveSoftware.BraveBrowser') 'Brave entry should declare its WinGet overlap id for the defer check.'
+
 #-- Descoping -----------------------------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-DescopeReason')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-IsDescoped')
