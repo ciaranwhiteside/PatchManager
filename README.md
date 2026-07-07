@@ -541,11 +541,17 @@ a vulnerability regardless of the size of your organisation.
 - descopes Chrome/Edge/WebView2/Office/Teams/OneDrive WinGet packages (with
   audit-visible reasons in every report — a decision, not a miss).
 
-Two safety nets remain even under `CommercialManaged`:
+Report-only safety nets remain **on for every profile, including
+`CommercialManaged`** — none of them change the machine, so there's no reason
+to defer them to your management platform:
 
 - The **inventory-wide CISA KEV scan** covers *all* installed software,
   including the managed apps — if your platform falls behind on an actively
   exploited Chrome, the report still flags it.
+- The **environment staleness** and **end-of-life** scans keep checking the
+  managed apps too — a platform that patches Chrome doesn't necessarily catch
+  an out-of-support Windows feature version or a Chrome release line that's
+  gone EOL, and the fleet dashboard rolls both up estate-wide.
 - Every descoped row appears in the report with its reason, so an auditor can
   see exactly what PatchManager deferred to the platform.
 
