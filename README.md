@@ -575,8 +575,16 @@ central share if configured):
   changed" is never buried under "what was checked".
 - **JSON** — full machine-readable results: metadata, statistics, status /
   source / provider summaries, attention items, reboot-required items, every
-  update row, KEV matches (actionable + inventory), SLA breaches.
-- **CSV** — flat per-row export for SIEM ingestion, Excel, or Power BI.
+  update row, KEV matches (actionable + inventory), SLA breaches, environment
+  staleness, and end-of-life findings.
+- **CSV** — flat per-row export for SIEM ingestion, Excel, or Power BI (plus
+  companion `.staleness.csv` and `.endoflife.csv` for the report-only checks).
+
+Report-only panels sit alongside the patch results — for example, the
+**End-of-life** panel flags software whose whole release line is out of support
+(fully patched, yet no longer receiving fixes), sourced from endoflife.date:
+
+![PatchManager end-of-life report panel](docs/images/report-endoflife-panel.png)
 
 ### Status glossary
 
