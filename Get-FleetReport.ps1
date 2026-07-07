@@ -97,6 +97,7 @@ foreach ($hostDir in $hostDirs) {
             Skipped         = $null
             KEVMatches      = $null
             InventoryKEV    = $null
+            EolExposure     = $null
             SLABreaches     = $null
             Errors          = $null
             RebootRequired  = $null
@@ -123,6 +124,7 @@ foreach ($hostDir in $hostDirs) {
             Skipped         = $null
             KEVMatches      = $null
             InventoryKEV    = $null
+            EolExposure     = $null
             SLABreaches     = $null
             Errors          = $null
             RebootRequired  = $null
@@ -139,6 +141,10 @@ foreach ($hostDir in $hostDirs) {
     $reboot   = @(Get-JsonProperty $report 'RebootRequiredItems' @())
     $attention = @(Get-JsonProperty $report 'AttentionItems' @())
     $invKev   = @(Get-JsonProperty $report 'InventoryKEVMatches' @())
+    # End-of-life exposure = findings needing action (out of, or nearing, support).
+    # 'info'/Supported findings are evidence, not exposure, so they are not counted.
+    $eol      = @(Get-JsonProperty $report 'EndOfLifeFindings' @())
+    $eolExposure = @($eol | Where-Object { [string]$_.Severity -eq 'review' }).Count
 
     $hostRows.Add([PSCustomObject]@{
         Hostname        = [string](Get-JsonProperty $metadata 'Hostname' $hostDir.Name)
@@ -154,6 +160,7 @@ foreach ($hostDir in $hostDirs) {
         Skipped         = [int](Get-JsonProperty $stats 'UpdatesSkipped' 0)
         KEVMatches      = [int](Get-JsonProperty $stats 'KEVMatches' 0)
         InventoryKEV    = $invKev.Count
+        EolExposure     = $eolExposure
         SLABreaches     = [int](Get-JsonProperty $stats 'SLABreaches' 0)
         Errors          = $errors.Count
         RebootRequired  = $reboot.Count
@@ -178,18 +185,20 @@ $staleHosts    = @($hostRows | Where-Object { $_.Stale }).Count
 $hostsWithFail = @($hostRows | Where-Object { $_.Failed -gt 0 }).Count
 $hostsWithKev  = @($hostRows | Where-Object { ($_.KEVMatches -gt 0) -or ($_.InventoryKEV -gt 0) }).Count
 $hostsWithSla  = @($hostRows | Where-Object { $_.SLABreaches -gt 0 }).Count
+$hostsWithEol  = @($hostRows | Where-Object { $_.EolExposure -gt 0 }).Count
 $hostsReboot   = @($hostRows | Where-Object { $_.RebootRequired -gt 0 }).Count
 $totalApplied  = ($hostRows | Measure-Object -Property Applied -Sum).Sum
 $healthyHosts  = @($hostRows | Where-Object {
-    -not $_.Stale -and $_.Failed -eq 0 -and $_.KEVMatches -eq 0 -and $_.InventoryKEV -eq 0 -and $_.SLABreaches -eq 0 -and $_.Errors -eq 0 -and $_.RebootRequired -eq 0
+    -not $_.Stale -and $_.Failed -eq 0 -and $_.KEVMatches -eq 0 -and $_.InventoryKEV -eq 0 -and $_.SLABreaches -eq 0 -and $_.Errors -eq 0 -and $_.RebootRequired -eq 0 -and (-not ($_.EolExposure -gt 0))
 }).Count
 
 $staleTone  = if ($staleHosts -gt 0) { 'danger' } else { 'good' }
 $failTone   = if ($hostsWithFail -gt 0) { 'danger' } else { 'good' }
 $securityTone = if ($hostsWithKev -gt 0 -or $hostsWithSla -gt 0) { 'danger' } else { 'good' }
+$eolTone    = if ($hostsWithEol -gt 0) { 'danger' } else { 'good' }
 $rebootTone = if ($hostsReboot -gt 0) { 'danger' } else { 'good' }
 $attentionHosts = @($hostRows | Where-Object {
-    $_.Stale -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0
+    $_.Stale -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0)
 }).Count
 $fleetVerdictTitle = if ($attentionHosts -eq 0) {
     'Fleet reporting is current.'
@@ -199,15 +208,15 @@ $fleetVerdictTitle = if ($attentionHosts -eq 0) {
     'Fleet needs review.'
 }
 $fleetVerdictCopy = if ($attentionHosts -eq 0) {
-    'Every latest host report is fresh and free of failure, KEV, SLA, script error, and reboot signals.'
+    'Every latest host report is fresh and free of failure, KEV, SLA, end-of-life, script error, and reboot signals.'
 } elseif ($hostsWithKev -gt 0 -or $hostsWithSla -gt 0) {
     'Prioritise hosts with KEV, inventory KEV, and SLA pressure before treating the estate as current.'
 } else {
-    'Review stale hosts, failed runs, script errors, and reboot-required rows before closing the fleet view.'
+    'Review stale hosts, failed runs, end-of-life exposure, script errors, and reboot-required rows before closing the fleet view.'
 }
 
 $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{Expression='Failed';Descending=$true}, Hostname | ForEach-Object {
-    $rowAttention = ($_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0)
+    $rowAttention = ($_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0))
     $rowPosture = if ($_.Stale) { 'stale' } elseif ($rowAttention) { 'attention' } else { 'healthy' }
     $rowClass = if ($_.Stale) { 'stale' }
                 elseif ($rowAttention) { 'attention' }
@@ -218,7 +227,7 @@ $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{
     $staleText = if ($_.Stale) { "STALE ($($_.ReportAgeDays)d)" } elseif ($null -ne $_.ReportAgeDays) { "$($_.ReportAgeDays)d ago" } else { '' }
     $noteText = if ($_.Note) { $_.Note } else { '-' }
     $searchText = "$(ConvertTo-FleetHtml $_.Hostname) $(ConvertTo-FleetHtml $_.Ring) $(ConvertTo-FleetHtml $_.ScopeProfile) $(ConvertTo-FleetHtml $_.Version) $(ConvertTo-FleetHtml $noteText)"
-    "<tr class='fleet-row $rowClass' data-search='$searchText' data-posture='$rowPosture' data-ring='$(ConvertTo-FleetHtml $_.Ring)' data-profile='$(ConvertTo-FleetHtml $_.ScopeProfile)' data-host='$(ConvertTo-FleetHtml $_.Hostname)' data-last='$lastRunSort' data-age='$ageSort' data-version='$(ConvertTo-FleetHtml $_.Version)' data-applied='$(ConvertTo-FleetHtml $_.Applied)' data-failed='$(ConvertTo-FleetHtml $_.Failed)' data-kev='$(ConvertTo-FleetHtml $_.KEVMatches)' data-invkev='$(ConvertTo-FleetHtml $_.InventoryKEV)' data-sla='$(ConvertTo-FleetHtml $_.SLABreaches)' data-errors='$(ConvertTo-FleetHtml $_.Errors)' data-reboot='$(ConvertTo-FleetHtml $_.RebootRequired)'><td><strong>$(ConvertTo-FleetHtml $_.Hostname)</strong></td><td class='nowrap'>$(ConvertTo-FleetHtml $lastRunText)</td><td class='nowrap'>$(ConvertTo-FleetHtml $staleText)</td><td>$(ConvertTo-FleetHtml $_.Ring)</td><td>$(ConvertTo-FleetHtml $_.ScopeProfile)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Version)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Applied)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Failed)</td><td class='mono'>$(ConvertTo-FleetHtml $_.KEVMatches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.InventoryKEV)</td><td class='mono'>$(ConvertTo-FleetHtml $_.SLABreaches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Errors)</td><td class='mono'>$(ConvertTo-FleetHtml $_.RebootRequired)</td><td class='details'>$(ConvertTo-FleetHtml $noteText)</td></tr>"
+    "<tr class='fleet-row $rowClass' data-search='$searchText' data-posture='$rowPosture' data-ring='$(ConvertTo-FleetHtml $_.Ring)' data-profile='$(ConvertTo-FleetHtml $_.ScopeProfile)' data-host='$(ConvertTo-FleetHtml $_.Hostname)' data-last='$lastRunSort' data-age='$ageSort' data-version='$(ConvertTo-FleetHtml $_.Version)' data-applied='$(ConvertTo-FleetHtml $_.Applied)' data-failed='$(ConvertTo-FleetHtml $_.Failed)' data-kev='$(ConvertTo-FleetHtml $_.KEVMatches)' data-invkev='$(ConvertTo-FleetHtml $_.InventoryKEV)' data-eol='$(ConvertTo-FleetHtml $_.EolExposure)' data-sla='$(ConvertTo-FleetHtml $_.SLABreaches)' data-errors='$(ConvertTo-FleetHtml $_.Errors)' data-reboot='$(ConvertTo-FleetHtml $_.RebootRequired)'><td><strong>$(ConvertTo-FleetHtml $_.Hostname)</strong></td><td class='nowrap'>$(ConvertTo-FleetHtml $lastRunText)</td><td class='nowrap'>$(ConvertTo-FleetHtml $staleText)</td><td>$(ConvertTo-FleetHtml $_.Ring)</td><td>$(ConvertTo-FleetHtml $_.ScopeProfile)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Version)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Applied)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Failed)</td><td class='mono'>$(ConvertTo-FleetHtml $_.KEVMatches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.InventoryKEV)</td><td class='mono'>$(ConvertTo-FleetHtml $_.EolExposure)</td><td class='mono'>$(ConvertTo-FleetHtml $_.SLABreaches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Errors)</td><td class='mono'>$(ConvertTo-FleetHtml $_.RebootRequired)</td><td class='details'>$(ConvertTo-FleetHtml $noteText)</td></tr>"
 }) -join "`n"
 
 $generatedAt = ConvertTo-FleetHtml (Get-Date -Format 'dd MMM yyyy HH:mm:ss')
@@ -246,8 +255,8 @@ $html = @"
   .fleet-nav{position:sticky;top:0;z-index:12;display:grid;grid-template-columns:auto minmax(260px,1fr);gap:18px;align-items:start;padding:12px 32px;background:rgba(17,21,19,.96);backdrop-filter:blur(14px);border-bottom:1px solid rgba(246,242,232,.12);color:#fff}.nav-brand{font-weight:820}.nav-links{display:flex;gap:8px;flex-wrap:wrap}.nav-links a{color:#cfd8d1;text-decoration:none;border:1px solid rgba(246,242,232,.16);border-radius:999px;padding:7px 11px;font-size:.82rem;transition:color .18s ease,border-color .18s ease,background .18s ease}.nav-links a:hover{color:#fff;border-color:rgba(246,242,232,.4);background:rgba(246,242,232,.07)}.fleet-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) 135px 135px 155px auto auto;gap:8px;align-items:end;grid-column:1/-1}
   label{display:block;color:#a9b4ab;font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px}input,select,button{font:inherit}input,select{width:100%;height:38px;border:1px solid rgba(246,242,232,.22);border-radius:7px;background:rgba(246,242,232,.08);color:#fff;padding:0 10px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}select option{color:#111513;background:#fff}input::placeholder{color:#96a29a}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(196,154,61,.35);border-color:var(--amber-curve)}button{height:38px;border:1px solid rgba(246,242,232,.25);border-radius:7px;background:var(--paper);color:var(--ink);padding:0 13px;cursor:pointer;font-weight:760;transition:transform .18s ease,background .18s ease,box-shadow .18s ease}button:hover{background:#fff;box-shadow:0 8px 22px rgba(0,0,0,.28)}button:active{transform:translateY(1px)}
   .hero{position:relative;color:#fff;padding:56px 32px 60px;background:linear-gradient(180deg,var(--charcoal-2),var(--charcoal));border-bottom:3px solid var(--amber-curve)}.hero-inner{position:relative;max-width:1440px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,420px);gap:42px;align-items:end}.hero-copy{max-width:72rem}.eyebrow{margin:0 0 8px;color:var(--muted);font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.08em}.hero .eyebrow{color:#a9b4ab}h1,h2,p{margin-top:0}h1{font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(2.1rem,3.8vw,3.4rem);line-height:1.04;margin:0 0 14px;font-weight:800;text-wrap:balance}h2{font-size:1.12rem;line-height:1.2;margin:0 0 4px;font-weight:760;text-wrap:balance}.hero-summary{max-width:62rem;color:#c8d2ca;font-size:1.05rem;margin:0;text-wrap:pretty}.hero-panel{align-self:stretch;display:grid;align-content:end;gap:12px;padding:16px;border:1px solid rgba(246,242,232,.16);border-radius:8px;background:rgba(246,242,232,.05)}.hero-proof{border:1px solid rgba(246,242,232,.13);background:rgba(7,9,8,.35);border-radius:7px;padding:12px}.hero-proof span{display:block;color:#a9b4ab;font-size:.72rem;font-weight:720;text-transform:uppercase;letter-spacing:.06em}.hero-proof strong{display:block;margin-top:3px;color:#fff;word-break:break-word;line-height:1.3}
-  main{max-width:1440px;margin:0 auto;padding:0 32px 56px;overflow-x:hidden}.fleet-bento{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-flow:dense;gap:14px;margin:44px 0 52px}.bento-card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:20px 20px 22px;box-shadow:var(--card-shadow);transition:box-shadow .25s ease,transform .25s ease}.bento-card:hover{box-shadow:0 2px 4px rgba(17,21,19,.06),0 18px 44px rgba(17,21,19,.12);transform:translateY(-2px)}.bento-card strong{display:block;font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(1.9rem,2.8vw,3rem);line-height:1;margin:10px 0 8px;color:var(--ink)}.bento-card p{margin:0;color:var(--muted);max-width:38rem;text-wrap:pretty}.bento-kicker{font-size:.72rem;font-weight:780;text-transform:uppercase;letter-spacing:.08em;color:var(--blue)}.bento-primary{grid-column:span 5}.bento-stale{grid-column:span 3}.bento-fail{grid-column:span 4}.bento-security,.bento-reboot,.bento-coverage{grid-column:span 4}.bento-card.danger{border-left-color:var(--red)}.bento-card.danger .bento-kicker{color:var(--red)}.bento-card.good{border-left-color:var(--green)}.bento-card.good .bento-kicker{color:var(--green)}
-  .fleet-lanes{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:14px;margin-bottom:48px}.lane{display:flex;flex-direction:column;justify-content:flex-end;min-width:0;text-decoration:none;color:#fff;border-radius:8px;padding:18px;min-height:132px;background:linear-gradient(150deg,var(--charcoal-2),var(--charcoal));border:1px solid rgba(246,242,232,.1);border-bottom:3px solid var(--amber-curve);transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease}.lane:hover{transform:translateY(-2px);border-color:rgba(246,242,232,.28);box-shadow:0 16px 40px rgba(17,21,19,.28)}.lane span{color:#a9b4ab;font-size:.72rem;font-weight:760;text-transform:uppercase;letter-spacing:.08em}.lane strong{font-size:2.1rem;line-height:1.1;margin-top:6px}.lane p{margin:6px 0 0;color:#c8d2ca;font-size:.88rem;max-width:30rem;text-wrap:pretty}
+  main{max-width:1440px;margin:0 auto;padding:0 32px 56px;overflow-x:hidden}.fleet-bento{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-flow:dense;gap:14px;margin:44px 0 52px}.bento-card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:20px 20px 22px;box-shadow:var(--card-shadow);transition:box-shadow .25s ease,transform .25s ease}.bento-card:hover{box-shadow:0 2px 4px rgba(17,21,19,.06),0 18px 44px rgba(17,21,19,.12);transform:translateY(-2px)}.bento-card strong{display:block;font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(1.9rem,2.8vw,3rem);line-height:1;margin:10px 0 8px;color:var(--ink)}.bento-card p{margin:0;color:var(--muted);max-width:38rem;text-wrap:pretty}.bento-kicker{font-size:.72rem;font-weight:780;text-transform:uppercase;letter-spacing:.08em;color:var(--blue)}.bento-primary{grid-column:span 5}.bento-stale{grid-column:span 3}.bento-fail{grid-column:span 4}.bento-security,.bento-eol,.bento-reboot,.bento-coverage{grid-column:span 3}.bento-card.danger{border-left-color:var(--red)}.bento-card.danger .bento-kicker{color:var(--red)}.bento-card.good{border-left-color:var(--green)}.bento-card.good .bento-kicker{color:var(--green)}
+  .fleet-lanes{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr;gap:14px;margin-bottom:48px}.lane{display:flex;flex-direction:column;justify-content:flex-end;min-width:0;text-decoration:none;color:#fff;border-radius:8px;padding:18px;min-height:132px;background:linear-gradient(150deg,var(--charcoal-2),var(--charcoal));border:1px solid rgba(246,242,232,.1);border-bottom:3px solid var(--amber-curve);transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease}.lane:hover{transform:translateY(-2px);border-color:rgba(246,242,232,.28);box-shadow:0 16px 40px rgba(17,21,19,.28)}.lane span{color:#a9b4ab;font-size:.72rem;font-weight:760;text-transform:uppercase;letter-spacing:.08em}.lane strong{font-size:2.1rem;line-height:1.1;margin-top:6px}.lane p{margin:6px 0 0;color:#c8d2ca;font-size:.88rem;max-width:30rem;text-wrap:pretty}
   .fleet-layout{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:22px;align-items:start}.fleet-evidence{position:sticky;top:126px;background:var(--charcoal);color:#fff;border:1px solid rgba(246,242,232,.12);border-radius:8px;padding:22px;border-bottom:3px solid var(--amber-curve)}.fleet-evidence h2{margin-bottom:12px}.scrub-copy{margin:0}.scrub-copy span{display:block;color:#dce5df;margin:10px 0}.evidence-meta{display:grid;gap:9px;margin-top:18px}.evidence-meta div{border:1px solid rgba(246,242,232,.15);border-radius:7px;padding:9px 10px}.evidence-meta span{display:block;color:#a9b4ab;font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.06em}.evidence-meta strong{display:block;color:#fff;word-break:break-word}.reveal{opacity:1;transform:none}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:22px;margin-bottom:18px;box-shadow:var(--card-shadow)}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}.count{display:inline-flex;min-width:36px;justify-content:center;border-radius:7px;padding:4px 9px;font-weight:820;background:#e7dfcc;color:#332f29}.count.good{background:var(--green-bg);color:var(--green)}.count.danger{background:var(--red-bg);color:var(--red)}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffdf6}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.89rem}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#efe8d7;color:#4a453c;font-size:.71rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;user-select:none;box-shadow:0 1px 0 var(--line)}th[data-sort]{cursor:pointer}th[data-sort]:hover{color:var(--ink)}th[data-sort]:after{content:" sort";color:#9a9081;font-weight:700;text-transform:none;letter-spacing:0;margin-left:4px}
   tbody tr:last-child td{border-bottom:none}
@@ -260,7 +269,7 @@ $html = @"
   .nowrap{white-space:nowrap}
   .details{color:var(--muted);font-size:.82rem;max-width:420px}
   .footer{margin-top:34px;padding:26px 28px;border-radius:8px;background:var(--charcoal);color:#c8d2ca;display:flex;justify-content:space-between;gap:18px;align-items:center;border-bottom:3px solid var(--amber-curve)}.footer a{color:#fff;text-decoration-color:rgba(196,154,61,.7);text-underline-offset:3px}.footer a:hover{text-decoration-color:var(--amber-curve)}
-  @media (max-width:1180px){.fleet-bento{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-reboot,.bento-coverage{grid-column:span 3}.fleet-layout{grid-template-columns:1fr}.fleet-evidence{position:static}}@media (max-width:980px){.fleet-nav{grid-template-columns:1fr}.fleet-toolbar{grid-template-columns:1fr 1fr}.fleet-toolbar .search-field{grid-column:1/-1}.hero-inner{grid-template-columns:1fr}.hero-panel{max-width:620px}.fleet-lanes{grid-template-columns:1fr 1fr}}@media (max-width:620px){.fleet-nav,.hero,main{padding-left:18px;padding-right:18px}.fleet-toolbar,.fleet-lanes{grid-template-columns:1fr}.fleet-bento{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-reboot,.bento-coverage{grid-column:span 1}h1{font-size:clamp(1.9rem,9vw,2.6rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.fleet-nav,button,.skip-link{display:none}.hero{background:#fff;color:#000;padding:18px 0;border-bottom:2px solid #000}.hero-summary,.hero-proof span{color:#333}.bento-card,.hero-panel,.hero-proof,.panel,.fleet-evidence{box-shadow:none;background:#fff;color:#000}.fleet-bento,.fleet-layout{display:block}.fleet-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
+  @media (max-width:1180px){.fleet-bento{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-eol,.bento-reboot,.bento-coverage{grid-column:span 3}.fleet-layout{grid-template-columns:1fr}.fleet-evidence{position:static}}@media (max-width:980px){.fleet-nav{grid-template-columns:1fr}.fleet-toolbar{grid-template-columns:1fr 1fr}.fleet-toolbar .search-field{grid-column:1/-1}.hero-inner{grid-template-columns:1fr}.hero-panel{max-width:620px}.fleet-lanes{grid-template-columns:1fr 1fr}}@media (max-width:620px){.fleet-nav,.hero,main{padding-left:18px;padding-right:18px}.fleet-toolbar,.fleet-lanes{grid-template-columns:1fr}.fleet-bento{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-stale,.bento-fail,.bento-security,.bento-eol,.bento-reboot,.bento-coverage{grid-column:span 1}h1{font-size:clamp(1.9rem,9vw,2.6rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.fleet-nav,button,.skip-link{display:none}.hero{background:#fff;color:#000;padding:18px 0;border-bottom:2px solid #000}.hero-summary,.hero-proof span{color:#333}.bento-card,.hero-panel,.hero-proof,.panel,.fleet-evidence{box-shadow:none;background:#fff;color:#000}.fleet-bento,.fleet-layout{display:block}.fleet-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
   @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}*{transition:none !important}}
 </style>
 <noscript><style>.reveal{opacity:1;transform:none}</style></noscript>
@@ -291,6 +300,7 @@ $html = @"
     <article class="bento-card bento-stale $staleTone"><span class="bento-kicker">Stale hosts</span><strong>$staleHosts</strong><p>Hosts whose newest report is older than ${StaleDays} day(s), or folders without readable JSON.</p></article>
     <article class="bento-card bento-fail $failTone"><span class="bento-kicker">Failures</span><strong>$hostsWithFail</strong><p>Hosts with failed update activity in their latest imported run.</p></article>
     <article class="bento-card bento-security $securityTone"><span class="bento-kicker">KEV / SLA</span><strong>$hostsWithKev / $hostsWithSla</strong><p>Hosts with actionable KEV, inventory KEV, or SLA pressure.</p></article>
+    <article class="bento-card bento-eol $eolTone"><span class="bento-kicker">End-of-life</span><strong>$hostsWithEol</strong><p>Hosts running software past (or nearing) end-of-support, from endoflife.date. Plan major-version upgrades.</p></article>
     <article class="bento-card bento-reboot $rebootTone"><span class="bento-kicker">Reboot pending</span><strong>$hostsReboot</strong><p>Latest host reports that include reboot-required evidence.</p></article>
     <article class="bento-card bento-coverage"><span class="bento-kicker">Latest-run coverage</span><strong>$totalApplied</strong><p>Updates applied across the newest JSON report per host.</p></article>
   </section>
@@ -298,6 +308,7 @@ $html = @"
     <a href="#hosts" class="lane lane-wide"><span>Stale reporting</span><strong>$staleHosts</strong><p>Hosts that may be offline, misconfigured, or unable to write to the share.</p></a>
     <a href="#hosts" class="lane"><span>Failures</span><strong>$hostsWithFail</strong><p>Patch activity requiring operator follow-up.</p></a>
     <a href="#hosts" class="lane"><span>KEV / SLA</span><strong>$hostsWithKev / $hostsWithSla</strong><p>Security-driven priority lanes.</p></a>
+    <a href="#hosts" class="lane"><span>End-of-life</span><strong>$hostsWithEol</strong><p>Hosts on out-of-support software.</p></a>
     <a href="#hosts" class="lane"><span>Reboot</span><strong>$hostsReboot</strong><p>Pending restart signals in latest runs.</p></a>
   </section>
   <div class="fleet-layout">
@@ -311,7 +322,7 @@ $html = @"
       <div class="section-head"><div><p class="eyebrow">Host estate</p><h2>Latest report per host</h2></div><span class="count">$totalHosts total</span></div>
     <div class="table-wrap">
       <table id="fleetTable">
-        <thead><tr><th data-sort="host">Host</th><th data-sort="last">Last run</th><th data-sort="age">Age</th><th data-sort="ring">Ring</th><th data-sort="profile">Profile</th><th data-sort="version">Version</th><th data-sort="applied">Applied</th><th data-sort="failed">Failed</th><th data-sort="kev">KEV</th><th data-sort="invkev">Inv. KEV</th><th data-sort="sla">SLA</th><th data-sort="errors">Errors</th><th data-sort="reboot">Reboot</th><th>Notes</th></tr></thead>
+        <thead><tr><th data-sort="host">Host</th><th data-sort="last">Last run</th><th data-sort="age">Age</th><th data-sort="ring">Ring</th><th data-sort="profile">Profile</th><th data-sort="version">Version</th><th data-sort="applied">Applied</th><th data-sort="failed">Failed</th><th data-sort="kev">KEV</th><th data-sort="invkev">Inv. KEV</th><th data-sort="eol">EOL</th><th data-sort="sla">SLA</th><th data-sort="errors">Errors</th><th data-sort="reboot">Reboot</th><th>Notes</th></tr></thead>
         <tbody>$tableRows</tbody>
       </table>
     </div>
@@ -330,7 +341,7 @@ $html = @"
   var clearFilters = document.getElementById('clearFleetFilters');
   var printReport = document.getElementById('printFleetReport');
   var resultCount = document.getElementById('fleetResultCount');
-  var numericSorts = ['last','age','applied','failed','kev','invkev','sla','errors','reboot'];
+  var numericSorts = ['last','age','applied','failed','kev','invkev','eol','sla','errors','reboot'];
   function appendOption(select, value){if(!select || !value){return;}var exists = Array.prototype.some.call(select.options,function(option){return option.value === value;});if(exists){return;}var option = document.createElement('option');option.value = value;option.textContent = value;select.appendChild(option);}
   rows.forEach(function(row){appendOption(ringFilter, row.getAttribute('data-ring') || '');appendOption(profileFilter, row.getAttribute('data-profile') || '');});
   Array.prototype.slice.call(ringFilter.options).slice(1).sort(function(a,b){return a.value.localeCompare(b.value);}).forEach(function(option){ringFilter.appendChild(option);});
@@ -351,7 +362,7 @@ $html = @"
 Set-Content -Path $htmlPath -Value $html -Encoding UTF8
 
 Write-Host ''
-Write-Host "Fleet summary: $totalHosts host(s) | healthy: $healthyHosts | stale: $staleHosts | failures: $hostsWithFail | KEV: $hostsWithKev | SLA: $hostsWithSla" -ForegroundColor Cyan
+Write-Host "Fleet summary: $totalHosts host(s) | healthy: $healthyHosts | stale: $staleHosts | failures: $hostsWithFail | KEV: $hostsWithKev | SLA: $hostsWithSla | EOL: $hostsWithEol" -ForegroundColor Cyan
 Write-Host "CSV : $csvPath" -ForegroundColor Green
 Write-Host "HTML: $htmlPath" -ForegroundColor Green
 

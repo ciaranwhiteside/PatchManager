@@ -4,6 +4,18 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-07-07
+
+### Added
+- **Fleet dashboard now surfaces end-of-life exposure estate-wide.**
+  `Get-FleetReport.ps1` reads each host's `EndOfLifeFindings` and rolls up the
+  count of out-of-(or nearing-)support findings per host: a new **End-of-life**
+  summary card, a risk lane, a sortable **EOL** column, a CSV `EolExposure`
+  column, and inclusion in the healthy/attention posture and filters. A commercial
+  operator can now see which machines run end-of-life software without opening
+  individual host reports. (`Get-FleetReport.ps1` is not covered by self-update —
+  refresh it with `git pull` or by re-downloading the release.)
+
 ## [1.3.0] - 2026-07-07
 
 ### Added

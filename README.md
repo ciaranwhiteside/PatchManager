@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.3.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.3.1).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -606,8 +606,10 @@ the aggregator from anywhere that can read it (read-only, no elevation):
 
 You get one HTML dashboard and CSV covering every host's most recent run:
 last-seen time with **stale-host flagging**, ring, profile, applied/failed
-counts, KEV matches (actionable and inventory), SLA breaches, script errors,
-and pending reboots — the "is my estate actually patched?" view.
+counts, KEV matches (actionable and inventory), SLA breaches, **end-of-life
+exposure** (hosts running out-of-support software, from the per-host
+endoflife.date findings), script errors, and pending reboots — the "is my
+estate actually patched, and is any of it abandoned?" view.
 
 To preview the fleet dashboard on one machine before you have a central share,
 wrap the newest local JSON report in a host-named folder and point the

@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.3.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.3.1 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -110,7 +110,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.3.0'
+$script:VERSION       = '1.3.1'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
