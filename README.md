@@ -76,7 +76,7 @@ closes that gap with one auditable script:
 | Area | What you get |
 |---|---|
 | Update engines | Windows Update (COM), WinGet (`winget` + `msstore` sources), Microsoft Store client, Microsoft 365 Click-to-Run, Chrome/Edge native updaters, Chocolatey/Scoop, native vendor updaters (data-driven, extensible), opt-in OEM firmware (Dell/HP/Lenovo) |
-| Lifecycle intelligence | Report-only environment staleness (Defender signatures, Windows feature lag, dev runtimes) and end-of-life exposure from [endoflife.date](https://endoflife.date/) (out-of-support Windows/runtimes/inventory software), never counted as patch actions, rolled up estate-wide in the fleet dashboard |
+| Lifecycle intelligence | Report-only environment staleness (Defender signatures, Windows feature lag, dev runtimes) and end-of-life exposure from [endoflife.date](https://github.com/endoflife-date/endoflife.date) (out-of-support Windows/runtimes/inventory software), never counted as patch actions, rolled up estate-wide in the fleet dashboard |
 | Reporting | Interactive HTML report, JSON for automation, CSV for SIEM/Excel/Power BI, optional central share copy, fleet dashboard |
 | Rollout control | Pilot → Early → Broad rings (registry-driven), maintenance windows, hostname-seeded jitter, per-run update caps |
 | Security | CISA KEV emergency bypass, inventory-wide KEV scan, SLA tracking with breach events, Windows Event Log IDs for SIEM |
@@ -392,7 +392,7 @@ are excluded from the applied/failed counts. On for all profiles.
 ### `EndOfLife`
 
 Report-only — never patches. Adds authoritative **end-of-support** intelligence
-from [endoflife.date]([https://endoflife.date/](https://github.com/endoflife-date/endoflife.date)): software can be fully patched yet
+from [endoflife.date](https://github.com/endoflife-date/endoflife.date): software can be fully patched yet
 sit on a release line the vendor no longer fixes. Findings appear in their own
 report section (HTML panel + JSON + a `.endoflife.csv`) and are excluded from the
 applied/failed counts. On for all profiles. Product data is cached and the run is
