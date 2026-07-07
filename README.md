@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.4.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.4.2).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -368,7 +368,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 |---|---|---|
 | `Enabled` | `true` (`false` on CommercialManaged) | Drives headless "apply update now" updaters for apps with no actionable WinGet candidate. |
 | `NativeTimeoutSeconds` | `900` | Updater timeout. |
-| `ExtraCatalogue` | `[]` | Add your own Omaha-style updaters. Each entry: `Name`, `PackageId`, `Provider`, `WinGetOverlapId`, `VersionRegistryPaths`, `VersionValueName`, `UpdaterPathCandidates`, `UpdaterArgs`. Built-in: Brave. |
+| `ExtraCatalogue` | `[]` | Add your own Omaha-style updaters. Each entry: `Name`, `PackageId`, `Provider`, `WinGetOverlapId`, `VersionFilePaths` (optional; binary read first for immediate before/after), `VersionRegistryPaths`, `VersionValueName`, `UpdaterPathCandidates`, `UpdaterArgs`. Built-in: Brave. |
 
 ### `Firmware`
 

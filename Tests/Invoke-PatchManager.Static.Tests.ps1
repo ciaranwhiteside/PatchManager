@@ -340,9 +340,23 @@ if (Test-Path $cmdExe) {
     Assert-True ($cpReboot.ExitCode -eq 3010) 'Invoke-CapturedProcess must capture a non-zero exit code (e.g. reboot code 3010).'
     $cpOut = Invoke-CapturedProcess -FilePath $cmdExe -Arguments @('/c', 'echo captured-stdout') -TimeoutSeconds 30
     Assert-True ($cpOut.Output -match 'captured-stdout') 'Invoke-CapturedProcess must capture stdout.'
+    # Stdin support (used by the Store CLI wrapper to answer y/n prompts).
+    $cpIn = Invoke-CapturedProcess -FilePath $cmdExe -Arguments @('/c', 'findstr .') -TimeoutSeconds 30 -StandardInputLines @('hello-stdin')
+    Assert-True ($cpIn.Output -match 'hello-stdin') 'Invoke-CapturedProcess must feed StandardInputLines to the child stdin.'
 }
 $cpMissing = Invoke-CapturedProcess -FilePath 'C:\definitely\missing\nope.exe' -Arguments @('x') -TimeoutSeconds 5
 Assert-True ($null -eq $cpMissing.ExitCode -and $cpMissing.Output -match 'Exception') 'Invoke-CapturedProcess must report a launch failure as $null exit code with an Exception marker.'
+
+# The Store CLI wrapper must preserve real exit codes and only flag Failed for
+# launch failures - a $null exit code previously slipped through the exit-code
+# gate and disabled the exit-5 -> MDM-bridge fallback.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-StoreCliCommand')
+if (Test-Path $cmdExe) {
+    $storeOk = Invoke-StoreCliCommand -StoreCli $cmdExe -Arguments @('/c', 'exit 5') -TimeoutSeconds 30
+    Assert-True ($storeOk.ExitCode -eq 5 -and -not $storeOk.Failed) 'Store CLI wrapper must surface a real non-zero exit code without marking Failed.'
+}
+$storeMissing = Invoke-StoreCliCommand -StoreCli 'C:\definitely\missing\store.exe' -Arguments @('updates') -TimeoutSeconds 5
+Assert-True ($storeMissing.Failed -and $null -eq $storeMissing.ExitCode) 'Store CLI wrapper must mark a launch failure as Failed.'
 
 # Disabled provider yields nothing.
 $script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $false; NativeTimeoutSeconds = 60; ExtraCatalogue = @() } }
@@ -455,6 +469,22 @@ Assert-True (@($fwCat | Where-Object { 'Dell Inc.' -imatch $_.Match }).Count -eq
 Assert-True (@($fwCat | Where-Object { 'HP' -imatch $_.Match }).Count -eq 1) 'Firmware catalogue should match HP systems.'
 Assert-True (@($fwCat | Where-Object { 'LENOVO' -imatch $_.Match }).Count -eq 1) 'Firmware catalogue should match Lenovo systems.'
 Assert-True (@($fwCat | Where-Object { 'VMware, Inc.' -imatch $_.Match }).Count -eq 0) 'Firmware catalogue should not match a non-OEM manufacturer.'
+
+# Reboot codes are per-OEM. Dell's exit 2 is a FATAL error - a shared reboot-code
+# list previously classified it as success + reboot required.
+$fwDell = $fwCat | Where-Object { $_.Provider -eq 'firmware-dell' } | Select-Object -First 1
+Assert-True (1 -in @($fwDell.RebootCodes) -and 5 -in @($fwDell.RebootCodes)) 'Dell reboot codes must include 1 and 5.'
+Assert-True (2 -notin @($fwDell.RebootCodes)) 'Dell exit code 2 (fatal error) must NOT be a reboot/success code.'
+$fwHp = $fwCat | Where-Object { $_.Provider -eq 'firmware-hp' } | Select-Object -First 1
+Assert-True (3010 -in @($fwHp.RebootCodes)) 'HP reboot codes must include 3010 (MSI convention).'
+$fwLenovo = $fwCat | Where-Object { $_.Provider -eq 'firmware-lenovo' } | Select-Object -First 1
+Assert-True (@($fwLenovo.RebootCodes).Count -eq 0) 'Lenovo trusts only exit 0 (no documented reboot codes).'
+
+# File-version helper (browser/Brave verification reads the binary, not BLBeacon).
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-InstalledFileVersion')
+Assert-True ((Get-InstalledFileVersion -Candidates @('C:\definitely\missing\a.exe')) -eq '') 'Get-InstalledFileVersion returns empty for missing files.'
+$cmdVer = Get-InstalledFileVersion -Candidates @((Join-Path $env:SystemRoot 'System32\cmd.exe'))
+Assert-True ($cmdVer -match '\d') 'Get-InstalledFileVersion should read a real product version from cmd.exe.'
 
 #-- Descoping -----------------------------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-DescopeReason')

@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.4.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.4.2 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -110,7 +110,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.4.1'
+$script:VERSION       = '1.4.2'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -2199,36 +2199,27 @@ function Invoke-PackageUpdate {
     }
 
     try {
-        $tempOut = [System.IO.Path]::GetTempFileName()
-        $tempErr = [System.IO.Path]::GetTempFileName()
+        # Invoke-CapturedProcess returns the REAL exit code. The previous
+        # Start-Process implementation left .ExitCode $null with redirected
+        # streams on PS 5.1 and defaulted it to 0 - so a failed installer whose
+        # output matched none of the text patterns was recorded as a success.
+        $timeout = $script:CFG.WinGet.PackageTimeoutSeconds
+        $run = Invoke-CapturedProcess -FilePath $script:WINGET -Arguments $argList -TimeoutSeconds $timeout
 
-        $proc = Start-Process -FilePath $script:WINGET `
-                              -ArgumentList $argList `
-                              -NoNewWindow -PassThru `
-                              -RedirectStandardOutput $tempOut `
-                              -RedirectStandardError  $tempErr `
-                              -ErrorAction Stop
-
-        $timeout   = $script:CFG.WinGet.PackageTimeoutSeconds
-        $completed = $proc.WaitForExit($timeout * 1000)
-
-        if (-not $completed) {
-            $proc.Kill()
-            Remove-Item $tempOut, $tempErr -Force -EA SilentlyContinue
+        if ($run.TimedOut) {
             Write-Log "TIMEOUT: $name exceeded ${timeout}s." -Level WARN
             $script:LastUpdateStatus = 'Failed'
             $script:LastUpdateReason = "Timed out after ${timeout}s."
             return $false
         }
-
-        # Second WaitForExit() (no timeout) guarantees exit code is flushed.
-        # Start-Process with redirected output can return before the exit code
-        # is available - this is a known Windows/PS quirk.
-        $proc.WaitForExit()
-        $exitCode   = if ($null -ne $proc.ExitCode) { $proc.ExitCode } else { 0 }
-        $outputText = ((Get-Content $tempOut -Raw -EA SilentlyContinue) +
-                       (Get-Content $tempErr -Raw -EA SilentlyContinue)) -join ' '
-        Remove-Item $tempOut, $tempErr -Force -EA SilentlyContinue
+        if ($null -eq $run.ExitCode) {
+            Write-Log "FAILED: $name - winget did not launch or returned no exit code. $($run.Output)" -Level WARN
+            $script:LastUpdateStatus = 'Failed'
+            $script:LastUpdateReason = "winget failed to run: $($run.Output)"
+            return $false
+        }
+        $exitCode   = [int]$run.ExitCode
+        $outputText = [string]$run.Output
 
         $noUpdateCodes = @(-1978335189, -1978335212, -1978335220, -1978335192)
 
@@ -2521,6 +2512,24 @@ function Get-Microsoft365ClickToRunInfo {
     return $null
 }
 
+function Get-C2RScenarioState {
+    # Reads the Click-to-Run scenario state. ExecutingScenario is non-empty (e.g.
+    # 'UPDATE') while the C2R service is working; LastScenario/LastScenarioResult
+    # describe the most recently finished operation ('Success'/'Failure').
+    foreach ($path in @('HKLM:\SOFTWARE\Microsoft\Office\ClickToRun',
+                        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\ClickToRun')) {
+        try {
+            $item = Get-ItemProperty -Path $path -EA Stop
+            return [PSCustomObject]@{
+                ExecutingScenario  = [string](Get-ObjectPropertyValue $item 'ExecutingScenario' '')
+                LastScenario       = [string](Get-ObjectPropertyValue $item 'LastScenario' '')
+                LastScenarioResult = [string](Get-ObjectPropertyValue $item 'LastScenarioResult' '')
+            }
+        } catch { }
+    }
+    return $null
+}
+
 function Invoke-Microsoft365Provider {
     $provider = 'microsoft365-clicktorun'
     if (-not $script:CFG.Microsoft365.Enabled) {
@@ -2546,23 +2555,81 @@ function Invoke-Microsoft365Provider {
     $c2rArgs += if ($script:CFG.Microsoft365.ForceAppShutdown) { 'forceappshutdown=true' } else { 'forceappshutdown=false' }
     try {
         Write-Log "Microsoft 365: running Click-to-Run update ($($before.ClientPath) $($c2rArgs -join ' '))." -Level INFO
+        $timeoutSec = [Math]::Max(60, [int]$script:CFG.Microsoft365.TimeoutSeconds)
+        $deadline = (Get-Date).AddSeconds($timeoutSec)
         $proc = Start-Process -FilePath $before.ClientPath -ArgumentList $c2rArgs -PassThru -WindowStyle Hidden
-        $completed = $proc.WaitForExit([int]$script:CFG.Microsoft365.TimeoutSeconds * 1000)
+        $completed = $proc.WaitForExit($timeoutSec * 1000)
         if (-not $completed) {
             try { $proc.Kill() } catch { }
-            return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -Status 'Failed' -Evidence "OfficeC2RClient timed out after $($script:CFG.Microsoft365.TimeoutSeconds)s."))
+            return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -Status 'Failed' -Evidence "OfficeC2RClient timed out after ${timeoutSec}s."))
         }
+
+        # OfficeC2RClient hands the actual work to the Click-to-Run service and can
+        # exit almost immediately, so an instant before/after compare misreports an
+        # in-flight update as AlreadyCurrent. Poll ExecutingScenario until the
+        # service is idle (or the timeout budget is spent), then judge the outcome.
+        Start-Sleep -Seconds 5   # give the service a moment to raise ExecutingScenario
+        $state = Get-C2RScenarioState
+        while ($state -and $state.ExecutingScenario -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 10
+            $state = Get-C2RScenarioState
+        }
+
         $after = Get-Microsoft365ClickToRunInfo
         $afterVersion = if ($after) { $after.Version } else { '' }
         $updated = $afterVersion -and $afterVersion -ne $before.Version
-        return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -AvailableVersion $afterVersion -ConfirmedVersion $afterVersion -Status $(if ($updated) { 'Updated' } else { 'AlreadyCurrent' }) -Success $true -Evidence "OfficeC2RClient exit code=$($proc.ExitCode); Before=$($before.Version); After=$afterVersion; Channel=$($before.Channel)."))
+        $scenarioText = if ($state) { "LastScenario=$($state.LastScenario)/$($state.LastScenarioResult)" } else { 'Scenario state unavailable' }
+
+        if ($state -and $state.ExecutingScenario) {
+            # Still applying when the budget ran out - report honestly; the next
+            # run (and the version delta) will confirm the outcome.
+            return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -AvailableVersion $afterVersion -Status 'Verifying' -Evidence "Click-to-Run is still applying an update (scenario '$($state.ExecutingScenario)') after ${timeoutSec}s; the result will be confirmed on the next run. Before=$($before.Version); Channel=$($before.Channel)."))
+        }
+        if (-not $updated -and $state -and $state.LastScenario -ieq 'UPDATE' -and $state.LastScenarioResult -ieq 'Failure') {
+            return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -Status 'Failed' -Evidence "Click-to-Run reported the update scenario failed ($scenarioText). Before=$($before.Version); Channel=$($before.Channel)."))
+        }
+        return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -AvailableVersion $afterVersion -ConfirmedVersion $afterVersion -Status $(if ($updated) { 'Updated' } else { 'AlreadyCurrent' }) -Success $true -Evidence "Click-to-Run finished ($scenarioText). Before=$($before.Version); After=$afterVersion; Channel=$($before.Channel)."))
     } catch {
         return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -Status 'Failed' -Evidence "Microsoft 365 provider exception: $_"))
     }
 }
 
+function Get-InstalledFileVersion {
+    # ProductVersion of the first candidate file that exists, or ''. Reads the
+    # binary on disk, so it reflects an applied update immediately - unlike
+    # BLBeacon-style registry beacons, which apps only rewrite on next launch.
+    param([string[]]$Candidates)
+    foreach ($path in @($Candidates | Where-Object { $_ })) {
+        try {
+            if (Test-Path $path) {
+                $ver = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion
+                if ($ver) { return ([string]$ver).Trim() }
+            }
+        } catch { }
+    }
+    return ''
+}
+
 function Get-BrowserVersion {
     param([ValidateSet('Chrome','Edge')] [string]$Browser)
+    # Prefer the installed binary's version: BLBeacon is only rewritten when the
+    # browser next launches, so it under-reports a just-applied native update
+    # as "no change". BLBeacon remains the fallback (e.g. unusual install paths).
+    $exeCandidates = if ($Browser -eq 'Chrome') {
+        @(
+            (Join-Path ${env:ProgramFiles} 'Google\Chrome\Application\chrome.exe')
+            (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
+            (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+        )
+    } else {
+        @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
+            (Join-Path ${env:ProgramFiles} 'Microsoft\Edge\Application\msedge.exe')
+        )
+    }
+    $fileVersion = Get-InstalledFileVersion -Candidates $exeCandidates
+    if ($fileVersion) { return $fileVersion }
+
     $paths = if ($Browser -eq 'Chrome') {
         @('HKLM:\SOFTWARE\Google\Chrome\BLBeacon','HKCU:\SOFTWARE\Google\Chrome\BLBeacon')
     } else {
@@ -2637,7 +2704,10 @@ function Invoke-CapturedProcess {
     param(
         [Parameter(Mandatory)] [string]$FilePath,
         [string[]]$Arguments = @(),
-        [Parameter(Mandatory)] [int]$TimeoutSeconds
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        # Lines written to the child's stdin (then closed). Lets CLIs that prompt
+        # (e.g. the Store CLI's y/n confirmation) run unattended.
+        [string[]]$StandardInputLines = @()
     )
 
     $proc = $null
@@ -2653,10 +2723,18 @@ function Invoke-CapturedProcess {
         $psi.CreateNoWindow         = $true
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError  = $true
+        $psi.RedirectStandardInput  = ($StandardInputLines.Count -gt 0)
 
         $proc = New-Object System.Diagnostics.Process
         $proc.StartInfo = $psi
         [void]$proc.Start()
+
+        if ($StandardInputLines.Count -gt 0) {
+            try {
+                foreach ($line in $StandardInputLines) { $proc.StandardInput.WriteLine($line) }
+            } catch { }
+            try { $proc.StandardInput.Close() } catch { }
+        }
 
         # Read both streams asynchronously so a full pipe buffer cannot deadlock the
         # child, and so the timeout below is honoured even if the child never exits.
@@ -2901,6 +2979,13 @@ function Get-VendorUpdaterCatalogue {
             PackageId            = 'BraveSoftware.BraveBrowser'
             Provider             = 'brave-update'
             WinGetOverlapId      = 'BraveSoftware.BraveBrowser'
+            # Binary version first (reflects an applied update immediately);
+            # BLBeacon registry beacons are only rewritten on next app launch.
+            VersionFilePaths     = @(
+                (Join-Path ${env:ProgramFiles} 'BraveSoftware\Brave-Browser\Application\brave.exe')
+                (Join-Path ${env:ProgramFiles(x86)} 'BraveSoftware\Brave-Browser\Application\brave.exe')
+                (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\Application\brave.exe')
+            )
             VersionRegistryPaths = @(
                 'HKLM:\SOFTWARE\WOW6432Node\BraveSoftware\Brave-Browser\BLBeacon'
                 'HKCU:\SOFTWARE\BraveSoftware\Brave-Browser\BLBeacon'
@@ -2946,7 +3031,10 @@ function Invoke-VendorUpdaterProvider {
             continue
         }
 
-        $currentVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName ([string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version'))
+        $versionValueName = [string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version')
+        $versionFilePaths = @(Get-ObjectPropertyValue $entry 'VersionFilePaths' @())
+        $currentVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
+        if (-not $currentVersion) { $currentVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
 
         $reason = ''
         if (Test-IsDescoped -Item ([PSCustomObject]@{ Name=$name; PackageId=$packageId; Provider=$provider; Source=$provider }) -Reason ([ref]$reason)) {
@@ -2973,7 +3061,8 @@ function Invoke-VendorUpdaterProvider {
                 $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after ${timeout}s."))
                 continue
             }
-            $afterVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName ([string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version'))
+            $afterVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
+            if (-not $afterVersion) { $afterVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
             # If we can read a version delta, report Updated/AlreadyCurrent; otherwise
             # the vendor updater ran headlessly and we report Completed.
             $status = if ($currentVersion -and $afterVersion) {
@@ -3434,6 +3523,9 @@ function Get-FirmwareCatalogue {
             )
             ScanArgs  = @('/scan')
             ApplyArgs = @('/applyUpdates', '-reboot=disable')
+            # Dell Command Update documented codes: 0=success, 1=reboot required,
+            # 2=fatal error, 3=error, 4=invalid system, 5=reboot + rescan required.
+            RebootCodes = @(1, 5)
         }
         [PSCustomObject]@{
             Match     = 'HP|Hewlett'
@@ -3446,6 +3538,8 @@ function Get-FirmwareCatalogue {
             )
             ScanArgs  = @('/Operation:Analyze', '/Silent', '/Category:BIOS,Firmware', "/ReportFolder:$env:TEMP\HPIA")
             ApplyArgs = @('/Operation:Install', '/Silent', '/Category:BIOS,Firmware', "/ReportFolder:$env:TEMP\HPIA")
+            # HP Image Assistant uses the MSI convention: 3010 = success, reboot required.
+            RebootCodes = @(3010)
         }
         [PSCustomObject]@{
             Match     = 'Lenovo'
@@ -3457,6 +3551,10 @@ function Get-FirmwareCatalogue {
             )
             ScanArgs  = @('/CM', '-search', 'A', '-action', 'LIST', '-noicon')
             ApplyArgs = @('/CM', '-search', 'A', '-action', 'INSTALL', '-noreboot', '-noicon')
+            # Lenovo System Update publishes no reliable CLI exit-code table:
+            # only 0 is trusted as success; anything else is reported as failed
+            # with the tool output as evidence.
+            RebootCodes = @()
         }
     )
 }
@@ -3499,9 +3597,9 @@ function Invoke-FirmwareProvider {
         if ($apply.TimedOut) {
             return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Failed' -Evidence "OEM firmware tool timed out after ${timeout}s."))
         }
-        # OEM tools use vendor-specific reboot codes; 0 = success, common reboot
-        # codes (1/2/5) mean the apply succeeded but a restart completes it.
-        $rebootCodes = @(1, 2, 5)
+        # Reboot codes are vendor-specific and declared per catalogue entry. A
+        # shared list previously treated Dell's exit 2 (fatal error) as success.
+        $rebootCodes = @(Get-ObjectPropertyValue $entry 'RebootCodes' @())
         if ($apply.ExitCode -eq 0 -or $apply.ExitCode -in $rebootCodes) {
             $reboot = $apply.ExitCode -in $rebootCodes
             return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Completed' -Success $true -RebootRequired $reboot -Evidence "OEM firmware apply completed. $summary"))
@@ -3687,6 +3785,10 @@ function Invoke-StoreCimUpdateScan {
 }
 
 function Invoke-StoreCliCommand {
+    # Thin wrapper over Invoke-CapturedProcess preserving this function's historic
+    # return shape ({ExitCode; TimedOut; Failed; Output}). The old Start-Process
+    # implementation left .ExitCode $null with redirected streams on PS 5.1, which
+    # silently disabled the "Store CLI exit code 5 -> MDM bridge fallback" logic.
     param(
         [Parameter(Mandatory)] [string]$StoreCli,
         [Parameter(Mandatory)] [string[]]$Arguments,
@@ -3694,59 +3796,15 @@ function Invoke-StoreCliCommand {
         [string[]]$StandardInputLines = @()
     )
 
-    $tempOut = $null
-    $tempErr = $null
-    $tempIn = $null
-    try {
-        $escapedArgs = @($Arguments | ForEach-Object {
-            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
-        }) -join ' '
-        $tempOut = [System.IO.Path]::GetTempFileName()
-        $tempErr = [System.IO.Path]::GetTempFileName()
-        $tempIn = [System.IO.Path]::GetTempFileName()
-        if ($StandardInputLines.Count -gt 0) {
-            Set-Content -Path $tempIn -Value $StandardInputLines -Encoding ASCII
-        } else {
-            Set-Content -Path $tempIn -Value '' -Encoding ASCII
-        }
-
-        $proc = Start-Process -FilePath $StoreCli `
-                              -ArgumentList $escapedArgs `
-                              -NoNewWindow -PassThru `
-                              -RedirectStandardInput $tempIn `
-                              -RedirectStandardOutput $tempOut `
-                              -RedirectStandardError $tempErr `
-                              -ErrorAction Stop
-
-        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-            try { $proc.Kill() } catch { }
-            return [PSCustomObject]@{
-                ExitCode = $null
-                TimedOut = $true
-                Failed   = $true
-                Output   = "Timed out after ${TimeoutSeconds}s."
-            }
-        }
-
-        $proc.WaitForExit()
-        $outputText = ((Get-Content $tempOut -Raw -EA SilentlyContinue) +
-                       (Get-Content $tempErr -Raw -EA SilentlyContinue)) -join ''
-
-        return [PSCustomObject]@{
-            ExitCode = $proc.ExitCode
-            TimedOut = $false
-            Failed   = $false
-            Output   = $outputText
-        }
-    } catch {
-        return [PSCustomObject]@{
-            ExitCode = $null
-            TimedOut = $false
-            Failed   = $true
-            Output   = "Exception: $_"
-        }
-    } finally {
-        Remove-Item $tempOut, $tempErr, $tempIn -Force -EA SilentlyContinue
+    $result = Invoke-CapturedProcess -FilePath $StoreCli -Arguments $Arguments `
+                  -TimeoutSeconds $TimeoutSeconds -StandardInputLines $StandardInputLines
+    return [PSCustomObject]@{
+        ExitCode = $result.ExitCode
+        TimedOut = [bool]$result.TimedOut
+        # Failed = the process never ran/returned a code (launch exception). A
+        # non-zero exit code is the caller's decision, exactly as before.
+        Failed   = (-not $result.TimedOut -and $null -eq $result.ExitCode)
+        Output   = [string]$result.Output
     }
 }
 

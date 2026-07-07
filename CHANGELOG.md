@@ -4,6 +4,39 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-07-07
+
+### Fixed
+Soundness review of every update-source implementation. Five defects:
+
+- **WinGet: a null exit code was treated as success.** On Windows PowerShell
+  5.1, `Start-Process` with redirected streams leaves `.ExitCode` `$null`, and
+  the WinGet path defaulted that to `0` — so a failed installer whose output
+  matched none of the text patterns was recorded as **SUCCESS** in the audit
+  trail. The upgrade call now runs through the reliable process helper and a
+  missing exit code is reported as a failure.
+- **Microsoft Store: the same null exit code slipped past the failure gate**,
+  which disabled the documented "Store CLI exit code 5 → MDM bridge fallback"
+  and logged every successful Store apply as "command failed" (the AppX-diff
+  verification masked it). The Store CLI wrapper now returns real exit codes
+  (with stdin support for its y/n prompt).
+- **Microsoft 365: in-flight updates were reported as "AlreadyCurrent".**
+  `OfficeC2RClient.exe` hands the work to the Click-to-Run service and can exit
+  immediately, so the instant before/after version compare judged too early.
+  The provider now polls the C2R `ExecutingScenario` state until the service is
+  idle (within the timeout), then uses `LastScenarioResult` + the version delta —
+  reporting `Verifying` honestly if the update is still applying.
+- **Chrome/Edge/Brave: updates were under-reported as "AlreadyCurrent".**
+  Version verification read the `BLBeacon` registry beacon, which browsers only
+  rewrite on next launch. Verification now reads the installed binary's product
+  version first (beacon as fallback), so a just-applied update shows as
+  `Updated` with real before/after evidence.
+- **Firmware: Dell's fatal-error exit code was classified as success.** A
+  shared reboot-code list `(1, 2, 5)` treated `dcu-cli` exit `2` (fatal error)
+  as "success + reboot required". Reboot codes are now declared per OEM —
+  Dell `1/5`, HP `3010`, Lenovo none (only `0` trusted) — and everything else
+  is a failure with the tool output as evidence.
+
 ## [1.4.1] - 2026-07-07
 
 ### Fixed
