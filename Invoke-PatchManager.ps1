@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.4.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.4.1 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -110,7 +110,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.4.0'
+$script:VERSION       = '1.4.1'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -129,6 +129,7 @@ $script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
 $script:StalenessFindings = @()
 $script:EndOfLifeFindings = @()
+$script:Inventory = @()
 $script:SelfUpdateStatus = 'Not checked'
 
 $script:Stats = [ordered]@{
@@ -3360,7 +3361,10 @@ function Invoke-EndOfLifeReport {
                 $maxLookups = [int](Get-ObjectPropertyValue $cfg 'InventoryMaxLookups' 40)
                 $checked    = [System.Collections.Generic.HashSet[string]]::new()
                 $lookups    = 0
-                foreach ($app in @(Get-SoftwareInventory)) {
+                # Reuse the inventory Invoke-Main already built; a standalone call
+                # (e.g. unit tests) falls back to a fresh enumeration.
+                $apps = if (@($script:Inventory).Count -gt 0) { @($script:Inventory) } else { @(Get-SoftwareInventory) }
+                foreach ($app in $apps) {
                     if ($lookups -ge $maxLookups) { break }
                     $name = [string]$app.Name
                     $ver  = [string]$app.Version
@@ -4638,7 +4642,8 @@ function New-HTMLReport {
   function appendUniqueOption(select, value){if(!select || !value){return;}var exists = Array.prototype.some.call(select.options, function(option){return option.value === value;});if(exists){return;}var option = document.createElement('option');option.value = value;option.textContent = value;select.appendChild(option);}
   sources.sort().forEach(function(source){appendUniqueOption(sourceFilter, source);});
   providers.sort().forEach(function(provider){appendUniqueOption(providerFilter, provider);});
-  function applyFilters(){var query = (search.value || '').toLowerCase();var status = statusFilter.value;var source = sourceFilter.value;var provider = providerFilter.value;var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var rowStatus = row.getAttribute('data-status') || '';var rowSource = row.getAttribute('data-source') || '';var rowProvider = row.getAttribute('data-provider') || '';var show = (!query || rowText.indexOf(query) !== -1) && (!status || rowStatus === status) && (!source || rowSource === source) && (!provider || rowProvider === provider);row.style.display = show ? '' : 'none';if(show){visible += 1;}});if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' report row(s) visible';}}
+  var expandAuditForFilter = function(){};
+  function applyFilters(){var query = (search.value || '').toLowerCase();var status = statusFilter.value;var source = sourceFilter.value;var provider = providerFilter.value;if(query || status || source || provider){expandAuditForFilter();}var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var rowStatus = row.getAttribute('data-status') || '';var rowSource = row.getAttribute('data-source') || '';var rowProvider = row.getAttribute('data-provider') || '';var show = (!query || rowText.indexOf(query) !== -1) && (!status || rowStatus === status) && (!source || rowSource === source) && (!provider || rowProvider === provider);row.style.display = show ? '' : 'none';if(show){visible += 1;}});if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' report row(s) visible';}}
   [search,statusFilter,sourceFilter,providerFilter].forEach(function(control){if(control){control.addEventListener('input', applyFilters);control.addEventListener('change', applyFilters);}});
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';statusFilter.value = '';sourceFilter.value = '';providerFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}
@@ -4649,12 +4654,15 @@ function New-HTMLReport {
   var auditDetail = document.getElementById('auditDetail');
   var auditToggle = document.getElementById('auditToggle');
   if(auditDetail && auditToggle){
-    function setAuditCollapsed(collapsed){auditDetail.classList.toggle('is-collapsed', collapsed);auditToggle.setAttribute('aria-expanded', String(!collapsed));auditToggle.textContent = collapsed ? 'Show audit detail' : 'Hide audit detail';}
+    var setAuditCollapsed = function(collapsed){auditDetail.classList.toggle('is-collapsed', collapsed);auditToggle.setAttribute('aria-expanded', String(!collapsed));auditToggle.textContent = collapsed ? 'Show audit detail' : 'Hide audit detail';};
     auditToggle.hidden = false;
     setAuditCollapsed(true);
     auditToggle.addEventListener('click', function(){setAuditCollapsed(!auditDetail.classList.contains('is-collapsed'));});
     // A nav/rail link into the collapsed appendix must expand it before scrolling.
     document.querySelectorAll('a[href^="#"]').forEach(function(link){link.addEventListener('click', function(){var id = link.getAttribute('href').slice(1);if(!id){return;}var target = document.getElementById(id);if(target && (target === auditDetail || auditDetail.contains(target))){setAuditCollapsed(false);}});});
+    // An active search/filter must reveal appendix rows it matches - otherwise the
+    // result count claims rows are visible while they sit inside the collapsed appendix.
+    expandAuditForFilter = function(){if(auditDetail.classList.contains('is-collapsed')){setAuditCollapsed(false);}};
   }
   applyFilters();
 })();
@@ -4692,27 +4700,35 @@ function Send-RunNotification {
     }
 
     $statusWord = if ($hasProblems) { 'NEEDS ATTENTION' } else { 'OK' }
+    # Lifecycle exposure (review-severity staleness/EOL findings) is reported in the
+    # payload but deliberately NOT part of $hasProblems: an estate with one EOL app
+    # would otherwise ping the channel on every run under OnlyOnProblems.
+    $stalenessReview = @($script:StalenessFindings | Where-Object { [string]$_.Severity -eq 'review' }).Count
+    $eolExposure     = @($script:EndOfLifeFindings | Where-Object { [string]$_.Severity -eq 'review' }).Count
     $summaryText = "PatchManager $statusWord on $($script:HOSTNAME): " +
                    "applied=$($script:Stats.UpdatesApplied) failed=$($script:Stats.UpdatesFailed) " +
                    "skipped=$($script:Stats.UpdatesSkipped) KEV=$($script:Stats.KEVMatches) " +
-                   "SLA breaches=$($script:Stats.SLABreaches) errors=$($script:Stats.Errors.Count)"
+                   "SLA breaches=$($script:Stats.SLABreaches) errors=$($script:Stats.Errors.Count) " +
+                   "staleness=$stalenessReview EOL=$eolExposure"
 
     $payload = [ordered]@{
-        text        = $summaryText
-        hostname    = $script:HOSTNAME
-        version     = $script:VERSION
-        ring        = $script:RING
-        dryRun      = $DryRun.IsPresent
-        emergency   = $script:EmergencyPatch
-        status      = $statusWord
-        applied     = $script:Stats.UpdatesApplied
-        failed      = $script:Stats.UpdatesFailed
-        skipped     = $script:Stats.UpdatesSkipped
-        kevMatches  = $script:Stats.KEVMatches
-        slaBreaches = $script:Stats.SLABreaches
-        errors      = $script:Stats.Errors.Count
-        reportPath  = if ($ReportInfo) { [string]$ReportInfo.ReportDir } else { '' }
-        timestamp   = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        text            = $summaryText
+        hostname        = $script:HOSTNAME
+        version         = $script:VERSION
+        ring            = $script:RING
+        dryRun          = $DryRun.IsPresent
+        emergency       = $script:EmergencyPatch
+        status          = $statusWord
+        applied         = $script:Stats.UpdatesApplied
+        failed          = $script:Stats.UpdatesFailed
+        skipped         = $script:Stats.UpdatesSkipped
+        kevMatches      = $script:Stats.KEVMatches
+        slaBreaches     = $script:Stats.SLABreaches
+        errors          = $script:Stats.Errors.Count
+        stalenessReview = $stalenessReview
+        eolExposure     = $eolExposure
+        reportPath      = if ($ReportInfo) { [string]$ReportInfo.ReportDir } else { '' }
+        timestamp       = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     } | ConvertTo-Json
 
     try {
@@ -4985,6 +5001,7 @@ function Invoke-Main {
     #-- Inventory + KEV emergency detection -----------------------------------
     # Done before the maintenance window check so actionable KEV matches can bypass it.
     $inventory = Get-SoftwareInventory
+    $script:Inventory = @($inventory)   # shared with the EOL scan - avoid a second full enumeration
     $script:Stats.InventoryCount = $inventory.Count
     $script:SkippedUpgradeResults.Clear()
     $script:SourceCheckResults.Clear()

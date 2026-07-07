@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.4.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.4.1).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -471,7 +471,7 @@ the HTML report directly.
 | Key | Default | Purpose |
 |---|---|---|
 | `Enabled` | `false` | Post a run summary to a webhook. |
-| `WebhookUrl` | `""` | Teams/Slack incoming webhook or any JSON endpoint. Payload includes a plain `text` field plus structured counters. |
+| `WebhookUrl` | `""` | Teams/Slack incoming webhook or any JSON endpoint. Payload includes a plain `text` field plus structured counters (applied/failed/KEV/SLA/errors and `stalenessReview`/`eolExposure` lifecycle counts). |
 | `OnlyOnProblems` | `true` | Only post when a run has failures, KEV matches, SLA breaches, or errors. |
 | `TimeoutSec` | `15` | Webhook post timeout. A webhook failure never fails the run. |
 
@@ -627,8 +627,9 @@ You get one HTML dashboard and CSV covering every host's most recent run:
 last-seen time with **stale-host flagging**, ring, profile, applied/failed
 counts, KEV matches (actionable and inventory), SLA breaches, **end-of-life
 exposure** (hosts running out-of-support software, from the per-host
-endoflife.date findings), script errors, and pending reboots — the "is my
-estate actually patched, and is any of it abandoned?" view.
+endoflife.date findings), per-host staleness review counts, script errors, and
+pending reboots — the "is my estate actually patched, and is any of it
+abandoned?" view.
 
 To preview the fleet dashboard on one machine before you have a central share,
 wrap the newest local JSON report in a host-named folder and point the

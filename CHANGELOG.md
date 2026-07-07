@@ -4,6 +4,26 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-07-07
+
+### Fixed
+- **Searching/filtering the report now expands the audit appendix** when it is
+  collapsed, so matched rows in it are actually shown. Previously the result
+  count could claim rows were "visible" while they sat inside the collapsed
+  Audit detail section.
+- **The software inventory is no longer enumerated twice per run.** The
+  end-of-life scan now reuses the inventory built at the start of the run
+  instead of re-walking every registry hive and AppX package.
+
+### Added
+- **Webhook notifications now carry lifecycle exposure**: `stalenessReview` and
+  `eolExposure` counts join the structured payload and the summary text. They
+  deliberately do not trigger `OnlyOnProblems` (a long-standing EOL app should
+  not ping the channel on every run).
+- **Fleet dashboard: per-host Staleness column** (and `StalenessReview` in the
+  CSV) alongside the EOL column. Advisory only — staleness does not change a
+  host's healthy/attention posture, unlike vendor-declared end-of-life.
+
 ## [1.4.0] - 2026-07-07
 
 ### Changed

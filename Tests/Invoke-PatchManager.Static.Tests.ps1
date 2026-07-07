@@ -116,6 +116,7 @@ Assert-True ($html.IndexOf('id="updates"') -lt $html.IndexOf('id="auditDetail"')
 Assert-True ($html -match 'bento-kicker">Reboot required') 'The slimmed summary board should include a Reboot required card.'
 Assert-True ($html -notmatch 'bento-kicker">Coverage') 'The Coverage card should be folded into Run metrics, not shown on the summary board.'
 Assert-True ($html -notmatch 'class="report-lanes') 'The duplicate report-lanes navigation row should be removed.'
+Assert-True ($html -match 'expandAuditForFilter') 'An active search/filter must expand the audit appendix so matched rows are actually visible.'
 Assert-True ($html -match 'https://github.com/ciaranwhiteside/PatchManager') 'HTML report footer should link to the PatchManager repository.'
 Assert-True ($html -match 'class="brand-mark"') 'HTML report should include the inline PatchManager brand mark.'
 Assert-True ($html -match '#c49a3d') 'HTML report brand mark should include the amber ledger curve.'
