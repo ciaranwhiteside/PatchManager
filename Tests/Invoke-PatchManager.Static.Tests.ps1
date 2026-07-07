@@ -100,8 +100,22 @@ Assert-True ($html -match '0 action row\(s\)') 'Source checks alone should not c
 Assert-True ($html -match 'class="bento-board') 'HTML report should include the audit summary board.'
 Assert-True ($html -match 'class="report-nav') 'HTML report should include the sticky report command navigation.'
 Assert-True ($html -match 'class="evidence-rail') 'HTML report should include the pinned evidence trail.'
-Assert-True ($html -match 'class="report-lanes') 'HTML report should include horizontal report lanes.'
 Assert-True ($html -match 'No package updates required action') 'HTML report should preserve the composed zero-action empty state.'
+
+# End-user report layout: payload-first ordering + progressive-disclosure appendix.
+Assert-True ($html -match 'id="auditDetail"') 'HTML report should wrap the audit appendix in a collapsible container.'
+Assert-True ($html -match 'id="auditToggle"[^>]*hidden') 'The audit toggle must be hidden by default so a no-JS viewer never sees a dead button.'
+Assert-True ($html -notmatch 'id="auditDetail" class="audit-detail is-collapsed"') 'The appendix must render EXPANDED by default (JS collapses it) so print/no-JS stay complete.'
+Assert-True ($html -match '\.audit-detail,\.audit-detail\.is-collapsed\{display:block !important\}') 'A CSS rule must force the audit appendix expanded (used by both @media print and noscript).'
+Assert-True ($html -match '<noscript><style>[^<]*audit-detail[^<]*display:block') 'A noscript rule must keep the audit appendix visible when JavaScript is off.'
+Assert-True ($html -match '@media print') 'The report must retain print-specific styling.'
+# Ordering: the actionable updates section must precede the breakdown counts.
+Assert-True ($html.IndexOf('id="updates"') -lt $html.IndexOf('Result breakdown')) 'The actionable updates table must appear before the status/source/provider breakdown counts.'
+Assert-True ($html.IndexOf('id="updates"') -lt $html.IndexOf('id="auditDetail"')) 'The actionable updates table must appear before the audit-detail appendix.'
+# Slimmed summary board: four decision cards, no leftover Coverage/Action-rows cards.
+Assert-True ($html -match 'bento-kicker">Reboot required') 'The slimmed summary board should include a Reboot required card.'
+Assert-True ($html -notmatch 'bento-kicker">Coverage') 'The Coverage card should be folded into Run metrics, not shown on the summary board.'
+Assert-True ($html -notmatch 'class="report-lanes') 'The duplicate report-lanes navigation row should be removed.'
 Assert-True ($html -match 'https://github.com/ciaranwhiteside/PatchManager') 'HTML report footer should link to the PatchManager repository.'
 Assert-True ($html -match 'class="brand-mark"') 'HTML report should include the inline PatchManager brand mark.'
 Assert-True ($html -match '#c49a3d') 'HTML report brand mark should include the amber ledger curve.'

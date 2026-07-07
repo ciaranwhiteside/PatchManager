@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
 SIEM-ready event logging.
 
-> **Public beta (v1.3.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.4.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -577,9 +577,13 @@ Each run writes up to three artifacts to `Reporting.LocalReportPath` (and the
 central share if configured):
 
 - **HTML** — interactive: search, status/source/provider filters, sortable
-  columns, print-friendly. Actionable package updates are separated from
-  source/provider audit checks and from skipped/descoped rows, so "what
-  changed" is never buried under "what was checked".
+  columns, print-friendly. It **leads with what changed and what needs
+  attention**, then security and lifecycle exposure (KEV/SLA, staleness,
+  end-of-life); the granular audit material (source/provider checks, per-status
+  counts, run diagnostics) sits under a collapsible **Audit detail** toggle. That
+  toggle is a screen-only convenience — the appendix is **always fully expanded
+  in print, PDF, and when JavaScript is off**, so the archived compliance record
+  is never abridged.
 - **JSON** — full machine-readable results: metadata, statistics, status /
   source / provider summaries, attention items, reboot-required items, every
   update row, KEV matches (actionable + inventory), SLA breaches, environment

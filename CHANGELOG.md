@@ -4,6 +4,23 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-07-07
+
+### Changed
+- **The local HTML report now leads with the payload and is lighter for end
+  users.** It opens with Attention + the actionable updates list, then security
+  and lifecycle (KEV/SLA, staleness, end-of-life); the granular audit material
+  (skipped/descoped rows, source/provider checks, per-status counts, run
+  diagnostics) moves into a collapsible **Audit detail** appendix. The summary
+  board is slimmed from six cards to four (Updates applied, Needs review,
+  Security, Reboot required), and the duplicated navigation row and repeated
+  verdict are removed.
+- **Progressive disclosure that stays a complete compliance artifact.** The
+  audit appendix is collapsed on screen behind a "Show audit detail" toggle, but
+  is **always fully expanded in print/PDF and when JavaScript is disabled** — so
+  the archived record is never abridged. The appendix renders expanded by
+  default and JavaScript collapses it only for the interactive view.
+
 ## [1.3.1] - 2026-07-07
 
 ### Added

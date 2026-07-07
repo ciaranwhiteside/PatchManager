@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.3.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.4.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -110,7 +110,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.3.1'
+$script:VERSION       = '1.4.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -4515,34 +4515,21 @@ function New-HTMLReport {
     $bentoSection = @"
   <section class="bento-board reveal" id="summary" aria-label="Run summary">
     <article class="bento-card bento-primary good"><span class="bento-kicker">$primaryLabel</span><strong>$primaryCount</strong><p>$verdictCopy</p></article>
-    <article class="bento-card bento-action"><span class="bento-kicker">Action rows</span><strong>$($actionableRows.Count)</strong><p>Rows that represent update work, verification, KEV exposure, reboot flags, or failed operations.</p></article>
-    <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>Blocked, failed, verifying, and script-error signals grouped for operator follow-up.</p></article>
-    <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security pressure</span><strong>$kevCount KEV</strong><p>$slaCount SLA breach(es) and $rebootCount reboot-required signal(s) were recorded.</p></article>
-    <article class="bento-card bento-coverage"><span class="bento-kicker">Coverage</span><strong>$providerCheckCount</strong><p>$inventoryCount inventory items, $($sourceGroups.Count) source group(s), and $($providerGroups.Count) provider group(s).</p></article>
-    <article class="bento-card bento-runtime $errorTone"><span class="bento-kicker">Runtime</span><strong>$errorCount</strong><p>$visibleSkippedCount skipped or descoped row(s). Generated in ${elapsed2dp}m from PatchManager v$ver.</p></article>
-  </section>
-"@
-
-    $accordionSection = @"
-  <section class="report-lanes reveal" aria-label="Report lanes">
-    <a href="#updates" class="lane lane-wide"><span>Action queue</span><strong>$($actionableRows.Count)</strong><p>Patch rows, failed commands, verification states, and priority security work.</p></a>
-    <a href="#providers" class="lane"><span>Provider proof</span><strong>$providerCheckCount</strong><p>Discovery and health checks.</p></a>
-    <a href="#security" class="lane"><span>Exposure watch</span><strong>$kevCount / $slaCount</strong><p>KEV and SLA evidence.</p></a>
-    <a href="#runtime" class="lane"><span>Runtime trail</span><strong>$errorCount</strong><p>Script errors and state summary.</p></a>
+    <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>Blocked, failed, verifying, and script-error signals to follow up. See the actions below.</p></article>
+    <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security</span><strong>$kevCount KEV</strong><p>$slaCount SLA breach(es) recorded. KEV and SLA exposure is detailed in the security section.</p></article>
+    <article class="bento-card bento-reboot $rebootTone"><span class="bento-kicker">Reboot required</span><strong>$rebootCount</strong><p>Update(s) needing a restart to finish - PatchManager never reboots on its own.</p></article>
   </section>
 "@
 
     $evidenceRail = @"
-    <aside class="evidence-rail" aria-label="Evidence trail">
-      <p class="rail-kicker">Evidence trail</p>
-      <h2>$verdictTitle</h2>
-      <p class="scrub-copy"><span>Start with the action queue.</span> <span>Confirm skipped rows are intentional.</span> <span>Resolve failed, blocked, KEV, and SLA signals before closing the run.</span></p>
+    <aside class="evidence-rail" aria-label="Report navigation">
+      <p class="rail-kicker">On this page</p>
       <nav class="rail-links" aria-label="Report sections">
-        <a href="#updates">Action queue</a>
-        <a href="#providers">Provider proof</a>
-        <a href="#security">Security</a>
-        <a href="#runtime">Runtime</a>
+        <a href="#updates">Actionable updates</a>
+        <a href="#security">Security &amp; lifecycle</a>
+        <a href="#auditDetail">Audit detail</a>
       </nav>
+      <p class="scrub-copy"><span>Start with the actions above.</span> <span>Security, staleness, and end-of-life follow.</span> <span>Full provider evidence and counts are under Audit detail.</span></p>
     </aside>
 "@
 
@@ -4573,18 +4560,20 @@ function New-HTMLReport {
   .hero{position:relative;color:#fff;padding:56px 32px 60px;background:linear-gradient(180deg,var(--charcoal-2),var(--charcoal)),linear-gradient(90deg,rgba(246,242,232,.045) 1px,transparent 1px);background-blend-mode:normal;border-bottom:3px solid var(--amber-curve)}.hero-inner{position:relative;max-width:1440px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,420px);gap:42px;align-items:end}.hero-copy{max-width:72rem}.eyebrow{margin:0 0 8px;color:var(--muted);font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.08em}.hero .eyebrow{color:#a9b4ab}h1,h2,p{margin-top:0}h1{font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(2.1rem,3.8vw,3.4rem);line-height:1.04;margin:0 0 14px;font-weight:800;text-wrap:balance}h2{font-size:1.12rem;line-height:1.2;margin:0 0 4px;font-weight:760;text-wrap:balance}.hero-host{display:inline-flex;align-items:center;gap:8px;margin:0 0 18px;padding:7px 12px;border:1px solid rgba(246,242,232,.2);border-radius:7px;background:rgba(246,242,232,.06);font-family:"Cascadia Mono","Consolas",monospace;font-size:1rem;color:#f6f2e8}.hero-host:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber-curve)}.hero-summary{max-width:62rem;color:#c8d2ca;font-size:1.05rem;margin:0;text-wrap:pretty}.run-pill{display:inline-flex;align-items:center;gap:9px;border:1px solid rgba(246,242,232,.2);background:rgba(246,242,232,.07);padding:9px 12px;border-radius:7px;font-weight:780;white-space:nowrap}.run-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:#69c592;box-shadow:0 0 0 4px rgba(105,197,146,.14)}.run-pill.attention:before{background:#e6a557;box-shadow:0 0 0 4px rgba(230,165,87,.16)}
   .hero-panel{align-self:stretch;display:grid;align-content:end;gap:12px;padding:16px;border:1px solid rgba(246,242,232,.16);border-radius:8px;background:rgba(246,242,232,.05)}.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.meta-item,.hero-proof{border:1px solid rgba(246,242,232,.13);background:rgba(7,9,8,.35);border-radius:7px;padding:12px}.meta-item span,.hero-proof span{display:block;color:#a9b4ab;font-size:.72rem;font-weight:720;text-transform:uppercase;letter-spacing:.06em}.meta-item strong,.hero-proof strong{display:block;margin-top:3px;font-size:1rem;color:#fff}.hero-proof strong{line-height:1.3}
   main{max-width:1440px;margin:0 auto;padding:0 32px 56px;overflow-x:hidden}.callout{display:flex;gap:10px;align-items:center;border-radius:8px;padding:13px 14px;margin:26px 0 0;border:1px solid var(--line)}.danger-callout{background:var(--red-bg);border-color:#e0b0a8;color:#77221e}
-  .bento-board{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-flow:dense;gap:14px;margin:44px 0 52px}.bento-card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:20px 20px 22px;box-shadow:var(--card-shadow);transition:box-shadow .25s ease,transform .25s ease}.bento-card:hover{box-shadow:0 2px 4px rgba(17,21,19,.06),0 18px 44px rgba(17,21,19,.12);transform:translateY(-2px)}.bento-card strong{display:block;font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(1.9rem,2.8vw,3rem);line-height:1;margin:10px 0 8px;color:var(--ink)}.bento-card p{margin:0;color:var(--muted);max-width:38rem;text-wrap:pretty}.bento-kicker{font-size:.72rem;font-weight:780;text-transform:uppercase;letter-spacing:.08em;color:var(--blue)}.bento-primary{grid-column:span 5}.bento-action{grid-column:span 3}.bento-review{grid-column:span 4}.bento-security,.bento-coverage,.bento-runtime{grid-column:span 4}.bento-card.danger{border-left-color:var(--red)}.bento-card.danger .bento-kicker{color:var(--red)}.bento-card.good{border-left-color:var(--green)}.bento-card.good .bento-kicker{color:var(--green)}
-  .report-lanes{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:14px;margin-bottom:48px}.lane{display:flex;flex-direction:column;justify-content:flex-end;min-width:0;text-decoration:none;color:#fff;border-radius:8px;padding:18px;min-height:132px;background:linear-gradient(150deg,var(--charcoal-2),var(--charcoal));border:1px solid rgba(246,242,232,.1);border-bottom:3px solid var(--amber-curve);transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease}.lane:hover{transform:translateY(-2px);border-color:rgba(246,242,232,.28);box-shadow:0 16px 40px rgba(17,21,19,.28)}.lane span{color:#a9b4ab;font-size:.72rem;font-weight:760;text-transform:uppercase;letter-spacing:.08em}.lane strong{font-size:2.1rem;line-height:1.1;margin-top:6px}.lane p{margin:6px 0 0;color:#c8d2ca;font-size:.88rem;max-width:30rem;text-wrap:pretty}
+  .bento-board{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-flow:dense;gap:14px;margin:44px 0 52px}.bento-card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:20px 20px 22px;box-shadow:var(--card-shadow);transition:box-shadow .25s ease,transform .25s ease}.bento-card:hover{box-shadow:0 2px 4px rgba(17,21,19,.06),0 18px 44px rgba(17,21,19,.12);transform:translateY(-2px)}.bento-card strong{display:block;font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(1.9rem,2.8vw,3rem);line-height:1;margin:10px 0 8px;color:var(--ink)}.bento-card p{margin:0;color:var(--muted);max-width:38rem;text-wrap:pretty}.bento-kicker{font-size:.72rem;font-weight:780;text-transform:uppercase;letter-spacing:.08em;color:var(--blue)}.bento-primary,.bento-review,.bento-security,.bento-reboot{grid-column:span 3}.bento-card.danger{border-left-color:var(--red)}.bento-card.danger .bento-kicker{color:var(--red)}.bento-card.good{border-left-color:var(--green)}.bento-card.good .bento-kicker{color:var(--green)}
   .evidence-layout{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:22px;align-items:start}.evidence-rail{position:sticky;top:126px;background:var(--charcoal);color:#fff;border:1px solid rgba(246,242,232,.12);border-radius:8px;padding:22px;border-bottom:3px solid var(--amber-curve)}.rail-kicker{color:#a9b4ab;font-size:.72rem;font-weight:760;text-transform:uppercase;letter-spacing:.08em;margin:0 0 10px}.scrub-copy{margin:0}.scrub-copy span{display:block;color:#dce5df;margin:10px 0}.rail-links{display:grid;gap:8px;margin-top:18px}.rail-links a{color:#fff;text-decoration:none;border:1px solid rgba(246,242,232,.15);border-radius:7px;padding:9px 11px;transition:border-color .18s ease,background .18s ease}.rail-links a:hover{border-color:rgba(246,242,232,.4);background:rgba(246,242,232,.07)}.evidence-stack{min-width:0}
+  /* Audit-detail appendix. Rendered expanded by default so no-JS and print keep
+     the full compliance record; JS collapses it on screen for a lighter view. */
+  .audit-divider{display:flex;align-items:center;gap:14px;margin:34px 0 18px}.audit-divider span{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);white-space:nowrap}.audit-divider:before,.audit-divider:after{content:"";height:1px;background:var(--line-strong);flex:1}.audit-divider:before{flex:0 0 8px}.audit-toggle{white-space:nowrap}.audit-note{margin:0 0 16px;color:var(--muted);font-size:.86rem}.audit-detail.is-collapsed{display:none}
   .panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:22px;margin-bottom:18px;box-shadow:var(--card-shadow)}.panel.danger-panel{border-left:3px solid var(--red)}.secondary-panel{background:var(--paper-soft)}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}.count{display:inline-flex;min-width:36px;justify-content:center;border-radius:7px;padding:4px 9px;font-weight:820;background:#e7dfcc;color:#332f29}.count.good{background:var(--green-bg);color:var(--green)}.count.danger{background:var(--red-bg);color:var(--red)}
   .note{color:var(--muted);margin:0 0 14px;max-width:68ch;text-wrap:pretty}.danger-text{color:#842a25}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffdf6}.table-wrap.compact th,.table-wrap.compact td{padding:9px 10px}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.89rem}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#efe8d7;color:#4a453c;font-size:.71rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;user-select:none;box-shadow:0 1px 0 var(--line)}th[data-sort]{cursor:pointer}th[data-sort]:hover{color:var(--ink)}th[data-sort]:after{content:" sort";color:#9a9081;font-weight:700;text-transform:none;letter-spacing:0;margin-left:4px}tbody tr:last-child td{border-bottom:none}tbody tr:hover td{background:#fdf9ee}
   tr.ok td{box-shadow:inset 3px 0 0 var(--green)}tr.fail td{box-shadow:inset 3px 0 0 var(--red)}tr.planned td{box-shadow:inset 3px 0 0 var(--steel)}tr.skipped td,tr.breach td{box-shadow:inset 3px 0 0 var(--amber-curve)}tr.ok td:not(:first-child),tr.fail td:not(:first-child),tr.planned td:not(:first-child),tr.skipped td:not(:first-child),tr.breach td:not(:first-child){box-shadow:none}.status,.source-pill,.flag{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-size:.75rem;font-weight:820;white-space:nowrap}.status.ok{background:var(--green-bg);color:var(--green)}.status.fail{background:var(--red-bg);color:var(--red)}.status.planned{background:var(--steel-bg);color:var(--steel)}.status.skipped{background:var(--amber-bg);color:var(--amber)}.source-pill{background:#eae2d0;color:#4f493f}.flag{margin-left:8px}.flag.danger{background:var(--red);color:#fff}.details{min-width:260px;max-width:620px;color:var(--muted);font-size:.82rem;line-height:1.35;white-space:normal}.details summary{cursor:pointer;font-weight:800;color:#4f493f}.details div{margin-top:6px}
   .mono{font-family:"Cascadia Mono","Consolas",monospace;font-size:.84rem}.nowrap{white-space:nowrap}.empty-state{border:1px dashed var(--line-strong);background:#fffdf6;border-radius:8px;padding:24px;max-width:780px}.empty-title{font-weight:820;margin-bottom:4px}.empty-state p{color:var(--muted);margin:0}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}.breakdown-grid{display:grid;grid-template-columns:1.12fr .94fr .94fr;gap:18px}.error-list{margin:0;padding-left:18px;color:#77221e}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.footer{margin-top:34px;padding:26px 28px;border-radius:8px;background:var(--charcoal);color:#c8d2ca;display:flex;justify-content:space-between;gap:18px;align-items:center;border-bottom:3px solid var(--amber-curve)}.footer a{color:#fff;text-decoration-color:rgba(196,154,61,.7);text-underline-offset:3px}.footer a:hover{text-decoration-color:var(--amber-curve)}
   .reveal{opacity:1;transform:none}
-  @media (max-width:1180px){.bento-board{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 3}.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}.report-lanes{grid-template-columns:1fr 1fr}}@media (max-width:980px){.report-nav{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.hero-inner,.two-col{grid-template-columns:1fr}.hero-panel{max-width:620px}}@media (max-width:620px){.report-nav,.hero,main{padding-left:18px;padding-right:18px}.toolbar,.meta-grid,.report-lanes{grid-template-columns:1fr}.bento-board{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-action,.bento-review,.bento-security,.bento-coverage,.bento-runtime{grid-column:span 1}h1{font-size:clamp(1.9rem,9vw,2.6rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.report-nav,button,.skip-link{display:none}.hero{background:#fff;color:#000;padding:18px 0;border-bottom:2px solid #000}.hero-host{color:#000;border-color:#999}.hero-summary,.meta-item span,.hero-proof span{color:#333}.bento-card,.hero-panel,.meta-item,.hero-proof,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.bento-board,.evidence-layout,.two-col,.breakdown-grid{display:block}.report-lanes{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
+  @media (max-width:1180px){.bento-board{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-review,.bento-security,.bento-reboot{grid-column:span 3}.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.report-nav{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.hero-inner,.two-col{grid-template-columns:1fr}.hero-panel{max-width:620px}}@media (max-width:620px){.report-nav,.hero,main{padding-left:18px;padding-right:18px}.toolbar,.meta-grid{grid-template-columns:1fr}.bento-board{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-review,.bento-security,.bento-reboot{grid-column:span 1}h1{font-size:clamp(1.9rem,9vw,2.6rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.report-nav,button,.skip-link{display:none}.hero{background:#fff;color:#000;padding:18px 0;border-bottom:2px solid #000}.hero-host{color:#000;border-color:#999}.hero-summary,.meta-item span,.hero-proof span{color:#333}.bento-card,.hero-panel,.meta-item,.hero-proof,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.bento-board,.evidence-layout,.two-col,.breakdown-grid{display:block}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
   @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}*{transition:none !important}}
 </style>
-<noscript><style>.reveal{opacity:1;transform:none}</style></noscript>
+<noscript><style>.reveal{opacity:1;transform:none}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle{display:none}</style></noscript>
 </head>
 <body>
 <a class="skip-link" href="#updates">Skip to update table</a>
@@ -4609,21 +4598,24 @@ function New-HTMLReport {
 <main id="content">
   $emergencyBanner
   $bentoSection
-  $accordionSection
   <div class="evidence-layout">
     $evidenceRail
     <div class="evidence-stack">
       <div class="reveal">$attentionSection</div>
-      <div class="reveal">$breakdownSection</div>
       <section class="panel reveal" id="updates"><div class="section-head"><div><p class="eyebrow">Actionable package updates</p><h2>$($actionableRows.Count) action row(s)</h2></div><span class="count">$(ConvertTo-ReportHtml $Results.Count) total</span></div>$tableSection<div class="result-count" id="resultCount"></div></section>
-      <div id="providers" class="reveal">$providerCheckSection</div>
-      <div class="reveal">$skippedSection</div>
       <div id="security" class="two-col reveal">$kevSection$slaSection</div>
       <div class="reveal">$invKevSection</div>
       <div class="reveal">$stalenessSection</div>
       <div class="reveal">$eolSection</div>
-      <div id="runtime" class="reveal">$errSection</div>
-      <section class="panel reveal"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p></section>
+      <div class="audit-divider" id="auditDivider"><span>Audit detail</span><button type="button" class="audit-toggle" id="auditToggle" hidden aria-expanded="true" aria-controls="auditDetail">Hide audit detail</button></div>
+      <section id="auditDetail" class="audit-detail" aria-label="Audit detail">
+        <p class="audit-note">Full provider evidence, per-status counts, and run diagnostics. Included in print and PDF exports for the compliance record.</p>
+        <div class="reveal">$skippedSection</div>
+        <div id="providers" class="reveal">$providerCheckSection</div>
+        <div class="reveal">$breakdownSection</div>
+        <div id="runtime" class="reveal">$errSection</div>
+        <section class="panel reveal"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p><p class="note">Coverage: $inventoryCount inventory item(s) across $($sourceGroups.Count) source group(s) and $($providerGroups.Count) provider group(s); $providerCheckCount provider check(s). $visibleSkippedCount skipped or descoped row(s). Generated in ${elapsed2dp}m by PatchManager v$ver.</p></section>
+      </section>
     </div>
   </div>
   <div class="footer"><span class="footer-brand brand-lockup">$brandMark<span>Generated by <a href="https://github.com/ciaranwhiteside/PatchManager" target="_blank" rel="noopener">PatchManager</a> v$ver on $generatedAt.</span></span><span>Self-contained HTML report</span></div>
@@ -4651,6 +4643,19 @@ function New-HTMLReport {
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';statusFilter.value = '';sourceFilter.value = '';providerFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}
   document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(th, index){th.addEventListener('click', function(){var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('data-direction') === 'asc' ? 'desc' : 'asc';document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(other){other.removeAttribute('data-direction');});th.setAttribute('data-direction', direction);updateRows.sort(function(a,b){var av = (a.children[index].innerText || '').trim();var bv = (b.children[index].innerText || '').trim();return direction === 'asc' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});updateRows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
+  // Audit-detail progressive disclosure. The appendix renders expanded (so no-JS
+  // and print keep the full record); here we enable the toggle and collapse it
+  // for the on-screen view only.
+  var auditDetail = document.getElementById('auditDetail');
+  var auditToggle = document.getElementById('auditToggle');
+  if(auditDetail && auditToggle){
+    function setAuditCollapsed(collapsed){auditDetail.classList.toggle('is-collapsed', collapsed);auditToggle.setAttribute('aria-expanded', String(!collapsed));auditToggle.textContent = collapsed ? 'Show audit detail' : 'Hide audit detail';}
+    auditToggle.hidden = false;
+    setAuditCollapsed(true);
+    auditToggle.addEventListener('click', function(){setAuditCollapsed(!auditDetail.classList.contains('is-collapsed'));});
+    // A nav/rail link into the collapsed appendix must expand it before scrolling.
+    document.querySelectorAll('a[href^="#"]').forEach(function(link){link.addEventListener('click', function(){var id = link.getAttribute('href').slice(1);if(!id){return;}var target = document.getElementById(id);if(target && (target === auditDetail || auditDetail.contains(target))){setAuditCollapsed(false);}});});
+  }
   applyFilters();
 })();
 </script>
