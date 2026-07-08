@@ -4,6 +4,34 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The report had three different definitions of "needs attention", and they
+  disagreed.** The JSON export flagged any row with `Success=$false` and a status
+  other than `Skipped`; the HTML headline count summed blocked + verifying +
+  failed + script errors; and the HTML row classes also counted reboot-required
+  and KEV rows. Consequences, both visible in a real report:
+
+  - A run could headline **"1 item(s) need review"** over an **empty** attention
+    list — the "1" was a script error, which the list never included.
+  - Every **`Descoped`** row was reported as an attention item in the JSON,
+    because descoped rows carry `Success=$false` by default. Worst under
+    `CommercialManaged`, the profile that descopes the most: rows explicitly
+    recorded as *"another platform owns this"* were surfaced as problems.
+  - A **reboot-required** row was excluded from the headline count entirely,
+    despite the panel copy promising it was included.
+
+  All three now delegate to one pure `Get-PatchRowKind` predicate. `Skipped` and
+  `Descoped` are deliberate outcomes and never attention; a KEV or
+  reboot-required row *is* attention, including when it was skipped by the
+  per-run update cap (deferred exposure is still exposure). The panel copy now
+  states the count it actually shows, and says descoped rows are excluded.
+
+- Removed five report tone variables (`slaTone`, `failTone`, `blockedTone`,
+  `verifyingTone`, `errorTone`) that were computed and never used.
+
 ## [1.5.0] - 2026-07-08
 
 ### Fixed

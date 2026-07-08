@@ -1072,6 +1072,30 @@ function Get-ObjectPropertyValue {
     return $Default
 }
 
+function Get-PatchRowKind {
+    # Single source of truth for what a report row means. The JSON export, the HTML
+    # row classes, and the headline "needs review" count each used to decide this
+    # independently, and disagreed: the JSON treated any row with Success=$false and a
+    # status other than 'Skipped' as needing attention, which silently swept in every
+    # Descoped row (they carry Success=$false by default); the count summed only
+    # blocked/verifying/failed/script-errors; and the row classes also counted
+    # reboot-required and KEV rows. Pure - unit-testable.
+    #
+    # A KEV or reboot row that was Skipped (e.g. by the per-run update cap) still needs
+    # attention, so the attention test runs before the skipped test - deliberately.
+    param($Row)
+    $status         = [string](Get-ObjectPropertyValue $Row 'Status' '')
+    $rebootRequired = [bool](Get-ObjectPropertyValue $Row 'RebootRequired' $false)
+    $isKev          = [bool](Get-ObjectPropertyValue $Row 'IsKEV' $false)
+
+    if ($status -in @('Failed', 'Blocked', 'Verifying') -or $rebootRequired -or $isKev) { return 'attention' }
+    if ($status -eq 'Planned') { return 'action' }
+    if ($status -in @('Succeeded', 'Updated', 'Detected')) { return 'updated' }
+    # Skipped and Descoped are deliberate outcomes with a recorded reason, not problems.
+    if ($status -in @('Skipped', 'Descoped')) { return 'skipped' }
+    return 'provider'
+}
+
 function New-PatchResult {
     param(
         [string]$Name,
@@ -4756,10 +4780,7 @@ function New-ComplianceReport {
     } | Sort-Object Name | ForEach-Object {
         [PSCustomObject]@{ Source = $_.Name; Count = $_.Count }
     })
-    $attentionItems = @($Results | Where-Object {
-        $status = if ($_.PSObject.Properties['Status']) { [string]$_.Status } else { '' }
-        $status -in @('Failed', 'Blocked', 'Verifying') -or ($_.PSObject.Properties['Success'] -and -not [bool]$_.Success -and $status -ne 'Skipped')
-    })
+    $attentionItems = @($Results | Where-Object { (Get-PatchRowKind $_) -eq 'attention' })
     $rebootItems = @($Results | Where-Object {
         $_.PSObject.Properties['RebootRequired'] -and [bool]$_.RebootRequired
     })
@@ -4926,17 +4947,19 @@ function New-HTMLReport {
     $verifyingCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Verifying' }).Count
     $failedRowCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Failed' }).Count
     $rebootCount = @($Results | Where-Object { [bool](Get-ReportProperty $_ 'RebootRequired' $false) }).Count
-    $attentionCount = $blockedCount + $verifyingCount + $failedRowCount + $errorCount
+    # Count the rows the copy actually promises: blocked, failed, verifying,
+    # reboot-required, and KEV - plus any script errors. Previously this summed only
+    # blocked + verifying + failed + errors, so a report could headline "1 item(s) need
+    # review" while the attention list beneath it was empty (the 1 was a script error),
+    # or stay silent about a reboot-required row.
+    # Get-PatchRowKind, not the nested Get-ReportRowKind: nested functions only exist
+    # once execution reaches their definition, which is below this block.
+    $attentionRowCount = @($Results | Where-Object { (Get-PatchRowKind $_) -eq 'attention' }).Count
+    $attentionCount = $attentionRowCount + $errorCount
     $attentionTone = if ($attentionCount -gt 0) { 'danger' } else { 'good' }
 
-    $slaOk      = $slaCount -eq 0
-    $slaTone    = if ($slaOk) { 'good' } else { 'danger' }
     $kevTone    = if ($kevCount -gt 0) { 'danger' } else { 'good' }
-    $failTone   = if ($failCount -gt 0) { 'danger' } else { 'good' }
-    $blockedTone = if ($blockedCount -gt 0) { 'danger' } else { 'good' }
-    $verifyingTone = if ($verifyingCount -gt 0) { 'danger' } else { 'good' }
     $rebootTone = if ($rebootCount -gt 0) { 'danger' } else { 'good' }
-    $errorTone  = if ($errorCount -gt 0) { 'danger' } else { 'good' }
     $runTone    = if ($isEmergency -or $kevCount -gt 0 -or $slaCount -gt 0 -or $failCount -gt 0 -or $errorCount -gt 0) { 'attention' } else { 'clean' }
     $runSummary = if ($attentionCount -gt 0) { "$attentionCount item(s) need review before closing this run." } elseif ($runTone -eq 'clean') { 'No actionable KEV, SLA, failure, or script error conditions were recorded.' } else { 'Review the highlighted sections below before closing this run.' }
     $verdictTitle = if ($runTone -eq 'clean') { 'Patch state holds.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Exposure needs action.' } else { 'Review before close.' }
@@ -4967,15 +4990,10 @@ function New-HTMLReport {
     }
 
     function Get-ReportRowKind {
+        # Delegates to the shared predicate so the HTML, the JSON export, and the
+        # headline count can never drift apart again.
         param($Row)
-        $status = [string](Get-ReportProperty $Row 'Status' '')
-        $rebootRequired = [bool](Get-ReportProperty $Row 'RebootRequired' $false)
-        $isKev = [bool](Get-ReportProperty $Row 'IsKEV' $false)
-        if ($status -in @('Failed', 'Blocked', 'Verifying') -or $rebootRequired -or $isKev) { return 'attention' }
-        if ($status -eq 'Planned') { return 'action' }
-        if ($status -in @('Succeeded', 'Updated', 'Detected')) { return 'updated' }
-        if ($status -in @('Skipped', 'Descoped')) { return 'skipped' }
-        return 'provider'
+        return (Get-PatchRowKind $Row)
     }
 
     function New-ReportRowsHtml {
@@ -5062,9 +5080,9 @@ function New-HTMLReport {
     }) -join "`n"
 
     $attentionSection = if ($attentionCount -gt 0) {
-        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>Attention</p><h2>$attentionCount item(s) need review</h2></div><span class='count danger'>$attentionCount</span></div><p class='note danger-text'>Blocked, failed, verifying, reboot-required, KEV, or script-error states require follow-up. The actionable updates section below shows the package rows that matter first.</p></section>"
+        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>Attention</p><h2>$attentionCount item(s) need review</h2></div><span class='count danger'>$attentionCount</span></div><p class='note danger-text'>$attentionRowCount package row(s) in a blocked, failed, verifying, reboot-required, or KEV-affected state, plus $errorCount script error(s). Skipped and descoped rows are deliberate outcomes and are not counted here. The actionable updates section below shows the package rows that matter first.</p></section>"
     } else {
-        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>Attention</p><h2>No review items</h2></div><span class='count good'>0</span></div><p class='note'>No blocked, failed, verifying, or script-error states were recorded.</p></section>"
+        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>Attention</p><h2>No review items</h2></div><span class='count good'>0</span></div><p class='note'>No blocked, failed, verifying, reboot-required, KEV-affected, or script-error states were recorded.</p></section>"
     }
 
     $breakdownSection = "<div class='breakdown-grid'><section class='panel'><div class='section-head'><div><p class='eyebrow'>Result breakdown</p><h2>Status counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $Results.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Status</th><th>Rows</th></tr></thead><tbody>$statusRows</tbody></table></div></section><section class='panel'><div class='section-head'><div><p class='eyebrow'>Source breakdown</p><h2>Source counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $sourceGroups.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Source</th><th>Rows</th></tr></thead><tbody>$sourceRows</tbody></table></div></section><section class='panel'><div class='section-head'><div><p class='eyebrow'>Provider breakdown</p><h2>Provider counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $providerGroups.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Provider</th><th>Rows</th></tr></thead><tbody>$providerRows</tbody></table></div></section></div>"
@@ -5172,7 +5190,7 @@ function New-HTMLReport {
     $bentoSection = @"
   <section class="bento-board reveal" id="summary" aria-label="Run summary">
     <article class="bento-card bento-primary good"><span class="bento-kicker">$primaryLabel</span><strong>$primaryCount</strong><p>$verdictCopy</p></article>
-    <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>Blocked, failed, verifying, and script-error signals to follow up. See the actions below.</p></article>
+    <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>$attentionRowCount row(s) blocked, failed, verifying, reboot-required, or KEV-affected, plus $errorCount script error(s). See the actions below.</p></article>
     <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security</span><strong>$kevCount KEV</strong><p>$kevBentoNote KEV and SLA exposure is detailed in the security section.</p></article>
     <article class="bento-card bento-reboot $rebootTone"><span class="bento-kicker">Reboot required</span><strong>$rebootCount</strong><p>Update(s) needing a restart to finish - PatchManager never reboots on its own.</p></article>
   </section>

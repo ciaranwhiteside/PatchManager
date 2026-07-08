@@ -31,6 +31,8 @@ Assert-True ($errors.Count -eq 0) "PowerShell parser errors:`n$($errors | Out-St
 
 Get-Content -Path $exampleConfigPath -Raw | ConvertFrom-Json | Out-Null
 
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchRowKind')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchResult')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-PatchResult')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Update-StatsFromResults')
@@ -394,6 +396,51 @@ $stalenessHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreache
 Assert-True ($stalenessHtml -match 'Environment staleness') 'HTML report should render the Environment staleness panel when findings exist.'
 Assert-True ($stalenessHtml -match 'Report-only exposure checks') 'Staleness panel should state it is report-only.'
 Assert-True ($stalenessHtml -match 'Microsoft Defender') 'Staleness panel should list the Defender finding.'
+
+#-- Report row classification (one predicate for JSON, HTML classes, and the count) ---
+function New-KindRow {
+    param([string]$Status, [bool]$Reboot = $false, [bool]$Kev = $false, [bool]$Success = $false)
+    [pscustomobject]@{ Status = $Status; RebootRequired = $Reboot; IsKEV = $Kev; Success = $Success }
+}
+
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Failed'))    -eq 'attention') 'Row kind: Failed -> attention.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Blocked'))   -eq 'attention') 'Row kind: Blocked -> attention.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Verifying')) -eq 'attention') 'Row kind: Verifying -> attention.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Succeeded' -Reboot $true -Success $true)) -eq 'attention') 'Row kind: a reboot-required row needs attention even when it succeeded.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Succeeded' -Kev $true -Success $true))    -eq 'attention') 'Row kind: a confirmed-KEV row needs attention.'
+# A confirmed-KEV package deferred by the per-run cap is still exposure, not a tidy skip.
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Skipped' -Kev $true)) -eq 'attention') 'Row kind: a KEV row skipped by the update cap still needs attention.'
+
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Planned'))   -eq 'action')  'Row kind: Planned -> action.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Succeeded' -Success $true)) -eq 'updated') 'Row kind: Succeeded -> updated.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Skipped'))   -eq 'skipped') 'Row kind: Skipped -> skipped.'
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'Completed' -Success $true)) -eq 'provider') 'Row kind: a provider check row -> provider.'
+
+# Regression: Descoped rows carry Success=$false by default, and the JSON export used to
+# treat "Success=false and status is not Skipped" as needing attention - so every
+# deliberately descoped row was reported as an attention item (worst under
+# CommercialManaged, which descopes the most).
+$descoped = New-KindRow -Status 'Descoped'
+Assert-True ($descoped.Success -eq $false) 'A Descoped row carries Success=$false - the trap the old heuristic fell into.'
+Assert-True ((Get-PatchRowKind $descoped) -eq 'skipped') 'Row kind: Descoped is a deliberate outcome, never an attention item.'
+# ...and an AlreadyCurrent provider row is evidence, not a problem.
+Assert-True ((Get-PatchRowKind (New-KindRow -Status 'AlreadyCurrent' -Success $true)) -eq 'provider') 'Row kind: AlreadyCurrent -> provider evidence.'
+
+# The headline count and the attention list must be the same predicate. Previously the
+# HTML could headline "1 item(s) need review" over an empty list. A reboot-required row
+# is the cheapest way to catch a regression: the old count ignored it entirely.
+$driftRows = @(
+    (New-PatchResult -Name 'Rebooter' -PackageId 'A' -Provider 'winget' -Source 'winget' -Status 'Succeeded' -Success $true -RebootRequired $true)
+    (New-PatchResult -Name 'Descoped app' -PackageId 'B' -Provider 'winget' -Source 'winget' -Status 'Descoped')
+    (New-PatchResult -Name 'Fine' -PackageId 'C' -Provider 'winget' -Source 'winget' -Status 'Succeeded' -Success $true)
+)
+$driftAttention = @($driftRows | Where-Object { (Get-PatchRowKind $_) -eq 'attention' })
+Assert-True ($driftAttention.Count -eq 1) 'Attention rows: exactly the reboot-required row, not the descoped one.'
+$script:Stats.KEVMatches = 0
+$driftHtml = New-HTMLReport -Results $driftRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @()
+Assert-True ($driftHtml -match '1 item\(s\) need review') 'HTML headline must count the reboot-required row.'
+Assert-True ($driftHtml -match 'Skipped and descoped rows are deliberate outcomes and are not counted here') 'Attention panel must say descoped rows are excluded.'
+Assert-True ($driftHtml -notmatch '2 item\(s\) need review') 'HTML headline must not count the descoped row.'
 
 #-- KEV exposure resolution (CISA KEV names products; NVD supplies versions) ---------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-VersionParts')
