@@ -94,6 +94,20 @@ All notable changes to PatchManager are documented here. The format follows
 
 ### Changed
 
+- **`PatchBehind` applies to Python and Node.js only.** Windows and .NET are
+  exempt, because neither reports a version on the same scale as its
+  endoflife.date `latest`: Windows gives a bare build (`26200`) against
+  `10.0.26200`, and `dotnet --version` gives the **SDK** version — whose third
+  component is a feature band (`9.0.100`, `9.0.305`) — against a **runtime**
+  `latest` of `9.0.17`. An SDK version always compares above the runtime, so the
+  check could never fire, and would have become a false positive the day a
+  runtime patch reached `.100`. Both are now suppressed explicitly rather than
+  relying on the comparison happening not to trip.
+- **`CommercialManaged` descopes the Python Install Manager**, matching the
+  existing rule for Scoop and native vendor updaters: a per-user patching
+  provider is assumed to be owned by the management platform. It is a no-op in
+  the SYSTEM-context runs typical of a managed estate anyway; descoping makes
+  that explicit rather than leaving a provider that silently never fires.
 - `Get-EndOfLifeCached` now delegates to a shared `Get-CachedApiJson` helper
   (same TTL / offline / stale-fallback semantics), reused by the NVD provider.
 - `Get-FleetReport.ps1` no longer counts `NotAffected` inventory KEV candidates

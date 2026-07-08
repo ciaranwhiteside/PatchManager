@@ -215,7 +215,7 @@ function New-TestDefaultCfg {
         WindowsUpdate = [ordered]@{ Enabled = $true }
         Microsoft365 = [ordered]@{ Enabled = $true }
         Browsers = [ordered]@{ Enabled = $true; ChromeEnabled = $true; EdgeEnabled = $true }
-        PackageManagers = [ordered]@{ ChocolateyEnabled = $null; ScoopEnabled = $true }
+        PackageManagers = [ordered]@{ ChocolateyEnabled = $null; ScoopEnabled = $true; PythonManagerEnabled = $true }
         VendorUpdaters = [ordered]@{ Enabled = $true }
         SelfUpdate = [ordered]@{ Enabled = $null; Ref = 'latest' }
         SLA = [ordered]@{ Critical = 14 }
@@ -256,6 +256,7 @@ try {
     Assert-True ('Google.Chrome' -notin $commercialCfg.Descope.PackageIds) 'Commercial profile must not descope Chrome - only CommercialManaged assumes a platform owns it.'
     Assert-True ($commercialCfg.VendorUpdaters.Enabled -eq $true) 'Commercial profile must keep native vendor updaters enabled.'
     Assert-True ($commercialCfg.PackageManagers.ScoopEnabled -eq $true) 'Commercial profile must keep Scoop enabled.'
+    Assert-True ($commercialCfg.PackageManagers.PythonManagerEnabled -eq $true) 'Commercial profile must keep the Python Install Manager enabled - only CommercialManaged assumes a platform owns it.'
     Assert-True ($commercialCfg.PackageManagers.ChocolateyEnabled -eq $false) 'Commercial profile must leave Chocolatey off by default - enabling it is an explicit licence decision.'
     Assert-True ($commercialCfg.SelfUpdate.Enabled -eq $true) 'Commercial profile should resolve self-update to on (no management platform owns the tool).'
 
@@ -271,6 +272,8 @@ try {
     Assert-True ('Google.Chrome' -in $managedCfg.Descope.PackageIds) 'CommercialManaged profile should descope Chrome.'
     Assert-True ($managedCfg.VendorUpdaters.Enabled -eq $false) 'CommercialManaged profile should disable native vendor updaters.'
     Assert-True ($managedCfg.PackageManagers.ScoopEnabled -eq $false) 'CommercialManaged profile should disable Scoop.'
+    # Per-user patching providers follow the same managed-estate rule as Scoop.
+    Assert-True ($managedCfg.PackageManagers.PythonManagerEnabled -eq $false) 'CommercialManaged profile should disable the Python Install Manager.'
     Assert-True ($managedCfg.PackageManagers.ChocolateyEnabled -eq $false) 'CommercialManaged profile should leave Chocolatey off.'
     Assert-True ($managedCfg.SelfUpdate.Enabled -eq $false) 'CommercialManaged profile should resolve self-update to off (the platform owns deployment).'
 
@@ -615,6 +618,18 @@ Assert-True ($behindFinding.Detail -match 'behind 3\.13\.14') 'PatchBehind detai
 # patch drift must not be inferred there.
 $winFinding = New-EolFindingFromRelease -Product 'windows' -Item 'Windows 25H2' -InstalledVersion '26200' -Release $w25Pro -WarnWithinDays 90 -SkipPatchDrift
 Assert-True ($winFinding.Status -eq 'Supported') 'Windows build vs 10.0.x latest must not be graded as PatchBehind.'
+
+# .NET is the same trap: `dotnet --version` reports the SDK version (third component is
+# a feature band, >= 100) while endoflife.date's dotnet 'latest' is the RUNTIME version
+# (e.g. 9.0.17). SDK 9.0.100 compares ABOVE runtime 9.0.17, so drift never fires today -
+# and becomes a false positive the day a runtime patch reaches .100. Suppress it outright.
+$dotnetRel = [pscustomobject]@{ name='9'; isEol=$false; eolFrom=(Get-Date).AddDays(400).ToString('yyyy-MM-dd'); latest=[pscustomobject]@{ name='9.0.17' } }
+$dotnetFinding = New-EolFindingFromRelease -Product 'dotnet' -Item '.NET' -InstalledVersion '9.0.100' -Release $dotnetRel -WarnWithinDays 90 -SkipPatchDrift
+Assert-True ($dotnetFinding.Status -eq 'Supported') '.NET SDK version vs runtime latest must not be graded as PatchBehind.'
+Assert-True ((Compare-SoftwareVersion '9.0.100' '9.0.17') -eq 1) 'SDK feature band 9.0.100 compares above runtime 9.0.17 - the scale mismatch the skip guards.'
+# The runtime table must actually carry the flag, or the guard above is decorative.
+Assert-True ((Get-Content -Path $scriptPath -Raw) -match "Product = 'dotnet';[^\r\n]*SkipPatchDrift = \`$true") '.NET must be declared SkipPatchDrift in the runtime table.'
+Assert-True ((Get-Content -Path $scriptPath -Raw) -match "Product = 'python';[^\r\n]*SkipPatchDrift = \`$false") 'Python must NOT skip patch drift - it reports the version endoflife.date tracks.'
 
 # HTML report renders the End-of-life panel when findings exist.
 $eolFindings = @(

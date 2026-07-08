@@ -96,7 +96,7 @@ closes that gap with one auditable script:
 | Chrome / Edge | ✅ On | Native updaters, used only when the browser is not already covered by an actionable WinGet candidate. |
 | Chocolatey | ⚙️ Personal on | `choco outdated` discovery + per-package upgrade. The choco CLI is free, but Chocolatey for Business is paid — so it's **off in commercial profiles pending your explicit licence opt-in** (Personal on). |
 | Scoop | ✅ On (user context) | Per-user manager; refreshes buckets and updates all apps. Only runs in a user-context session (never SYSTEM). |
-| Python Install Manager (`py`) | ✅ On (user context) | Store/pymanager-installed Python is invisible to WinGet, which reports the channel tag (`3.14-64`) as the version. Pairs `py list` against the online index by exact install id, then `py install --update --by-id`. Runtimes pymanager doesn't own (uv/Astral, python.org MSI) are reported, never updated. Success is decided by re-reading the installed version, not the exit code. |
+| Python Install Manager (`py`) | ✅ On (user context, off on CommercialManaged) | Store/pymanager-installed Python is invisible to WinGet, which reports the channel tag (`3.14-64`) as the version. Pairs `py list` against the online index by exact install id, then `py install --update --by-id`. Runtimes pymanager doesn't own (uv/Astral, python.org MSI) are reported, never updated. Success is decided by re-reading the installed version, not the exit code. |
 | Native vendor updaters | ✅ On | Headless "apply update now" updaters for apps with no actionable WinGet candidate (built-in: Brave; extend via `VendorUpdaters.ExtraCatalogue`). |
 | OEM firmware / BIOS | ⛔ Off | Opt-in only. Dell Command Update / HP Image Assistant / Lenovo System Update. Skipped on battery; never reboots on its own. |
 | Environment staleness | 🔎 Report-only | Never patches. Flags stale Microsoft Defender signatures, Windows feature-update lag, and installed dev-runtime versions in their own report section. |
@@ -104,7 +104,8 @@ closes that gap with one auditable script:
 
 Commercial profiles keep everything above on except Chocolatey (licence
 opt-in). `CommercialManaged` additionally defers Windows Update, Microsoft 365,
-browsers, Scoop, and vendor updaters to your management platform — see
+browsers, Scoop, the Python Install Manager, and vendor updaters to your
+management platform — see
 [Scope profiles](#scope-profiles-personal-vs-commercial).
 
 What it deliberately does **not** do:
@@ -361,7 +362,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 |---|---|---|
 | `ChocolateyEnabled` | `null` → profile | `null` resolves by profile: Personal **on** (the choco CLI is free), Commercial/CommercialManaged **off** pending your explicit opt-in. Chocolatey for Business is a paid product — enabling it commercially is your licence decision. An explicit `true`/`false` always wins. |
 | `ScoopEnabled` | `true` (`false` on CommercialManaged) | Per-user Scoop; only runs in a user-context session. |
-| `PythonManagerEnabled` | `true` | Python Install Manager (`py`). Store/pymanager-installed Python is invisible to WinGet — the `msstore` source reports the channel tag (`3.14-64`) where a version belongs, so a `3.14.5 → 3.14.6` patch is never discovered. Only `PythonCore` runtimes pymanager itself installed are updated; unmanaged runtimes (uv/Astral, python.org MSI) are reported and left alone. Per-user like Scoop: a SYSTEM-context run skips it. |
+| `PythonManagerEnabled` | `true` (`false` on CommercialManaged) | Python Install Manager (`py`). Store/pymanager-installed Python is invisible to WinGet — the `msstore` source reports the channel tag (`3.14-64`) where a version belongs, so a `3.14.5 → 3.14.6` patch is never discovered. Only `PythonCore` runtimes pymanager itself installed are updated; unmanaged runtimes (uv/Astral, python.org MSI) are reported and left alone. Per-user like Scoop: a SYSTEM-context run skips it. |
 | `TimeoutSeconds` | `300` | Per-command timeout for all three managers. |
 | `MaxUpdatesPerRun` | `0` | Cap Chocolatey/Python upgrades per run (`0` = unlimited). |
 
@@ -409,7 +410,7 @@ touches the network.
 | `CacheHours` / `CachePath` | `168` / `…\Cache` | Per-product cache TTL (7 days; lifecycle data moves slowly) and location (shared with the KEV cache). |
 | `WarnWithinDays` | `90` | Flag releases whose end-of-support falls within this window as *near-EOL*. |
 | `CheckWindows` | `true` | Authoritatively flag an out-of-support Windows feature version (build + edition aware). |
-| `CheckRuntimes` | `true` | Flag out-of-support .NET / Python / Node.js, with the latest supported version. Also flags **patch-level drift** (`PatchBehind`): a release line that is still supported, but whose installed build is behind its newest patch release — e.g. Python 3.14.5 when 3.14.6 is out. Windows is exempt (it reports a bare build number against a `10.0.<build>` latest). |
+| `CheckRuntimes` | `true` | Flag out-of-support .NET / Python / Node.js, with the latest supported version. Also flags **patch-level drift** (`PatchBehind`): a release line that is still supported, but whose installed build is behind its newest patch release — e.g. Python 3.14.5 when 3.14.6 is out. Drift applies to Python and Node.js only. Windows and .NET are exempt: Windows reports a bare build against a `10.0.<build>` latest, and `dotnet --version` reports the SDK version (feature band ≥ `.100`) against a runtime `latest` like `9.0.17` — different scales, so a comparison would be meaningless. |
 | `InventoryScan` / `InventoryMaxLookups` | `true` / `40` | Best-effort match of the whole software inventory against endoflife.date; only actual EOL/near-EOL is surfaced, capped at N network lookups per run. |
 | `Offline` | `false` | `true` = use the cache only, never fetch (air-gapped estates). |
 

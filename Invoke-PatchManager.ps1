@@ -517,6 +517,11 @@ function Set-ScopeProfileDefaults {
         # a management platform is assumed to own them. Report-only checks stay on.
         if ($null -ne (Get-ObjectPropertyValue $Config 'PackageManagers' $null)) {
             $Config.PackageManagers.ScoopEnabled = $false
+            # Same rule, same reason: the Python Install Manager is a per-user patching
+            # provider. A managed estate typically runs PatchManager as SYSTEM, where
+            # `py` does not resolve anyway - descoping it makes that explicit rather
+            # than leaving a provider that silently never fires.
+            $Config.PackageManagers.PythonManagerEnabled = $false
         }
         if ($null -ne (Get-ObjectPropertyValue $Config 'VendorUpdaters' $null)) {
             $Config.VendorUpdaters.Enabled = $false
@@ -3962,10 +3967,16 @@ function Invoke-EndOfLifeReport {
 
     # --- Developer runtimes (.NET / Python / Node.js) ---
     if ([bool](Get-ObjectPropertyValue $cfg 'CheckRuntimes' $true)) {
+        # SkipPatchDrift: `dotnet --version` reports the SDK version, whose third
+        # component is a feature band (>= 100), while endoflife.date's dotnet 'latest'
+        # is the RUNTIME version (e.g. 9.0.17). Different scales - SDK 9.0.100 always
+        # compares above runtime 9.0.17 - so a drift comparison there is meaningless
+        # today and would turn into a false positive the day a runtime patch reaches
+        # .100. Python and Node.js report the same version line endoflife.date tracks.
         $runtimes = @(
-            @{ Item = '.NET';    Product = 'dotnet'; Exe = 'dotnet'; Args = @('--version') }
-            @{ Item = 'Python';  Product = 'python'; Exe = 'python'; Args = @('--version') }
-            @{ Item = 'Node.js'; Product = 'nodejs'; Exe = 'node';   Args = @('--version') }
+            @{ Item = '.NET';    Product = 'dotnet'; Exe = 'dotnet'; Args = @('--version'); SkipPatchDrift = $true }
+            @{ Item = 'Python';  Product = 'python'; Exe = 'python'; Args = @('--version'); SkipPatchDrift = $false }
+            @{ Item = 'Node.js'; Product = 'nodejs'; Exe = 'node';   Args = @('--version'); SkipPatchDrift = $false }
         )
         foreach ($rt in $runtimes) {
             $cmd = Get-Command $rt.Exe -EA SilentlyContinue
@@ -3981,6 +3992,7 @@ function Invoke-EndOfLifeReport {
             $rel = Resolve-EolReleaseForVersion -Releases @($product.releases) -InstalledVersion $ver
             $findings.Add((New-EolFindingFromRelease -Product $rt.Product -Item $rt.Item `
                 -InstalledVersion $ver -Release $rel -WarnWithinDays $warn `
+                -SkipPatchDrift:([bool]$rt.SkipPatchDrift) `
                 -Recommendation "Upgrade $($rt.Item) to a supported release."))
         }
     }

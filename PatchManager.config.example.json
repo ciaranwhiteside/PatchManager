@@ -64,7 +64,7 @@
     "ChocolateyEnabled": null,
     "_comment_scoop": "Scoop is per-user and only runs in a user-context session (never SYSTEM). Off under CommercialManaged.",
     "ScoopEnabled": true,
-    "_comment_pymanager": "Python Install Manager (the `py` command). Store/pymanager-installed Python is invisible to WinGet - the msstore source reports the channel tag ('3.14-64') where a version belongs, so a 3.14.5 -> 3.14.6 patch is never discovered. Only PythonCore runtimes pymanager itself installed are updated; unmanaged runtimes (uv/Astral, python.org MSI) are reported and left alone. Per-user, like Scoop: a SYSTEM-context run skips it.",
+    "_comment_pymanager": "Python Install Manager (the `py` command). Store/pymanager-installed Python is invisible to WinGet - the msstore source reports the channel tag ('3.14-64') where a version belongs, so a 3.14.5 -> 3.14.6 patch is never discovered. Only PythonCore runtimes pymanager itself installed are updated; unmanaged runtimes (uv/Astral, python.org MSI) are reported and left alone. Per-user, like Scoop: a SYSTEM-context run skips it, and CommercialManaged descopes it.",
     "PythonManagerEnabled": true,
     "TimeoutSeconds": 300,
     "MaxUpdatesPerRun": 0
