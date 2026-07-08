@@ -17,7 +17,7 @@ personal machine or as a fleet patching agent across a commercial estate with
 rings, maintenance windows, SLA tracking, version-verified CISA KEV emergency
 handling, and SIEM-ready event logging.
 
-> **Public beta (v1.5.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.5.1).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
