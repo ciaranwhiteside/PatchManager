@@ -1,0 +1,60 @@
+{
+  "_comment": "Flattened, vulnerable-only cpeMatch nodes as Get-NVDCpeMatches yields them.",
+
+  "chrome-cve-2020-16017": [
+    {
+      "vulnerable": true,
+      "criteria": "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+      "versionEndExcluding": "86.0.4240.198",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000001"
+    },
+    {
+      "vulnerable": false,
+      "criteria": "cpe:2.3:o:fedoraproject:fedora:32:*:*:*:*:*:*:*",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000002"
+    }
+  ],
+
+  "chrome-unbounded": [
+    {
+      "vulnerable": true,
+      "criteria": "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000003"
+    }
+  ],
+
+  "chrome-exact-version": [
+    {
+      "vulnerable": true,
+      "criteria": "cpe:2.3:a:google:chrome:86.0.4240.197:*:*:*:*:*:*:*",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000004"
+    }
+  ],
+
+  "chrome-bounded-window": [
+    {
+      "vulnerable": true,
+      "criteria": "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+      "versionStartIncluding": "80.0.0.0",
+      "versionEndExcluding": "86.0.4240.198",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000005"
+    }
+  ],
+
+  "edge-legacy-cve-2016-7201": [
+    {
+      "vulnerable": true,
+      "criteria": "cpe:2.3:a:microsoft:edge:-:*:*:*:*:*:*:*",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000006"
+    }
+  ],
+
+  "unrelated-product-only": [
+    {
+      "vulnerable": true,
+      "criteria": "cpe:2.3:a:google:android:*:*:*:*:*:*:*:*",
+      "versionEndExcluding": "11.0",
+      "matchCriteriaId": "A1B2C3D4-0000-0000-0000-000000000007"
+    }
+  ]
+}

@@ -4,6 +4,102 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-07-08
+
+### Fixed
+
+- **CISA KEV matches were name-only, and reported as if they were version-
+  specific exposures.** The KEV catalogue carries **no version data** — its
+  entries name a vendor and a product, nothing more. `Find-KEVMatches` matched
+  on vendor + product name and then presented the installed version next to the
+  CVE, implying the two had been compared. They never were. Google Chrome
+  150.0.7871.47 was reported as an *actionable KEV match* for CVE-2020-16017,
+  a use-after-free fixed in Chrome **86.0.4240.198** back in November 2020 — and
+  because a KEV match unconditionally set the emergency flag, that false match
+  **bypassed the maintenance window**. Chrome will always match a Chrome KEV
+  entry, so this fired on every run. The same defect surfaced
+  `Microsoft.Edge.GameAssist` 1.0.4019.0 against two 2016 legacy-EdgeHTML CVEs.
+
+  KEV matching is now a two-stage pipeline:
+
+  - `Find-KEVCandidates` performs the name match and labels the result for what
+    it is — *this product has known-exploited history*.
+  - `Add-KEVExposure` resolves each candidate against **NVD's CPE version
+    ranges** (`versionStartIncluding` / `versionEndExcluding` / exact-version
+    CPEs), yielding `Affected`, `NotAffected`, or `Unknown`.
+
+  Only `Affected` counts as a KEV match, prioritises a package, sets `IsKEV` on
+  a row, or triggers the emergency maintenance-window bypass. `Unknown` — no
+  NVD data, an unbounded wildcard range, or a version that is not plain
+  dotted-numeric — is surfaced for review and **never** escalates. An unbounded
+  wildcard CPE is deliberately treated as undecidable rather than "all versions
+  affected", because honouring it literally would reintroduce exactly the
+  false-positive emergencies this gate exists to prevent.
+
+  Both KEV report sections now carry an **Exposure** and **Fixed in** column,
+  state plainly that the catalogue holds no version data, and only take the
+  danger tone when something is actually confirmed affected.
+
+- **Patch-level drift inside a supported release line was computed, then
+  discarded.** `New-EolFindingFromRelease` graded severity purely on the
+  end-of-life date, so Python 3.14.5 with 3.14.6 available was recorded as
+  `Supported` / `info` with an empty recommendation — despite the finding
+  already carrying `LatestSupported: 3.14.6`. Such findings now resolve to a new
+  `PatchBehind` status: a `review` finding, with a concrete recommendation, and
+  a "Behind latest" badge in the report. Windows is exempt (`-SkipPatchDrift`),
+  since it reports a bare build number against a `10.0.<build>` latest.
+
+- **Store/pymanager-installed Python could never be updated.** Python installed
+  through the Python Install Manager is invisible to WinGet: the `msstore` source
+  reports the channel tag (`3.14-64`) where a version belongs, so a 3.14.5 →
+  3.14.6 patch was never discovered by any provider. The new
+  `Invoke-PythonManagerProvider` closes that gap.
+
+### Added
+
+- **Python Install Manager provider** (`PackageManagers.PythonManagerEnabled`),
+  driving the `py` command. Discovers runtimes via `py list -f json`, pairs them
+  against `py list --online -f json` by **exact install id** (so a 32-bit or
+  arm64 build of the same tag is never mistaken for the installed 64-bit one),
+  and applies updates with `py install --update --by-id <id>`.
+
+  Runtimes pymanager does not own — uv/Astral, python.org MSI — are reported as
+  `Skipped` with a remediation pointer and **never** updated. Like Scoop, the
+  provider is per-user and stays silent in a SYSTEM-context run. It also
+  distinguishes the real Python Install Manager from the legacy PEP 397 `py`
+  launcher by probing for the manager's JSON listing protocol.
+
+  Update success is decided by **re-reading the installed version**, not by the
+  exit code. This is not theoretical: a real 3.14.5 → 3.14.6 update installed
+  the runtime, restored `site-packages` and `Scripts`, and *then* exited 1 from
+  its shortcut-refresh step with `INTERNAL ERROR: AttributeError: 'str' object
+  has no attribute 'satisfied_by'`. Gating on the exit code would have reported
+  an applied update as `Failed` and retried it on every subsequent run. The
+  observed version is ground truth; the exit code is recorded as evidence, and
+  the anomaly is called out in the row. Conversely — mirroring the v1.4.2
+  defects — exit code 0 with an unchanged version is `Failed`, never success.
+
+- **NVD provider** (`NVD` config section) supplying CPE version ranges for KEV
+  candidate resolution. Cached on disk for 30 days, memoised per run, rate
+  limited (NVD allows ~5 requests / 30s unkeyed; set `ApiKey` for 50), and
+  capped by `MaxLookupsPerRun`. Setting `Enabled: false` leaves every candidate
+  `Unknown`: still reported, never escalated.
+- `Statistics.KEVCandidates` in the JSON report — the name-match count before
+  version resolution, alongside `Statistics.KEVMatches`, which now means
+  *confirmed affected*.
+- Pure, unit-tested helpers: `Compare-SoftwareVersion`, `ConvertTo-VersionParts`,
+  `ConvertFrom-CpeCriteria`, `ConvertTo-CpeToken`, `Test-CpeProductAlignment`,
+  `Test-VersionInCpeRange`, `Resolve-KEVExposure`, `ConvertFrom-PyManagerList`,
+  `Find-PyManagerUpgrades`, `Resolve-PyUpdateOutcome`.
+
+### Changed
+
+- `Get-EndOfLifeCached` now delegates to a shared `Get-CachedApiJson` helper
+  (same TTL / offline / stale-fallback semantics), reused by the NVD provider.
+- `Get-FleetReport.ps1` no longer counts `NotAffected` inventory KEV candidates
+  as host exposure. Reports written before this release have no `ExposureState`
+  and are still counted, preserving the previous conservative behaviour.
+
 ## [1.4.2] - 2026-07-07
 
 ### Fixed

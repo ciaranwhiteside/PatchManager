@@ -14,10 +14,10 @@ It discovers and applies updates across **Windows Update, WinGet, the Microsoft
 Store, Microsoft 365 Click-to-Run, Chrome, and Edge**, then writes audit-ready
 HTML, JSON, and CSV compliance reports. Use it as a set-and-forget updater on a
 personal machine or as a fleet patching agent across a commercial estate with
-rings, maintenance windows, SLA tracking, CISA KEV emergency handling, and
-SIEM-ready event logging.
+rings, maintenance windows, SLA tracking, version-verified CISA KEV emergency
+handling, and SIEM-ready event logging.
 
-> **Public beta (v1.4.2).** PatchManager runs elevated and changes installed
+> **Public beta (v1.5.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -63,11 +63,12 @@ closes that gap with one auditable script:
 - **Safe by default** — dry-run mode, maintenance windows, pre-flight checks,
   system restore points, reboot flagging (never forcing), and machine state
   restored on exit.
-- **Threat-aware** — the [CISA Known Exploited Vulnerabilities
-  catalogue](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) is
-  checked every run; actively exploited software bypasses the maintenance
-  window, and KEV-listed software with no available update is flagged for
-  manual follow-up.
+- **Threat-aware, without crying wolf** — the [CISA Known Exploited
+  Vulnerabilities catalogue](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+  is checked every run, then each match is resolved against NVD's CPE version
+  ranges. Only a build that actually falls inside a vulnerable range bypasses
+  the maintenance window; KEV-listed software with no available update is
+  flagged for manual follow-up.
 - **No agent, no service, no dependency** — a single `.ps1` file plus a JSON
   config. Deploy it with anything that can run PowerShell.
 
@@ -75,11 +76,11 @@ closes that gap with one auditable script:
 
 | Area | What you get |
 |---|---|
-| Update engines | Windows Update (COM), WinGet (`winget` + `msstore` sources), Microsoft Store client, Microsoft 365 Click-to-Run, Chrome/Edge native updaters, Chocolatey/Scoop, native vendor updaters (data-driven, extensible), opt-in OEM firmware (Dell/HP/Lenovo) |
-| Lifecycle intelligence | Report-only environment staleness (Defender signatures, Windows feature lag, dev runtimes) and end-of-life exposure from [endoflife.date](https://github.com/endoflife-date/endoflife.date) (out-of-support Windows/runtimes/inventory software), never counted as patch actions, rolled up estate-wide in the fleet dashboard |
+| Update engines | Windows Update (COM), WinGet (`winget` + `msstore` sources), Microsoft Store client, Microsoft 365 Click-to-Run, Chrome/Edge native updaters, Chocolatey/Scoop, Python Install Manager (`py`), native vendor updaters (data-driven, extensible), opt-in OEM firmware (Dell/HP/Lenovo) |
+| Lifecycle intelligence | Report-only environment staleness (Defender signatures, Windows feature lag, dev runtimes) and end-of-life exposure from [endoflife.date](https://github.com/endoflife-date/endoflife.date) — out-of-support Windows/runtimes/inventory software, plus patch-level drift inside a still-supported release line — never counted as patch actions, rolled up estate-wide in the fleet dashboard |
 | Reporting | Interactive HTML report, JSON for automation, CSV for SIEM/Excel/Power BI, optional central share copy, fleet dashboard |
 | Rollout control | Pilot → Early → Broad rings (registry-driven), maintenance windows, hostname-seeded jitter, per-run update caps |
-| Security | CISA KEV emergency bypass, inventory-wide KEV scan, SLA tracking with breach events, Windows Event Log IDs for SIEM |
+| Security | CISA KEV emergency bypass gated on an NVD-confirmed version match, inventory-wide KEV scan, SLA tracking with breach events, Windows Event Log IDs for SIEM |
 | Safety | Dry-run mode, pre-flight checks (disk/battery/reboot/network/winget health), system restore point, single-instance mutex, atomic state writes, BITS throttle restored on exit |
 | User experience | Optional close-app prompts with retry/defer, completion popup with one-click report open, quiet unattended operation |
 | Notifications | Optional webhook run summaries (Teams/Slack/generic JSON), optionally only when something needs attention |
@@ -95,10 +96,11 @@ closes that gap with one auditable script:
 | Chrome / Edge | ✅ On | Native updaters, used only when the browser is not already covered by an actionable WinGet candidate. |
 | Chocolatey | ⚙️ Personal on | `choco outdated` discovery + per-package upgrade. The choco CLI is free, but Chocolatey for Business is paid — so it's **off in commercial profiles pending your explicit licence opt-in** (Personal on). |
 | Scoop | ✅ On (user context) | Per-user manager; refreshes buckets and updates all apps. Only runs in a user-context session (never SYSTEM). |
+| Python Install Manager (`py`) | ✅ On (user context) | Store/pymanager-installed Python is invisible to WinGet, which reports the channel tag (`3.14-64`) as the version. Pairs `py list` against the online index by exact install id, then `py install --update --by-id`. Runtimes pymanager doesn't own (uv/Astral, python.org MSI) are reported, never updated. Success is decided by re-reading the installed version, not the exit code. |
 | Native vendor updaters | ✅ On | Headless "apply update now" updaters for apps with no actionable WinGet candidate (built-in: Brave; extend via `VendorUpdaters.ExtraCatalogue`). |
 | OEM firmware / BIOS | ⛔ Off | Opt-in only. Dell Command Update / HP Image Assistant / Lenovo System Update. Skipped on battery; never reboots on its own. |
 | Environment staleness | 🔎 Report-only | Never patches. Flags stale Microsoft Defender signatures, Windows feature-update lag, and installed dev-runtime versions in their own report section. |
-| End-of-life (endoflife.date) | 🔎 Report-only | Never patches. Flags software past (or nearing) end-of-support — out-of-support Windows, dev runtimes, and a best-effort scan of the whole inventory — in its own report section. Cached and offline-safe. |
+| End-of-life (endoflife.date) | 🔎 Report-only | Never patches. Flags software past (or nearing) end-of-support — out-of-support Windows, dev runtimes, and a best-effort scan of the whole inventory — plus patch-level drift inside a still-supported release line. Its own report section. Cached and offline-safe. |
 
 Commercial profiles keep everything above on except Chocolatey (licence
 opt-in). `CommercialManaged` additionally defers Windows Update, Microsoft 365,
@@ -325,7 +327,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `Scope` | `"machine"` | winget install scope. |
 | `AcceptAgreements` | `true` | Non-interactive agreement acceptance. |
 | `PackageTimeoutSeconds` | `300` | Per-package timeout. |
-| `MaxUpdatesPerRun` | `0` | Cap updates per run (`0` = unlimited); KEV matches are prioritised first. |
+| `MaxUpdatesPerRun` | `0` | Cap updates per run (`0` = unlimited); NVD-confirmed KEV exposures are patched first, then unresolved KEV candidates, then everything else. |
 | `SuppressReboot` | `true` | Appends `/norestart` via `--custom` (winget 1.4+) so installers don't reboot mid-run. |
 | `MaxRetries` | `2` | Attempts per package for transient failures (linear backoff). |
 
@@ -359,8 +361,9 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 |---|---|---|
 | `ChocolateyEnabled` | `null` → profile | `null` resolves by profile: Personal **on** (the choco CLI is free), Commercial/CommercialManaged **off** pending your explicit opt-in. Chocolatey for Business is a paid product — enabling it commercially is your licence decision. An explicit `true`/`false` always wins. |
 | `ScoopEnabled` | `true` (`false` on CommercialManaged) | Per-user Scoop; only runs in a user-context session. |
-| `TimeoutSeconds` | `300` | Per-command timeout for both managers. |
-| `MaxUpdatesPerRun` | `0` | Cap Chocolatey upgrades per run (`0` = unlimited). |
+| `PythonManagerEnabled` | `true` | Python Install Manager (`py`). Store/pymanager-installed Python is invisible to WinGet — the `msstore` source reports the channel tag (`3.14-64`) where a version belongs, so a `3.14.5 → 3.14.6` patch is never discovered. Only `PythonCore` runtimes pymanager itself installed are updated; unmanaged runtimes (uv/Astral, python.org MSI) are reported and left alone. Per-user like Scoop: a SYSTEM-context run skips it. |
+| `TimeoutSeconds` | `300` | Per-command timeout for all three managers. |
+| `MaxUpdatesPerRun` | `0` | Cap Chocolatey/Python upgrades per run (`0` = unlimited). |
 
 ### `VendorUpdaters`
 
@@ -406,7 +409,7 @@ touches the network.
 | `CacheHours` / `CachePath` | `168` / `…\Cache` | Per-product cache TTL (7 days; lifecycle data moves slowly) and location (shared with the KEV cache). |
 | `WarnWithinDays` | `90` | Flag releases whose end-of-support falls within this window as *near-EOL*. |
 | `CheckWindows` | `true` | Authoritatively flag an out-of-support Windows feature version (build + edition aware). |
-| `CheckRuntimes` | `true` | Flag out-of-support .NET / Python / Node.js, with the latest supported version. |
+| `CheckRuntimes` | `true` | Flag out-of-support .NET / Python / Node.js, with the latest supported version. Also flags **patch-level drift** (`PatchBehind`): a release line that is still supported, but whose installed build is behind its newest patch release — e.g. Python 3.14.5 when 3.14.6 is out. Windows is exempt (it reports a bare build number against a `10.0.<build>` latest). |
 | `InventoryScan` / `InventoryMaxLookups` | `true` / `40` | Best-effort match of the whole software inventory against endoflife.date; only actual EOL/near-EOL is surfaced, capped at N network lookups per run. |
 | `Offline` | `false` | `true` = use the cache only, never fetch (air-gapped estates). |
 
@@ -523,6 +526,24 @@ refreshed. Apply is skipped in dry-run/report-only.
 | `CISAKEV.Enabled` | `true` | Fetch and match the KEV catalogue. |
 | `CISAKEV.FeedUrl` / `CacheHours` / `CachePath` | CISA feed / `24` / `C:\ProgramData\PatchManager\Cache` | Feed caching; a stale cache is used if the fetch fails. |
 
+### `NVD`
+
+The KEV catalogue names affected products, never affected versions. NVD supplies
+the CPE version ranges that decide whether *your* build is actually affected, so
+only a confirmed version match escalates to an emergency maintenance-window
+bypass. Lookups are memoised per run and cached on disk for 30 days, and only
+CVEs that already matched by name are ever fetched — a handful per run at most.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `true` | Resolve KEV candidates against NVD. `false` leaves every candidate `Unknown`: still reported, never an emergency. |
+| `ApiBaseUrl` | `https://services.nvd.nist.gov/rest/json/cves/2.0` | NVD CVE API v2 base. |
+| `ApiKey` | `""` | Optional. Raises NVD's rate limit from 5 to 50 requests / 30 s. |
+| `CacheHours` / `CachePath` | `720` / `…\Cache` | 30-day per-CVE cache (published CPE ranges rarely change), shared with the KEV cache. |
+| `MaxLookupsPerRun` | `25` | Hard cap on network lookups; anything beyond stays `Unknown`. |
+| `RequestDelayMs` | `6500` | Pacing between real fetches (unkeyed NVD allows ~5 requests / 30 s). Cache hits cost nothing. |
+| `Offline` | `false` | `true` = use the cache only, never fetch. |
+
 ## Scope profiles: Personal vs Commercial
 
 The guiding principle: **maximum coverage by default**. Nothing is descoped
@@ -586,8 +607,10 @@ central share if configured):
   is never abridged.
 - **JSON** — full machine-readable results: metadata, statistics, status /
   source / provider summaries, attention items, reboot-required items, every
-  update row, KEV matches (actionable + inventory), SLA breaches, environment
-  staleness, and end-of-life findings.
+  update row, KEV matches (actionable + inventory, each with its resolved
+  `ExposureState` / `FixedVersion`), SLA breaches, environment staleness, and
+  end-of-life findings. `Statistics.KEVMatches` counts **confirmed-affected**
+  matches; `Statistics.KEVCandidates` counts name matches before resolution.
 - **CSV** — flat per-row export for SIEM ingestion, Excel, or Power BI (plus
   companion `.staleness.csv` and `.endoflife.csv` for the report-only checks).
 
@@ -625,11 +648,12 @@ the aggregator from anywhere that can read it (read-only, no elevation):
 
 You get one HTML dashboard and CSV covering every host's most recent run:
 last-seen time with **stale-host flagging**, ring, profile, applied/failed
-counts, KEV matches (actionable and inventory), SLA breaches, **end-of-life
-exposure** (hosts running out-of-support software, from the per-host
-endoflife.date findings), per-host staleness review counts, script errors, and
-pending reboots — the "is my estate actually patched, and is any of it
-abandoned?" view.
+counts, KEV exposure (actionable and inventory — candidates NVD cleared as
+`NotAffected` are not counted against a host), SLA breaches, **end-of-life
+exposure** (hosts running out-of-support software or lagging the latest patch
+release, from the per-host endoflife.date findings), per-host staleness review
+counts, script errors, and pending reboots — the "is my estate actually patched,
+and is any of it abandoned?" view.
 
 To preview the fleet dashboard on one machine before you have a central share,
 wrap the newest local JSON report in a host-named folder and point the
@@ -651,22 +675,35 @@ Copy-Item $latestJson.FullName $hostFolder -Force
 
 ## Security features
 
-- **CISA KEV emergency handling** — every run downloads (and caches) the Known
-  Exploited Vulnerabilities catalogue. If an available upgrade matches a KEV
-  entry, PatchManager declares an emergency: the maintenance window is
-  bypassed, jitter is capped at 5 minutes, the matching packages are patched
-  first, and event `9001` is raised for your SIEM.
+- **CISA KEV emergency handling, gated on a confirmed version match** — every
+  run downloads (and caches) the Known Exploited Vulnerabilities catalogue.
+  **The KEV catalogue names affected *products*, never affected versions**, so
+  a KEV hit alone proves only that a product has known-exploited history — not
+  that *your* build is vulnerable. Each candidate is therefore resolved against
+  [NVD](https://nvd.nist.gov/)'s CPE version ranges:
+
+  | Exposure | Meaning | Effect |
+  |---|---|---|
+  | `Affected` | The installed version falls inside the vulnerable range | Emergency: maintenance window bypassed, jitter capped at 5 minutes, package patched first, event `9001` raised |
+  | `NotAffected` | The installed version is past the fix | Reported as evidence; no escalation |
+  | `Unknown` | NVD had no comparable range, or the version isn't comparable | Reported for review; **never** escalates |
+
+  Without this gate, every Chrome install matches a 2020 Chrome CVE forever.
+  An unbounded wildcard CPE ("all versions") is treated as `Unknown` rather
+  than `Affected`: NVD leaves ranges unbounded often enough that honouring it
+  literally would resurrect exactly the false emergencies the gate prevents.
+  Disable the `NVD` section and every candidate becomes `Unknown` — still
+  reported, never an emergency.
 - **Inventory-wide KEV visibility** — installed software that matches the KEV
   catalogue but has *no* available update through PatchManager's sources is
-  reported in its own section, so exposure isn't invisible just because
-  there's nothing to click. Verify the installed version against the CVE and
-  update through the vendor if affected.
+  reported in its own section, with the same exposure resolution, so real
+  exposure isn't invisible just because there's nothing to click.
 - **SLA tracking** — the moment an update becomes available it is tracked in
   local state; if it is still unapplied after the configured window (default
   14 days) the run reports a breach and raises event `1020`.
 - **Word-boundary KEV matching** with vendor+product agreement, minimum-length
-  guards, and Microsoft-Windows exclusions to keep false positives out of your
-  emergency path.
+  guards, and Microsoft-Windows exclusions, narrowing the candidate set before
+  NVD ever settles exposure.
 
 ## Commercial deployment
 

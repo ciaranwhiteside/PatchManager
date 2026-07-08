@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.4.2 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.5.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -12,7 +12,8 @@
 
     Key features:
       - Ring-based staged rollout: Pilot -> Early -> Broad
-      - CISA KEV emergency bypass (patches immediately, skips maintenance window)
+      - CISA KEV emergency bypass, gated on a confirmed version match: KEV names
+        affected products, NVD's CPE ranges decide whether this build is affected
       - Inventory-wide KEV visibility for software with no available update
       - SLA tracking against update availability date (not CVE dates)
       - Local + centralised logging and HTML/JSON/CSV compliance reporting
@@ -20,10 +21,13 @@
       - System restore points before patching
       - Pre-flight checks: disk, battery, connectivity, pending reboot, winget
       - Optional webhook notifications and validated opt-in self-update
-      - Extra sources: Chocolatey/Scoop, native vendor updaters (Adobe, Zoom),
-        opt-in OEM firmware (Dell/HP/Lenovo), and report-only staleness checks
+      - Extra sources: Chocolatey/Scoop, the Python Install Manager (`py`, which
+        owns Store-installed Python that WinGet cannot see), native vendor
+        updaters (Adobe, Zoom), opt-in OEM firmware (Dell/HP/Lenovo), and
+        report-only staleness checks
       - End-of-life intelligence from endoflife.date: flags out-of-support
-        Windows, dev runtimes, and inventory software (report-only, cached)
+        Windows, dev runtimes, and inventory software, plus patch-level drift
+        inside a still-supported release line (report-only, cached)
       - Commercial profile extras: run-scoped BITS throttling and
         hostname-seeded jitter to stagger estate-wide concurrent runs
 
@@ -110,7 +114,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.4.2'
+$script:VERSION       = '1.5.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -127,6 +131,9 @@ $script:BITSPolicyBackup = $null
 $script:BITSPolicyApplied = $false
 $script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
+$script:NVDMemo = @{}                              # CVE id -> cpeMatch array (or $null)
+$script:NVDLookupCount = 0
+$script:NVDLastRequest = [datetime]::MinValue
 $script:StalenessFindings = @()
 $script:EndOfLifeFindings = @()
 $script:Inventory = @()
@@ -137,7 +144,8 @@ $script:Stats = [ordered]@{
     UpdatesApplied  = 0
     UpdatesFailed   = 0
     UpdatesSkipped  = 0
-    KEVMatches      = 0
+    KEVMatches      = 0   # confirmed-affected actionable matches (drives emergency)
+    KEVCandidates   = 0   # name-only KEV catalogue hits, before version resolution
     SLABreaches     = 0
     InventoryCount  = 0
     Errors          = [System.Collections.Generic.List[string]]::new()
@@ -216,6 +224,12 @@ $script:DefaultCfg = [ordered]@{
         # commercial context is a conscious licence decision that is yours to make.
         ChocolateyEnabled = $null
         ScoopEnabled      = $true        # Scoop is per-user; only runs in a user-context session
+        # Python Install Manager (`py`). Store/pymanager-installed runtimes are
+        # invisible to WinGet - the msstore source reports the channel tag
+        # ('3.14-64') as the version, so a 3.14.5 -> 3.14.6 patch is never seen.
+        # Only PythonCore runtimes that pymanager itself manages are touched;
+        # unmanaged runtimes (uv/Astral, python.org MSI) are reported, never updated.
+        PythonManagerEnabled = $true
         TimeoutSeconds    = 300
         MaxUpdatesPerRun  = 0            # 0 = unlimited
     }
@@ -390,6 +404,21 @@ $script:DefaultCfg = [ordered]@{
         FeedUrl    = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
         CacheHours = 24
         CachePath  = 'C:\ProgramData\PatchManager\Cache'
+    }
+
+    # The KEV catalogue carries no affected-version data, so a KEV hit alone only
+    # proves the PRODUCT has known-exploited history - never that the INSTALLED
+    # version is vulnerable. NVD supplies the CPE version ranges that settle it.
+    # Disabling this leaves every candidate 'Unknown': reported, never an emergency.
+    NVD = [ordered]@{
+        Enabled          = $true
+        ApiBaseUrl       = 'https://services.nvd.nist.gov/rest/json/cves/2.0'
+        ApiKey           = ''      # optional; raises the rate limit from 5 to 50 req/30s
+        CacheHours       = 720     # CPE ranges for a published CVE rarely change
+        CachePath        = 'C:\ProgramData\PatchManager\Cache'
+        Offline          = $false
+        MaxLookupsPerRun = 25
+        RequestDelayMs   = 6500    # unkeyed NVD allows ~5 requests / 30s
     }
 }
 
@@ -1629,12 +1658,262 @@ function Test-WordMatch {
     return $Haystack -imatch "\b$escaped\b"
 }
 
-function Find-KEVMatches {
+function ConvertTo-VersionParts {
+    # Splits a plain dotted-numeric version into comparable parts. Returns $null for
+    # anything that isn't purely numeric segments ('1.2.3-beta', '3.14-64', '' ...),
+    # which callers must treat as "undecidable", never as "not affected".
+    param([string]$Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return $null }
+    $v = $Version.Trim()
+    if ($v -match '^[vV]\d') { $v = $v.Substring(1) }
+    $segments = $v -split '\.'
+    $out = [System.Collections.Generic.List[long]]::new()
+    foreach ($s in $segments) {
+        if ($s -notmatch '^\d+$') { return $null }
+        try { [void]$out.Add([long]$s) } catch { return $null }
+    }
+    if ($out.Count -eq 0) { return $null }
+    return $out.ToArray()
+}
+
+function Compare-SoftwareVersion {
+    # -1 / 0 / 1 like a comparer, or $null when either side is not plain dotted-numeric.
+    # Missing trailing segments compare as zero: 86 -eq 86.0.0. Pure - unit-testable.
+    param([string]$Left, [string]$Right)
+    $lp = ConvertTo-VersionParts $Left
+    $rp = ConvertTo-VersionParts $Right
+    if ($null -eq $lp -or $null -eq $rp) { return $null }
+    $max = [Math]::Max($lp.Count, $rp.Count)
+    for ($i = 0; $i -lt $max; $i++) {
+        $l = if ($i -lt $lp.Count) { $lp[$i] } else { 0L }
+        $r = if ($i -lt $rp.Count) { $rp[$i] } else { 0L }
+        if ($l -lt $r) { return -1 }
+        if ($l -gt $r) { return 1 }
+    }
+    return 0
+}
+
+function ConvertTo-CpeToken {
+    # Normalises a vendor/product name to a CPE-style token: 'Google Chrome' -> 'google_chrome'.
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+    return (($Value.ToLowerInvariant() -replace '[^a-z0-9]+', '_').Trim('_'))
+}
+
+function ConvertFrom-CpeCriteria {
+    # Parses 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*' into its addressable fields.
+    # Returns $null for anything that isn't a well-formed CPE 2.3 string.
+    param([string]$Criteria)
+    if ([string]::IsNullOrWhiteSpace($Criteria)) { return $null }
+    $parts = $Criteria -split '(?<!\\):'
+    if ($parts.Count -lt 6 -or $parts[0] -ne 'cpe' -or $parts[1] -ne '2.3') { return $null }
+    return [PSCustomObject]@{
+        Part    = $parts[2]
+        Vendor  = $parts[3]
+        Product = $parts[4]
+        Version = $parts[5]
+    }
+}
+
+function Test-CpeProductAlignment {
+    # Does this CPE describe the same product the KEV entry names? Guards against
+    # comparing a Chrome desktop version against, say, an Android CPE range.
+    param($Cpe, [string]$Vendor, [string]$Product)
+    if ($null -eq $Cpe) { return $false }
+    if ($Cpe.Part -notin @('a', 'o')) { return $false }
+    $cpeProd = [string]$Cpe.Product
+    $kevProd = ConvertTo-CpeToken $Product
+    if (-not $cpeProd -or -not $kevProd) { return $false }
+    # Exact, or one is a qualified form of the other ('edge' vs 'edge_chromium').
+    $prodOk = ($cpeProd -eq $kevProd) -or
+              ($cpeProd.StartsWith("${kevProd}_")) -or
+              ($kevProd.StartsWith("$($cpeProd)_"))
+    if (-not $prodOk) { return $false }
+    $cpeVend = [string]$Cpe.Vendor
+    $kevVend = ConvertTo-CpeToken $Vendor
+    if (-not $cpeVend -or -not $kevVend) { return $true }   # product alone is enough
+    return ($cpeVend -eq $kevVend) -or $cpeVend.Contains($kevVend) -or $kevVend.Contains($cpeVend)
+}
+
+function Test-VersionInCpeRange {
+    # $true = inside the vulnerable range, $false = outside, $null = undecidable.
+    #
+    # An unbounded wildcard CPE ('all versions of Chrome') is deliberately treated as
+    # UNDECIDABLE rather than affected. NVD leaves ranges unbounded often enough that
+    # honouring it literally would resurrect the false-positive emergencies this whole
+    # gate exists to prevent. Undecidable surfaces for review; it never escalates.
+    param([string]$Version, $CpeMatch)
+    if ($null -eq $CpeMatch) { return $null }
+
+    $cpe = ConvertFrom-CpeCriteria ([string](Get-ObjectPropertyValue $CpeMatch 'criteria' ''))
+    if ($null -ne $cpe -and $cpe.Version -notin @('*', '-', '')) {
+        # The CPE pins one exact version.
+        $c = Compare-SoftwareVersion $Version $cpe.Version
+        if ($null -eq $c) { return $null }
+        return ($c -eq 0)
+    }
+
+    $startIncl = [string](Get-ObjectPropertyValue $CpeMatch 'versionStartIncluding' '')
+    $startExcl = [string](Get-ObjectPropertyValue $CpeMatch 'versionStartExcluding' '')
+    $endIncl   = [string](Get-ObjectPropertyValue $CpeMatch 'versionEndIncluding'   '')
+    $endExcl   = [string](Get-ObjectPropertyValue $CpeMatch 'versionEndExcluding'   '')
+
+    if (-not ($startIncl -or $startExcl -or $endIncl -or $endExcl)) { return $null }
+
+    foreach ($bound in @(
+        @{ Value = $startIncl; Outside = { param($c) $c -lt 0 } }
+        @{ Value = $startExcl; Outside = { param($c) $c -le 0 } }
+        @{ Value = $endIncl;   Outside = { param($c) $c -gt 0 } }
+        @{ Value = $endExcl;   Outside = { param($c) $c -ge 0 } }
+    )) {
+        if (-not $bound.Value) { continue }
+        $c = Compare-SoftwareVersion $Version $bound.Value
+        if ($null -eq $c) { return $null }
+        if (& $bound.Outside $c) { return $false }
+    }
+    return $true
+}
+
+function Resolve-KEVExposure {
+    # Decides whether an installed version actually sits inside a KEV CVE's vulnerable
+    # range, using NVD CPE data. Returns State = Affected | NotAffected | Unknown.
+    # Pure - the caller supplies the CPE matches. Unit-testable with fixtures.
+    param(
+        [string]$InstalledVersion,
+        [string]$Vendor,
+        [string]$Product,
+        [array]$CpeMatches
+    )
+    $unknown = { param($why) [PSCustomObject]@{ State = 'Unknown'; FixedVersion = ''; Detail = $why } }
+
+    if (-not $CpeMatches -or $CpeMatches.Count -eq 0) {
+        return (& $unknown 'No NVD CPE version data available; exposure not established.')
+    }
+    if ($null -eq (ConvertTo-VersionParts $InstalledVersion)) {
+        return (& $unknown "Installed version '$InstalledVersion' is not a comparable dotted-numeric version.")
+    }
+
+    $relevant = @($CpeMatches | Where-Object {
+        ([bool](Get-ObjectPropertyValue $_ 'vulnerable' $true)) -and
+        (Test-CpeProductAlignment (ConvertFrom-CpeCriteria ([string](Get-ObjectPropertyValue $_ 'criteria' ''))) $Vendor $Product)
+    })
+    if ($relevant.Count -eq 0) {
+        return (& $unknown "No NVD CPE range matched $Vendor $Product; exposure not established.")
+    }
+
+    $sawUndecidable = $false
+    $fixedVersions  = [System.Collections.Generic.List[string]]::new()
+    foreach ($m in $relevant) {
+        $endExcl = [string](Get-ObjectPropertyValue $m 'versionEndExcluding' '')
+        if ($endExcl) { [void]$fixedVersions.Add($endExcl) }
+        $inRange = Test-VersionInCpeRange -Version $InstalledVersion -CpeMatch $m
+        if ($null -eq $inRange) { $sawUndecidable = $true; continue }
+        if ($inRange) {
+            return [PSCustomObject]@{
+                State        = 'Affected'
+                FixedVersion = $endExcl
+                Detail       = "Installed $InstalledVersion falls inside the NVD vulnerable range$(if ($endExcl) { " (fixed in $endExcl)" })."
+            }
+        }
+    }
+    if ($sawUndecidable) {
+        return (& $unknown 'NVD CPE ranges could not be compared against the installed version.')
+    }
+
+    # Report the highest fix boundary we cleared - that's the one the install is past.
+    $highestFix = ''
+    foreach ($fv in $fixedVersions) {
+        if (-not $highestFix) { $highestFix = $fv; continue }
+        $c = Compare-SoftwareVersion $fv $highestFix
+        if ($null -ne $c -and $c -gt 0) { $highestFix = $fv }
+    }
+    return [PSCustomObject]@{
+        State        = 'NotAffected'
+        FixedVersion = $highestFix
+        Detail       = "Installed $InstalledVersion is outside the NVD vulnerable range$(if ($highestFix) { " (fixed in $highestFix)" })."
+    }
+}
+
+function Get-NVDCpeMatches {
+    # Flattened, vulnerable-only cpeMatch nodes for one CVE, or $null when unavailable.
+    # Memoised per run; cached on disk across runs; rate-limited to respect NVD limits.
+    param([Parameter(Mandatory)] [string]$CveId)
+
+    $cfg = Get-ObjectPropertyValue $script:CFG 'NVD' $null
+    if ($null -eq $cfg -or -not [bool](Get-ObjectPropertyValue $cfg 'Enabled' $false)) { return $null }
+    if ($script:NVDMemo.ContainsKey($CveId)) { return $script:NVDMemo[$CveId] }
+
+    $maxLookups = [int](Get-ObjectPropertyValue $cfg 'MaxLookupsPerRun' 25)
+    if ($script:NVDLookupCount -ge $maxLookups) {
+        Write-Log "NVD: lookup budget ($maxLookups) exhausted; $CveId left unresolved." -Level WARN
+        return $null
+    }
+
+    $base   = [string](Get-ObjectPropertyValue $cfg 'ApiBaseUrl' 'https://services.nvd.nist.gov/rest/json/cves/2.0')
+    $apiKey = [string](Get-ObjectPropertyValue $cfg 'ApiKey' '')
+    $hdrs   = @{ 'User-Agent' = 'PatchManager-NVD' }
+    if ($apiKey) { $hdrs['apiKey'] = $apiKey }
+
+    # Rate limit only real network calls - a cache hit inside Get-CachedApiJson costs nothing,
+    # but we cannot see from here whether it hit, so pace on the pre-check instead.
+    $cacheDir  = [string](Get-ObjectPropertyValue $cfg 'CachePath' 'C:\ProgramData\PatchManager\Cache')
+    $cacheFile = Join-Path $cacheDir "nvd_$($CveId -replace '[^A-Za-z0-9._-]', '_').json"
+    $cacheHours = [double](Get-ObjectPropertyValue $cfg 'CacheHours' 720)
+    $willFetch = -not (Test-Path $cacheFile) -or
+                 (((Get-Date) - (Get-Item $cacheFile -EA SilentlyContinue).LastWriteTime).TotalHours -ge $cacheHours)
+    if ($willFetch -and $script:NVDLastRequest -ne [datetime]::MinValue) {
+        $delayMs = [int](Get-ObjectPropertyValue $cfg 'RequestDelayMs' 6500)
+        $waited  = ((Get-Date) - $script:NVDLastRequest).TotalMilliseconds
+        if ($waited -lt $delayMs) { Start-Sleep -Milliseconds ([int]($delayMs - $waited)) }
+    }
+
+    $resp = Get-CachedApiJson -Uri "$base`?cveId=$CveId" -CacheKey "nvd_$CveId" -Cfg $cfg -Headers $hdrs -Label 'NVD'
+    if ($willFetch) {
+        $script:NVDLastRequest = Get-Date
+        $script:NVDLookupCount++
+    }
+
+    $cpeMatches = $null
+    if ($null -ne $resp) {
+        $collected = [System.Collections.Generic.List[PSCustomObject]]::new()
+        foreach ($vuln in @(Get-ObjectPropertyValue $resp 'vulnerabilities' @())) {
+            $cve = Get-ObjectPropertyValue $vuln 'cve' $null
+            foreach ($config in @(Get-ObjectPropertyValue $cve 'configurations' @())) {
+                foreach ($node in @(Get-ObjectPropertyValue $config 'nodes' @())) {
+                    if ([bool](Get-ObjectPropertyValue $node 'negate' $false)) { continue }
+                    foreach ($cm in @(Get-ObjectPropertyValue $node 'cpeMatch' @())) { [void]$collected.Add($cm) }
+                }
+            }
+        }
+        $cpeMatches = @($collected)
+    }
+    $script:NVDMemo[$CveId] = $cpeMatches
+    return $cpeMatches
+}
+
+function Add-KEVExposure {
+    # Resolves every candidate's ExposureState against NVD. Candidates are name-only
+    # KEV hits; only 'Affected' is evidence that this host is actually exposed.
+    param([array]$Candidates)
+    foreach ($c in $Candidates) {
+        $cpe = Get-NVDCpeMatches -CveId $c.CVE
+        $ex  = Resolve-KEVExposure -InstalledVersion $c.InstalledVer -Vendor $c.VendorProject `
+                                   -Product $c.Product -CpeMatches $cpe
+        $c.ExposureState  = $ex.State
+        $c.FixedVersion   = $ex.FixedVersion
+        $c.ExposureDetail = $ex.Detail
+    }
+    return $Candidates
+}
+
+function Find-KEVCandidates {
+    # Name-only match against the KEV catalogue. A hit means "this PRODUCT has
+    # known-exploited history", NOT that the installed version is vulnerable - the
+    # catalogue carries no version data at all. Add-KEVExposure settles that.
     param(
         [array]$Packages,
         $KEVData,
-        # Informational pass (e.g. full inventory): matches are reported but do not
-        # increment the actionable KEV counter or trigger emergency handling.
+        # Informational pass (e.g. full inventory) - affects logging only.
         [switch]$Informational
     )
 
@@ -1679,30 +1958,28 @@ function Find-KEVMatches {
                 $key = "$($entry.cveID)|$source|$(if ($packageId) { $packageId } else { $name })"
                 if ($matchKeys.Add($key)) {
                     $kevMatchList.Add([PSCustomObject]@{
-                        CVE           = $entry.cveID
-                        VendorProject = $vendor
-                        Product       = $product
-                        Description   = $entry.vulnerabilityName
-                        DateAdded     = $entry.dateAdded
-                        CISADueDate   = $entry.dueDate
-                        InstalledApp  = $name
-                        InstalledVer  = $app.Version
-                        PackageId     = $packageId
-                        Source        = $source
+                        CVE            = $entry.cveID
+                        VendorProject  = $vendor
+                        Product        = $product
+                        Description    = $entry.vulnerabilityName
+                        DateAdded      = $entry.dateAdded
+                        CISADueDate    = $entry.dueDate
+                        InstalledApp   = $name
+                        InstalledVer   = $app.Version
+                        PackageId      = $packageId
+                        Source         = $source
+                        # Settled later by Add-KEVExposure. Never assume affected.
+                        ExposureState  = 'Unknown'
+                        FixedVersion   = ''
+                        ExposureDetail = 'Exposure not yet resolved.'
                     })
-                    if (-not $Informational) { $script:Stats.KEVMatches++ }
                 }
             }
         }
     }
 
-    if ($Informational) {
-        Write-Log "CISA KEV (inventory scan): $($kevMatchList.Count) informational match(es)." -Level $(if ($kevMatchList.Count -gt 0) { 'WARN' } else { 'INFO' })
-    } elseif ($kevMatchList.Count -gt 0) {
-        Write-Log "CISA KEV: $($kevMatchList.Count) actionable upgrade match(es)." -Level WARN
-    } else {
-        Write-Log 'CISA KEV: No matches against actionable upgrade candidates.' -Level INFO
-    }
+    $scope = if ($Informational) { 'inventory scan' } else { 'upgrade candidates' }
+    Write-Log "CISA KEV ($scope): $($kevMatchList.Count) name match(es) before version resolution." -Level $(if ($kevMatchList.Count -gt 0) { 'INFO' } else { 'DEBUG' })
 
     return $kevMatchList
 }
@@ -2282,18 +2559,21 @@ function Invoke-AllUpdates {
         return @()
     }
 
-    $kevNames = $KEVMatches | ForEach-Object { $_.InstalledApp }
+    # Confirmed-affected packages first, then unresolved KEV candidates, then the rest.
+    # A name-only KEV hit still earns a queue bump - it just no longer implies exposure.
+    $confirmedNames = @($KEVMatches | Where-Object { $_.ExposureState -eq 'Affected' } | ForEach-Object { $_.InstalledApp })
+    $candidateNames = @($KEVMatches | Where-Object { $_.ExposureState -ne 'NotAffected' } | ForEach-Object { $_.InstalledApp })
 
-    # KEV-matched packages go first
     $prioritised = @(
-        $Upgrades | Where-Object { $_.Name -in $kevNames }
-        $Upgrades | Where-Object { $_.Name -notin $kevNames }
+        $Upgrades | Where-Object { $_.Name -in $confirmedNames }
+        $Upgrades | Where-Object { $_.Name -notin $confirmedNames -and $_.Name -in $candidateNames }
+        $Upgrades | Where-Object { $_.Name -notin $candidateNames }
     )
 
     $max = $script:CFG.WinGet.MaxUpdatesPerRun
     if ($max -gt 0) { $prioritised = $prioritised | Select-Object -First $max }
 
-    Write-Log "Applying $($prioritised.Count) update(s). KEV matches prioritised." -Level INFO
+    Write-Log "Applying $($prioritised.Count) update(s). $($confirmedNames.Count) confirmed KEV exposure(s) prioritised." -Level INFO
 
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
@@ -2323,7 +2603,7 @@ function Invoke-AllUpdates {
             Success   = $success
             Status    = if ($script:LastUpdateStatus) { $script:LastUpdateStatus } elseif ($DryRun) { 'Planned' } elseif ($success) { 'Succeeded' } else { 'Failed' }
             Reason    = $script:LastUpdateReason
-            IsKEV     = ($pkg.Name -in $kevNames)
+            IsKEV     = ($pkg.Name -in $confirmedNames)
             Timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         })
     }
@@ -2966,6 +3246,237 @@ function Invoke-ScoopProvider {
 
 #endregion
 
+#region -- Python Install Manager -----------------------------------------------------
+# Store/pymanager-installed Python is structurally invisible to WinGet: the msstore
+# source reports the channel tag ('3.14-64') where a version belongs, so a patch-level
+# update (3.14.5 -> 3.14.6) can never be discovered there. `py` owns these runtimes.
+
+function Resolve-PyManagerCommand {
+    # Returns the path to a *Python Install Manager* py.exe, or $null.
+    #
+    # Two different executables answer to `py`: the legacy PEP 397 launcher
+    # (C:\Windows\py.exe, no install/list subcommands) and the Python Install
+    # Manager. Probing for the launcher's absence is not enough - confirm the
+    # binary actually speaks the manager's `list -f json` protocol.
+    # pymanager is per-user, so a SYSTEM-context run resolves nothing (like Scoop).
+    $candidates = @()
+    $cmd = Get-Command 'py' -EA SilentlyContinue
+    if ($cmd -and $cmd.Source) { $candidates += [string]$cmd.Source }
+    $candidates += (Join-Path $env:LOCALAPPDATA 'Python\bin\py.exe')
+
+    foreach ($path in ($candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)) {
+        try {
+            $probe = Invoke-CapturedProcess -FilePath $path -Arguments @('list', '--only-managed', '-f', 'json') -TimeoutSeconds 30
+            if ($probe.TimedOut -or $probe.ExitCode -ne 0) { continue }
+            # $null means "not a manager listing"; a zero-runtime listing is still a manager.
+            if ($null -ne (ConvertFrom-PyManagerList -Json ([string]$probe.Output))) { return $path }
+        } catch { continue }
+    }
+    return $null
+}
+
+function ConvertFrom-PyManagerList {
+    # Parses `py list -f json` / `py list --online -f json`. Pure - unit-testable.
+    #
+    # Returns $null when the payload is not a Python Install Manager listing at all
+    # (e.g. the legacy PEP 397 py launcher), otherwise a single object whose .Runtimes
+    # is always an array - possibly empty, meaning "the manager reported no runtimes".
+    #
+    # That distinction has to survive the return, and a bare array return cannot carry
+    # it: PowerShell unrolls arrays into the pipeline, so one runtime would arrive as a
+    # scalar (no .Count under StrictMode) and zero runtimes as $null - indistinguishable
+    # from "not the manager". Hence the wrapper object: Resolve-PyManagerCommand keys its
+    # probe on $null, and the provider keys its Failed-discovery row on it.
+    param([string]$Json)
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
+    # pymanager prints signature-verification notices before the JSON body.
+    $start = $Json.IndexOf('{')
+    if ($start -lt 0) { return $null }
+    try { $doc = $Json.Substring($start) | ConvertFrom-Json -EA Stop } catch { return $null }
+    if ($null -eq $doc -or -not $doc.PSObject.Properties['versions']) { return $null }
+
+    $out = [System.Collections.Generic.List[pscustomobject]]::new()
+    foreach ($v in @($doc.versions)) {
+        $id = [string](Get-ObjectPropertyValue $v 'id' '')
+        if (-not $id) { continue }
+        $out.Add([pscustomobject]@{
+            Id          = $id
+            Tag         = [string](Get-ObjectPropertyValue $v 'tag' '')
+            Company     = [string](Get-ObjectPropertyValue $v 'company' '')
+            Version     = [string](Get-ObjectPropertyValue $v 'sort-version' '')
+            DisplayName = [string](Get-ObjectPropertyValue $v 'display-name' $id)
+            # 'unmanaged' is present-and-truthy only for runtimes pymanager did not install
+            # (uv/Astral, python.org MSI). `py install --update` cannot touch those.
+            Unmanaged   = [bool](Get-ObjectPropertyValue $v 'unmanaged' $false)
+        })
+    }
+    return [pscustomobject]@{ Runtimes = @($out) }
+}
+
+function Find-PyManagerUpgrades {
+    # Pairs installed runtimes against the online index by exact install id, keeping
+    # only those with a strictly newer available version. Unmanaged runtimes are
+    # excluded: pymanager does not own them, so it must not overwrite them.
+    # Pure - unit-testable with fixtures.
+    param([array]$Installed, [array]$Online)
+    $upgrades = [System.Collections.Generic.List[pscustomobject]]::new()
+    if (-not $Installed -or -not $Online) { return @($upgrades) }
+
+    foreach ($inst in $Installed) {
+        if ($inst.Unmanaged) { continue }
+        $match = $Online | Where-Object { $_.Id -eq $inst.Id } | Select-Object -First 1
+        if (-not $match) { continue }
+        $cmp = Compare-SoftwareVersion $match.Version $inst.Version
+        if ($null -eq $cmp -or $cmp -le 0) { continue }
+        $upgrades.Add([pscustomobject]@{
+            Id          = $inst.Id
+            Tag         = $inst.Tag
+            DisplayName = $inst.DisplayName
+            Current     = $inst.Version
+            Available   = $match.Version
+        })
+    }
+    return @($upgrades)
+}
+
+function Get-PyManagerRuntimes {
+    # Reads installed (or online) runtimes through the manager. Returns $null on any
+    # failure, otherwise the ConvertFrom-PyManagerList wrapper (.Runtimes is an array).
+    #
+    # Deliberately NOT `--only-managed`: unmanaged runtimes (uv/Astral, python.org MSI)
+    # are worth reporting as evidence even though pymanager must not update them. The
+    # Unmanaged flag carries that distinction downstream.
+    param([Parameter(Mandatory)] [string]$PyPath, [switch]$Online, [int]$TimeoutSeconds = 300)
+    $pyArgs = @('list')
+    if ($Online) { $pyArgs += '--online' }
+    $pyArgs += @('-f', 'json')
+    $res = Invoke-CapturedProcess -FilePath $PyPath -Arguments $pyArgs -TimeoutSeconds $TimeoutSeconds
+    if ($res.TimedOut -or $res.ExitCode -ne 0) { return $null }
+    return (ConvertFrom-PyManagerList -Json ([string]$res.Output))
+}
+
+function Resolve-PyUpdateOutcome {
+    # Decides an update's verdict from the exit code and the version observed AFTER it.
+    # Returns { Status; Success; Note }. Pure - unit-testable.
+    #
+    # The exit code is evidence, not a verdict. pymanager can install the runtime
+    # successfully and THEN exit non-zero from its shortcut/alias refresh - observed on a
+    # real 3.14.5 -> 3.14.6 update that exited 1 with
+    #   [ERROR] INTERNAL ERROR: AttributeError: 'str' object has no attribute 'satisfied_by'
+    # after "Restored site-packages / Restored Scripts", with 3.14.6 correctly in place.
+    # Treating exit!=0 as failure would report an applied update as Failed and retry it
+    # every run. The observed version is ground truth; the exit code rides in the evidence.
+    param(
+        [object]$ExitCode,               # nullable: $null when the process never returned one
+        [string]$CurrentVersion,
+        [string]$ObservedVersion         # '' when the post-update read failed
+    )
+    $advanced = $false
+    if ($ObservedVersion) {
+        $cmp = Compare-SoftwareVersion $ObservedVersion $CurrentVersion
+        $advanced = ($null -ne $cmp -and $cmp -gt 0)
+    }
+
+    if ($advanced) {
+        $note = if ($ExitCode -ne 0) { ' The updater exited non-zero after applying the update; treated as applied because the installed version was verified.' } else { '' }
+        return [PSCustomObject]@{ Status = 'Succeeded'; Success = $true; Note = "Verified $CurrentVersion -> $ObservedVersion.$note" }
+    }
+    if ($ObservedVersion) {
+        return [PSCustomObject]@{ Status = 'Failed'; Success = $false; Note = "The installed version is still $ObservedVersion." }
+    }
+    # Nothing observed. A clean exit is merely unverified; a dirty one is a failure.
+    if ($ExitCode -eq 0) {
+        return [PSCustomObject]@{ Status = 'Verifying'; Success = $false; Note = 'The applied version could not be confirmed.' }
+    }
+    return [PSCustomObject]@{ Status = 'Failed'; Success = $false; Note = 'The applied version could not be confirmed.' }
+}
+
+function Invoke-PythonManagerProvider {
+    $provider = 'python-manager'
+    if (-not [bool](Get-ObjectPropertyValue $script:CFG.PackageManagers 'PythonManagerEnabled' $false)) { return @() }
+
+    $py = Resolve-PyManagerCommand
+    if (-not $py) {
+        Write-Log 'Python Install Manager: not found in the current session; provider skipped.' -Level DEBUG
+        return @()   # not installed, or a SYSTEM-context run - stay silent
+    }
+
+    $timeout = [Math]::Max(30, [int](Get-ObjectPropertyValue $script:CFG.PackageManagers 'TimeoutSeconds' 300))
+    $results = [System.Collections.Generic.List[pscustomobject]]::new()
+
+    Write-Log "Python Install Manager: discovering runtimes ($py list)." -Level INFO
+    $installedInfo = Get-PyManagerRuntimes -PyPath $py -TimeoutSeconds $timeout
+    if ($null -eq $installedInfo) {
+        $results.Add((New-PatchResult -Name 'Python Install Manager' -PackageId 'Python.PythonInstallManager' -Provider 'python-manager-discovery' -Source $provider -Status 'Failed' -Evidence 'Could not read installed runtimes (py list -f json).'))
+        return @($results)
+    }
+    $onlineInfo = Get-PyManagerRuntimes -PyPath $py -Online -TimeoutSeconds $timeout
+    if ($null -eq $onlineInfo) {
+        $results.Add((New-PatchResult -Name 'Python Install Manager' -PackageId 'Python.PythonInstallManager' -Provider 'python-manager-discovery' -Source $provider -Status 'Failed' -Evidence 'Could not read the online runtime index (py list --online -f json).'))
+        return @($results)
+    }
+    $installed = @($installedInfo.Runtimes)
+    $online    = @($onlineInfo.Runtimes)
+
+    $upgrades  = @(Find-PyManagerUpgrades -Installed $installed -Online $online)
+    $unmanaged = @($installed | Where-Object { $_.Unmanaged })
+    $managed   = @($installed | Where-Object { -not $_.Unmanaged })
+    $evidence  = "Python Install Manager checked; $($managed.Count) managed runtime(s), $($unmanaged.Count) unmanaged, $($upgrades.Count) with an update available."
+    $results.Add((New-PatchResult -Name 'Python Install Manager' -PackageId 'Python.PythonInstallManager' -Provider 'python-manager-discovery' -Source $provider -Status 'Completed' -Success $true -Evidence $evidence))
+
+    foreach ($u in $unmanaged) {
+        $results.Add((New-PatchResult -Name $u.DisplayName -PackageId $u.Id -Provider $provider -Source $provider -InstalledVersion $u.Version -Status 'Skipped' `
+            -Evidence "Runtime is not managed by the Python Install Manager (company: $($u.Company)); it must be updated by whatever installed it." `
+            -Remediation 'Update via the owning tool (for example `uv python upgrade`) or the vendor installer.'))
+    }
+
+    if ($upgrades.Count -eq 0) { return @($results) }
+
+    $applied = 0
+    $max = [int](Get-ObjectPropertyValue $script:CFG.PackageManagers 'MaxUpdatesPerRun' 0)
+    foreach ($pkg in $upgrades) {
+        $reason = ''
+        if (Test-IsDescoped -Item ([PSCustomObject]@{ Name=$pkg.DisplayName; PackageId=$pkg.Id; Provider=$provider; Source=$provider }) -Reason ([ref]$reason)) {
+            $results.Add((New-PatchResult -Name $pkg.DisplayName -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Descoped' -Evidence $reason))
+            continue
+        }
+        if ($max -gt 0 -and $applied -ge $max) {
+            $results.Add((New-PatchResult -Name $pkg.DisplayName -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Skipped' -Evidence "Per-run update cap ($max) reached; deferred to next run."))
+            continue
+        }
+        # --by-id pins the exact install; a bare tag ('3.14-64') can resolve across companies.
+        if ($DryRun) {
+            $results.Add((New-PatchResult -Name $pkg.DisplayName -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Planned' -Evidence "Would run: py install --update --by-id $($pkg.Id)."))
+            continue
+        }
+
+        Write-Log "Python Install Manager: updating $($pkg.Id) $($pkg.Current) -> $($pkg.Available)." -Level INFO
+        $upg = Invoke-CapturedProcess -FilePath $py -Arguments @('install', '--update', '--yes', '--by-id', $pkg.Id) -TimeoutSeconds $timeout
+        $applied++
+        $summary = (([string]$upg.Output -replace '\s+', ' ').Trim())
+        if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+
+        if ($upg.TimedOut) {
+            $results.Add((New-PatchResult -Name $pkg.DisplayName -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "py install --update timed out after ${timeout}s."))
+            continue
+        }
+
+        # Do not trust the exit code alone: re-read the manager for the applied version.
+        $afterInfo = Get-PyManagerRuntimes -PyPath $py -TimeoutSeconds $timeout
+        $nowEntry  = if ($null -ne $afterInfo) { @($afterInfo.Runtimes) | Where-Object { $_.Id -eq $pkg.Id } | Select-Object -First 1 } else { $null }
+        $nowVer    = if ($nowEntry) { [string]$nowEntry.Version } else { '' }
+
+        $outcome = Resolve-PyUpdateOutcome -ExitCode $upg.ExitCode -CurrentVersion $pkg.Current -ObservedVersion $nowVer
+        $results.Add((New-PatchResult -Name $pkg.DisplayName -PackageId $pkg.Id -Provider $provider -Source $provider `
+            -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -ConfirmedVersion $nowVer `
+            -Status $outcome.Status -Success $outcome.Success `
+            -Evidence "py install --update exit code=$($upg.ExitCode). $($outcome.Note) $summary"))
+    }
+    return @($results)
+}
+
+#endregion
+
 #region -- Native Vendor Updaters -----------------------------------------------------
 
 function Get-VendorUpdaterCatalogue {
@@ -3188,13 +3699,16 @@ function Invoke-StalenessReport {
 # means "plan a major-version upgrade", never an automatic patch, so findings live
 # in their own report section and never affect applied/failed counts.
 
-function Get-EndOfLifeCached {
-    # Generic cached GET against endoflife.date. Returns the parsed JSON envelope
-    # object, or $null. Caching/TTL/offline/stale-fallback mirror Get-CISAKEVData.
+function Get-CachedApiJson {
+    # Generic cached GET against a JSON API. Returns the parsed object, or $null.
+    # Caching/TTL/offline/stale-fallback mirror Get-CISAKEVData. Shared by the
+    # endoflife.date and NVD providers.
     param(
-        [Parameter(Mandatory)] [string]$RelativePath,
+        [Parameter(Mandatory)] [string]$Uri,
         [Parameter(Mandatory)] [string]$CacheKey,
-        [Parameter(Mandatory)] $Cfg
+        [Parameter(Mandatory)] $Cfg,
+        [hashtable]$Headers = @{},
+        [string]$Label = 'API'
     )
     $cacheDir = [string](Get-ObjectPropertyValue $Cfg 'CachePath' 'C:\ProgramData\PatchManager\Cache')
     if (-not (Test-Path $cacheDir)) {
@@ -3214,20 +3728,31 @@ function Get-EndOfLifeCached {
         return $null   # offline with nothing cached
     }
 
-    $base = [string](Get-ObjectPropertyValue $Cfg 'ApiBaseUrl' 'https://endoflife.date/api/v1')
-    $uri  = "$base/$RelativePath"
+    $hdrs = @{ 'User-Agent' = 'PatchManager'; 'Accept' = 'application/json' }
+    foreach ($k in $Headers.Keys) { $hdrs[$k] = $Headers[$k] }
     try {
-        $resp = Invoke-RestMethod -Uri $uri -TimeoutSec 30 `
-                    -Headers @{ 'User-Agent' = 'PatchManager-EOL'; 'Accept' = 'application/json' } -EA Stop
+        $resp = Invoke-RestMethod -Uri $Uri -TimeoutSec 30 -Headers $hdrs -EA Stop
         try { $resp | ConvertTo-Json -Depth 12 | Set-Content $cacheFile -Encoding UTF8 } catch { }
         return $resp
     } catch {
-        Write-Log "End-of-life: fetch '$RelativePath' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level DEBUG
+        Write-Log "${Label}: fetch '$Uri' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level DEBUG
         if (Test-Path $cacheFile) {
             try { return (Get-Content $cacheFile -Raw | ConvertFrom-Json) } catch { }
         }
         return $null
     }
+}
+
+function Get-EndOfLifeCached {
+    # Cached GET against endoflife.date. Returns the parsed JSON envelope, or $null.
+    param(
+        [Parameter(Mandatory)] [string]$RelativePath,
+        [Parameter(Mandatory)] [string]$CacheKey,
+        [Parameter(Mandatory)] $Cfg
+    )
+    $base = [string](Get-ObjectPropertyValue $Cfg 'ApiBaseUrl' 'https://endoflife.date/api/v1')
+    return Get-CachedApiJson -Uri "$base/$RelativePath" -CacheKey $CacheKey -Cfg $Cfg `
+        -Headers @{ 'User-Agent' = 'PatchManager-EOL' } -Label 'End-of-life'
 }
 
 function Get-EndOfLifeProduct {
@@ -3254,7 +3779,7 @@ function New-EndOfLifeFinding {
         [string]$Item,
         [string]$InstalledVersion,
         [string]$Cycle = '',
-        [ValidateSet('EOL', 'NearEOL', 'Supported', 'Unknown')] [string]$Status = 'Unknown',
+        [ValidateSet('EOL', 'NearEOL', 'PatchBehind', 'Supported', 'Unknown')] [string]$Status = 'Unknown',
         [string]$EolDate = '',
         [object]$DaysRemaining = $null,
         [string]$LatestSupported = '',
@@ -3367,7 +3892,10 @@ function New-EolFindingFromRelease {
     # Composes Test-EolStatus + New-EndOfLifeFinding for one resolved release.
     param(
         [string]$Product, [string]$Item, [string]$InstalledVersion,
-        $Release, [int]$WarnWithinDays = 90, [string]$Recommendation = ''
+        $Release, [int]$WarnWithinDays = 90, [string]$Recommendation = '',
+        # Windows reports a bare build ('26200') against a latest of '10.0.26200' -
+        # different scales, so patch-drift comparison is meaningless there.
+        [switch]$SkipPatchDrift
     )
     if ($null -eq $Release) {
         return New-EndOfLifeFinding -Product $Product -Item $Item -InstalledVersion $InstalledVersion `
@@ -3377,16 +3905,31 @@ function New-EolFindingFromRelease {
     $cycle  = [string](Get-ObjectPropertyValue $Release 'name' '')
     $latest = Get-ReleaseLatestName $Release
     $st     = Test-EolStatus -Release $Release -WarnWithinDays $WarnWithinDays
-    $sev    = if ($st.Status -in @('EOL', 'NearEOL')) { 'review' } else { 'info' }
-    $detail = switch ($st.Status) {
+
+    $status = $st.Status
+    $detail = switch ($status) {
         'EOL'       { "Release $cycle reached end-of-life on $($st.EolDate). Latest supported: $latest." }
         'NearEOL'   { "Release $cycle reaches end-of-life on $($st.EolDate) (in $($st.DaysRemaining) day(s)). Latest supported: $latest." }
         'Supported' { "Release $cycle is supported$(if ($st.EolDate) { " until $($st.EolDate)" }). Latest: $latest." }
         default     { "Lifecycle status could not be determined for release $cycle." }
     }
-    $rec = if ($sev -eq 'review') { $Recommendation } else { '' }
+    $rec = if ($status -in @('EOL', 'NearEOL')) { $Recommendation } else { '' }
+
+    # A supported release line still leaves patch-level drift: 3.14.5 on a cycle whose
+    # latest is 3.14.6 is behind on security fixes even though 3.14 lives until 2030.
+    # endoflife.date already told us the latest; grade it instead of discarding it.
+    if ($status -eq 'Supported' -and $latest -and -not $SkipPatchDrift) {
+        $cmp = Compare-SoftwareVersion $InstalledVersion $latest
+        if ($null -ne $cmp -and $cmp -lt 0) {
+            $status = 'PatchBehind'
+            $detail = "Installed $InstalledVersion is behind $latest, the latest patch release of the supported $cycle line$(if ($st.EolDate) { " (supported until $($st.EolDate))" })."
+            $rec    = "Update $Item to $latest."
+        }
+    }
+
+    $sev = if ($status -in @('EOL', 'NearEOL', 'PatchBehind')) { 'review' } else { 'info' }
     return New-EndOfLifeFinding -Product $Product -Item $Item -InstalledVersion $InstalledVersion `
-        -Cycle $cycle -Status $st.Status -EolDate $st.EolDate -DaysRemaining $st.DaysRemaining `
+        -Cycle $cycle -Status $status -EolDate $st.EolDate -DaysRemaining $st.DaysRemaining `
         -LatestSupported $latest -Severity $sev -Detail $detail -Recommendation $rec
 }
 
@@ -3411,7 +3954,7 @@ function Invoke-EndOfLifeReport {
             if ($product) {
                 $rel = Resolve-WindowsEolRelease -Releases @($product.releases) -Build $build -Edition $edition
                 $findings.Add((New-EolFindingFromRelease -Product 'windows' -Item "Windows $display (build $build)" `
-                    -InstalledVersion $build -Release $rel -WarnWithinDays $warn `
+                    -InstalledVersion $build -Release $rel -WarnWithinDays $warn -SkipPatchDrift `
                     -Recommendation 'Upgrade to a supported Windows feature version.'))
             }
         } catch { Write-Log "End-of-life: Windows check failed: $_" -Level DEBUG }
@@ -3487,7 +4030,7 @@ function Invoke-EndOfLifeReport {
     }
 
     $reviewCount = @($findings | Where-Object { $_.Severity -eq 'review' }).Count
-    Write-Log "End-of-life report: $($findings.Count) finding(s), $reviewCount out of (or near) support." -Level $(if ($reviewCount -gt 0) { 'WARN' } else { 'INFO' })
+    Write-Log "End-of-life report: $($findings.Count) finding(s), $reviewCount needing review (out of support, near EOL, or behind the latest patch)." -Level $(if ($reviewCount -gt 0) { 'WARN' } else { 'INFO' })
     return @($findings)
 }
 
@@ -4387,6 +4930,30 @@ function New-HTMLReport {
     $verdictTitle = if ($runTone -eq 'clean') { 'Patch state holds.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Exposure needs action.' } else { 'Review before close.' }
     $verdictCopy  = if ($runTone -eq 'clean') { 'The run completed with no actionable KEV, SLA, failure, or script-error signals. Provider evidence remains below for audit review.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Security signals are present. Prioritise KEV and failed rows before treating this device as current.' } else { 'The report found items that need operator review. Follow the evidence trail, then use the table filters to isolate each row.' }
 
+    # The KEV catalogue names products, never versions. Say so in the report, once.
+    $kevMethodNote = "A KEV entry names an affected product, not an affected version - the catalogue carries no version data. Each candidate below is resolved against NVD's CPE version ranges: <strong>Affected</strong> means the installed version falls inside the vulnerable range, <strong>Not affected</strong> means it is past the fix, and <strong>Unknown</strong> means NVD had no comparable range and the version needs a manual check."
+
+    function New-KEVRowsHtml {
+        param([array]$Candidates)
+        return (($Candidates | Sort-Object @{ Expression = {
+            switch ([string](Get-ReportProperty $_ 'ExposureState' 'Unknown')) {
+                'Affected'    { 0 }
+                'Unknown'     { 1 }
+                default       { 2 }
+            } } }, CVE | ForEach-Object {
+            $state = [string](Get-ReportProperty $_ 'ExposureState' 'Unknown')
+            $fixed = [string](Get-ReportProperty $_ 'FixedVersion' '')
+            $why   = [string](Get-ReportProperty $_ 'ExposureDetail' '')
+            $badge = switch ($state) {
+                'Affected'    { "<span class='status failed'>Affected</span>" }
+                'NotAffected' { "<span class='status ok'>Not affected</span>" }
+                default       { "<span class='status skipped'>Unknown</span>" }
+            }
+            $rowCls = if ($state -eq 'Affected') { 'breach' } else { '' }
+            "<tr class='$rowCls'><td class='mono'>$(ConvertTo-ReportHtml $_.CVE)</td><td>$(ConvertTo-ReportHtml $_.InstalledApp)</td><td class='mono'>$(ConvertTo-ReportHtml $_.InstalledVer)</td><td>$badge</td><td class='mono'>$(ConvertTo-ReportHtml $(if ($fixed) { $fixed } else { '-' }))</td><td>$(ConvertTo-ReportHtml $_.Description)<div class='details'>$(ConvertTo-ReportHtml $why)</div></td><td class='nowrap'>$(ConvertTo-ReportHtml $_.CISADueDate)</td></tr>"
+        }) -join "`n")
+    }
+
     function Get-ReportRowKind {
         param($Row)
         $status = [string](Get-ReportProperty $Row 'Status' '')
@@ -4452,9 +5019,7 @@ function New-HTMLReport {
     $providerCheckCount = $providerCheckRows.Count
     $visibleSkippedCount = $skippedRows.Count
 
-    $kevRows = ($KEVMatches | ForEach-Object {
-        "<tr><td class='mono'>$(ConvertTo-ReportHtml $_.CVE)</td><td>$(ConvertTo-ReportHtml $_.InstalledApp)</td><td class='mono'>$(ConvertTo-ReportHtml $_.InstalledVer)</td><td>$(ConvertTo-ReportHtml $_.Description)</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.CISADueDate)</td></tr>"
-    }) -join "`n"
+    $kevRows = New-KEVRowsHtml -Candidates $KEVMatches
 
     $slaRows = ($SLABreaches | ForEach-Object {
         "<tr class='breach'><td>$(ConvertTo-ReportHtml $_.PackageName)</td><td class='mono'>$(ConvertTo-ReportHtml $_.PackageId)</td><td class='mono'>$(ConvertTo-ReportHtml $_.VersionAvailable)</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.FirstSeenAvailable)</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.SLADue)</td><td>$(ConvertTo-ReportHtml $_.Ring)</td></tr>"
@@ -4513,12 +5078,16 @@ function New-HTMLReport {
         "<section class='panel secondary-panel'><div class='section-head'><div><p class='eyebrow'>Skipped and descoped</p><h2>No skipped rows</h2></div><span class='count good'>0</span></div><p class='note'>No provider returned a skipped or descoped result.</p></section>"
     }
 
-    $invKevRows = ($InventoryKEVMatches | ForEach-Object {
-        "<tr><td class='mono'>$(ConvertTo-ReportHtml $_.CVE)</td><td>$(ConvertTo-ReportHtml $_.InstalledApp)</td><td class='mono'>$(ConvertTo-ReportHtml $_.InstalledVer)</td><td>$(ConvertTo-ReportHtml $_.Description)</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.CISADueDate)</td></tr>"
-    }) -join "`n"
+    $invKevRows      = New-KEVRowsHtml -Candidates $InventoryKEVMatches
+    $invKevAffected  = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Affected' }).Count
+    $invKevUnknown   = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Unknown' }).Count
 
     $invKevSection = if ($InventoryKEVMatches.Count -gt 0) {
-        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV - installed software</p><h2>KEV matches without an actionable update</h2></div><span class='count danger'>$($InventoryKEVMatches.Count)</span></div><p class='note danger-text'>These installed applications match the CISA Known Exploited Vulnerabilities catalogue, but no update was available through PatchManager's sources in this run. The installed version may already be patched - verify the version against the CVE, and update through the vendor if it is affected.</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
+        $tone      = if ($invKevAffected -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($invKevAffected -gt 0) { 'danger' } elseif ($invKevUnknown -gt 0) { '' } else { 'good' }
+        $noteClass = if ($invKevAffected -gt 0) { 'note danger-text' } else { 'note' }
+        $heading   = if ($invKevAffected -gt 0) { "$invKevAffected confirmed exposure(s) with no available update" } else { 'KEV product history, no confirmed exposure' }
+        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>CISA KEV - installed software</p><h2>$heading</h2></div><span class='count $countTone'>$invKevAffected</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
     } else {
         "<section class='panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV - installed software</p><h2>No inventory KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>The full software inventory was scanned against the KEV catalogue; nothing matched beyond the actionable items above.</p></section>"
     }
@@ -4538,10 +5107,11 @@ function New-HTMLReport {
     $eolReview = @($EndOfLifeFindings | Where-Object { $_.Severity -eq 'review' })
     $eolRows = ($EndOfLifeFindings | ForEach-Object {
         $statusHtml = switch ($_.Status) {
-            'EOL'       { "<span class='status failed'>End of life</span>" }
-            'NearEOL'   { "<span class='status skipped'>Near EOL</span>" }
-            'Supported' { "<span class='status ok'>Supported</span>" }
-            default     { "<span class='status'>Unknown</span>" }
+            'EOL'         { "<span class='status failed'>End of life</span>" }
+            'NearEOL'     { "<span class='status skipped'>Near EOL</span>" }
+            'PatchBehind' { "<span class='status skipped'>Behind latest</span>" }
+            'Supported'   { "<span class='status ok'>Supported</span>" }
+            default       { "<span class='status'>Unknown</span>" }
         }
         $detail = (($_.Detail, $_.Recommendation | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
         "<tr><td>$(ConvertTo-ReportHtml $_.Item)</td><td class='mono'>$(ConvertTo-ReportHtml $_.InstalledVersion)</td><td class='mono'>$(ConvertTo-ReportHtml $_.Cycle)</td><td>$statusHtml</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.EolDate)</td><td class='mono'>$(ConvertTo-ReportHtml $_.LatestSupported)</td><td class='details'>$(ConvertTo-ReportHtml $detail)</td></tr>"
@@ -4549,11 +5119,15 @@ function New-HTMLReport {
     $eolSection = if ($EndOfLifeFindings.Count -gt 0) {
         $tone = if ($eolReview.Count -gt 0) { 'danger-panel' } else { '' }
         $countTone = if ($eolReview.Count -gt 0) { 'danger' } else { 'good' }
-        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>End-of-life</p><h2>Support-lifecycle exposure</h2></div><span class='count $countTone'>$($eolReview.Count)</span></div><p class='note'>Authoritative end-of-support data from endoflife.date. Report-only - out-of-support software is fully patchable yet no longer receives fixes, so plan a major-version upgrade. $($eolReview.Count) of $($EndOfLifeFindings.Count) finding(s) are out of (or near) support.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Cycle</th><th>Status</th><th>EOL date</th><th>Latest supported</th><th>Detail</th></tr></thead><tbody>$eolRows</tbody></table></div></section>"
+        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>End-of-life</p><h2>Support-lifecycle exposure</h2></div><span class='count $countTone'>$($eolReview.Count)</span></div><p class='note'>Authoritative end-of-support data from endoflife.date. Report-only - out-of-support software is fully patchable yet no longer receives fixes, so plan a major-version upgrade. <strong>Behind latest</strong> means the release line is still supported but the installed build is behind its newest patch release. $($eolReview.Count) of $($EndOfLifeFindings.Count) finding(s) need review.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Cycle</th><th>Status</th><th>EOL date</th><th>Latest supported</th><th>Detail</th></tr></thead><tbody>$eolRows</tbody></table></div></section>"
     } else { '' }
 
     $kevSection = if ($KEVMatches.Count -gt 0) {
-        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>Actionable KEV matches</h2></div><span class='count danger'>$kevCount</span></div><p class='note danger-text'>These upgrade candidates match the CISA Known Exploited Vulnerabilities catalogue and were prioritised.</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$kevRows</tbody></table></div></section>"
+        $tone      = if ($kevCount -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($kevCount -gt 0) { 'danger' } else { 'good' }
+        $noteClass = if ($kevCount -gt 0) { 'note danger-text' } else { 'note' }
+        $heading   = if ($kevCount -gt 0) { "$kevCount confirmed KEV exposure(s)" } else { 'KEV product history, no confirmed exposure' }
+        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>$heading</h2></div><span class='count $countTone'>$kevCount</span></div><p class='$noteClass'>$($KEVMatches.Count) upgrade candidate(s) match a product named in the CISA KEV catalogue. $kevMethodNote$(if ($kevCount -gt 0) { ' Confirmed exposures bypassed the maintenance window and were patched first.' } else { ' No confirmed exposure, so no maintenance-window bypass was triggered.' })</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$kevRows</tbody></table></div></section>"
     } else {
         "<section class='panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>No actionable KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>KEV matching ran only against packages PatchManager can action from upgrade discovery.</p></section>"
     }
@@ -4571,14 +5145,23 @@ function New-HTMLReport {
     }
 
     $emergencyBanner = if ($isEmergency) {
-        "<div class='callout danger-callout'><strong>Emergency patch run.</strong><span>CISA KEV criteria triggered maintenance-window bypass for actionable packages.</span></div>"
+        "<div class='callout danger-callout'><strong>Emergency patch run.</strong><span>$kevCount installed version(s) were confirmed against NVD to fall inside a CISA KEV vulnerable range, triggering a maintenance-window bypass.</span></div>"
     } else { '' }
+
+    $kevCandidateCount = $KEVMatches.Count + $InventoryKEVMatches.Count
+    $kevBentoNote = if ($kevCount -gt 0) {
+        "$kevCount of $kevCandidateCount KEV candidate(s) confirmed affected by installed version. $slaCount SLA breach(es) recorded."
+    } elseif ($kevCandidateCount -gt 0) {
+        "$kevCandidateCount KEV product match(es), none confirmed affected by installed version. $slaCount SLA breach(es) recorded."
+    } else {
+        "No KEV product matches. $slaCount SLA breach(es) recorded."
+    }
 
     $bentoSection = @"
   <section class="bento-board reveal" id="summary" aria-label="Run summary">
     <article class="bento-card bento-primary good"><span class="bento-kicker">$primaryLabel</span><strong>$primaryCount</strong><p>$verdictCopy</p></article>
     <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>Blocked, failed, verifying, and script-error signals to follow up. See the actions below.</p></article>
-    <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security</span><strong>$kevCount KEV</strong><p>$slaCount SLA breach(es) recorded. KEV and SLA exposure is detailed in the security section.</p></article>
+    <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security</span><strong>$kevCount KEV</strong><p>$kevBentoNote KEV and SLA exposure is detailed in the security section.</p></article>
     <article class="bento-card bento-reboot $rebootTone"><span class="bento-kicker">Reboot required</span><strong>$rebootCount</strong><p>Update(s) needing a restart to finish - PatchManager never reboots on its own.</p></article>
   </section>
 "@
@@ -5068,21 +5651,37 @@ function Invoke-Main {
     $filteredUpgrades = @(Get-FilteredUpgrades -Upgrades $allUpgrades)
 
     $kevData    = Get-CISAKEVData
-    $kevMatches = @(Find-KEVMatches -Packages $filteredUpgrades -KEVData $kevData)
+    $kevMatches = @(Add-KEVExposure -Candidates @(Find-KEVCandidates -Packages $filteredUpgrades -KEVData $kevData))
 
     # Informational pass over the FULL inventory: KEV-listed software with no
     # actionable update still deserves visibility in the report. Exclude anything
     # already covered by an actionable match. Does not trigger emergency handling.
     $actionableKevKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($m in $kevMatches) { [void]$actionableKevKeys.Add("$($m.CVE)|$($m.InstalledApp)") }
-    $script:InventoryKEVMatches = @(Find-KEVMatches -Packages $inventory -KEVData $kevData -Informational |
-        Where-Object { -not $actionableKevKeys.Contains("$($_.CVE)|$($_.InstalledApp)") })
+    $script:InventoryKEVMatches = @(Add-KEVExposure -Candidates @(
+        Find-KEVCandidates -Packages $inventory -KEVData $kevData -Informational |
+            Where-Object { -not $actionableKevKeys.Contains("$($_.CVE)|$($_.InstalledApp)") }))
 
-    if ($kevMatches.Count -gt 0) {
+    # Only a CONFIRMED version match justifies bypassing the maintenance window. A
+    # name-only KEV hit proves nothing about the installed build: every Chrome install
+    # matches a 2020 Chrome CVE. Unknown exposure is reported, never escalated.
+    $confirmedKev = @($kevMatches | Where-Object { $_.ExposureState -eq 'Affected' })
+    $script:Stats.KEVCandidates = $kevMatches.Count + $script:InventoryKEVMatches.Count
+    $script:Stats.KEVMatches    = $confirmedKev.Count
+
+    $kevBreakdown = ($kevMatches + $script:InventoryKEVMatches | Group-Object ExposureState |
+        ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
+    if ($script:Stats.KEVCandidates -gt 0) {
+        Write-Log "CISA KEV: $($script:Stats.KEVCandidates) candidate(s) resolved against NVD [$kevBreakdown]." -Level INFO
+    }
+
+    if ($confirmedKev.Count -gt 0) {
         $script:EmergencyPatch = $true
-        Write-Log "EMERGENCY: CISA KEV match(es) detected. Bypassing maintenance window and reducing jitter." -Level ERROR
+        Write-Log "EMERGENCY: $($confirmedKev.Count) CISA KEV match(es) confirmed affected by version. Bypassing maintenance window and reducing jitter." -Level ERROR
         Write-RunEvent -EventId 9001 -Type Error `
-            -Message "KEV EMERGENCY on $($script:HOSTNAME): $(($kevMatches | ForEach-Object { "$($_.CVE) ($($_.InstalledApp))" }) -join ', ')"
+            -Message "KEV EMERGENCY on $($script:HOSTNAME): $(($confirmedKev | ForEach-Object { "$($_.CVE) ($($_.InstalledApp) $($_.InstalledVer))" }) -join ', ')"
+    } elseif ($kevMatches.Count -gt 0) {
+        Write-Log "CISA KEV: $($kevMatches.Count) actionable candidate(s), none confirmed affected by installed version. No emergency." -Level INFO
     }
 
     #-- Maintenance window ----------------------------------------------------
@@ -5128,6 +5727,7 @@ function Invoke-Main {
                          @(Invoke-MicrosoftStoreClientUpdates) +
                          @(Invoke-ChocolateyProvider) +
                          @(Invoke-ScoopProvider) +
+                         @(Invoke-PythonManagerProvider) +
                          @(Invoke-VendorUpdaterProvider -WinGetCandidates $filteredUpgrades) +
                          @(Invoke-FirmwareProvider)
 

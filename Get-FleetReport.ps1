@@ -142,8 +142,15 @@ foreach ($hostDir in $hostDirs) {
     $errors   = @(Get-JsonProperty $stats 'Errors' @())
     $reboot   = @(Get-JsonProperty $report 'RebootRequiredItems' @())
     $attention = @(Get-JsonProperty $report 'AttentionItems' @())
-    $invKev   = @(Get-JsonProperty $report 'InventoryKEVMatches' @())
-    # End-of-life exposure = findings needing action (out of, or nearing, support).
+    # Inventory KEV exposure = candidates NVD confirmed affected, or could not clear.
+    # A 'NotAffected' candidate is evidence the check ran, not a reason to flag a host.
+    # Reports written before exposure resolution existed have no ExposureState; those
+    # are counted, matching the old (conservative) behaviour.
+    $invKev   = @(@(Get-JsonProperty $report 'InventoryKEVMatches' @()) | Where-Object {
+        ([string](Get-JsonProperty $_ 'ExposureState' 'Unknown')) -ne 'NotAffected'
+    })
+    # End-of-life exposure = findings needing action: out of support, nearing support,
+    # or behind the latest patch of a still-supported release line.
     # 'info'/Supported findings are evidence, not exposure, so they are not counted.
     $eol      = @(Get-JsonProperty $report 'EndOfLifeFindings' @())
     $eolExposure = @($eol | Where-Object { [string]$_.Severity -eq 'review' }).Count

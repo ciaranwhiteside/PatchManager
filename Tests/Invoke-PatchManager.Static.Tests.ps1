@@ -392,6 +392,166 @@ Assert-True ($stalenessHtml -match 'Environment staleness') 'HTML report should 
 Assert-True ($stalenessHtml -match 'Report-only exposure checks') 'Staleness panel should state it is report-only.'
 Assert-True ($stalenessHtml -match 'Microsoft Defender') 'Staleness panel should list the Defender finding.'
 
+#-- KEV exposure resolution (CISA KEV names products; NVD supplies versions) ---------
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-VersionParts')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Compare-SoftwareVersion')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-CpeToken')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertFrom-CpeCriteria')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-CpeProductAlignment')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-VersionInCpeRange')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-KEVExposure')
+
+# Version comparison: dotted-numeric only; anything else is undecidable, never "equal".
+Assert-True ((Compare-SoftwareVersion '150.0.7871.47' '86.0.4240.198') -eq 1)  'Compare: Chrome 150 is newer than 86.0.4240.198.'
+Assert-True ((Compare-SoftwareVersion '86.0.4240.197' '86.0.4240.198') -eq -1) 'Compare: one patch behind is older.'
+Assert-True ((Compare-SoftwareVersion '86' '86.0.0') -eq 0)                    'Compare: missing trailing segments are zero.'
+Assert-True ((Compare-SoftwareVersion 'v20.11.1' '20.11.1') -eq 0)             'Compare: a leading v is stripped.'
+Assert-True ((Compare-SoftwareVersion '9.0.0' '10.0.0') -eq -1)                'Compare: numeric, not lexicographic (9 < 10).'
+Assert-True ($null -eq (Compare-SoftwareVersion '3.14-64' '3.14.6'))           'Compare: a non-numeric segment is undecidable ($null).'
+Assert-True ($null -eq (Compare-SoftwareVersion '' '1.0'))                     'Compare: an empty version is undecidable ($null).'
+Assert-True ($null -eq (Compare-SoftwareVersion '1.0.0-beta' '1.0.0'))         'Compare: a pre-release suffix is undecidable ($null).'
+
+# CPE parsing and product alignment.
+$cpeChrome = ConvertFrom-CpeCriteria 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*'
+Assert-True ($cpeChrome.Part -eq 'a' -and $cpeChrome.Vendor -eq 'google' -and $cpeChrome.Product -eq 'chrome') 'CPE 2.3 parses into part/vendor/product.'
+Assert-True ($null -eq (ConvertFrom-CpeCriteria 'not-a-cpe')) 'A malformed CPE parses to $null.'
+Assert-True ((ConvertTo-CpeToken 'Google Chrome') -eq 'google_chrome') 'CPE token normalisation collapses separators.'
+Assert-True (Test-CpeProductAlignment $cpeChrome 'Google' 'Chrome') 'Chrome CPE aligns with the Google/Chrome KEV entry.'
+Assert-True (-not (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:a:google:android:*:*:*:*:*:*:*:*') 'Google' 'Chrome')) 'An Android CPE must not align with a Chrome KEV entry.'
+Assert-True (-not (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:h:google:chrome:*:*:*:*:*:*:*:*') 'Google' 'Chrome')) 'A hardware-part CPE is not an application match.'
+
+$nvd = Get-Content -Path (Join-Path $fixtureDir 'nvd-cpematches.json') -Raw | ConvertFrom-Json
+
+# Range membership.
+$chromeRange = @($nvd.'chrome-cve-2020-16017')[0]
+Assert-True ((Test-VersionInCpeRange -Version '86.0.4240.197' -CpeMatch $chromeRange) -eq $true)  'A version below versionEndExcluding is inside the range.'
+Assert-True ((Test-VersionInCpeRange -Version '86.0.4240.198' -CpeMatch $chromeRange) -eq $false) 'The fix version itself is outside the range (End*Excluding*).'
+Assert-True ((Test-VersionInCpeRange -Version '150.0.7871.47' -CpeMatch $chromeRange) -eq $false) 'A far-newer version is outside the range.'
+$windowed = @($nvd.'chrome-bounded-window')[0]
+Assert-True ((Test-VersionInCpeRange -Version '79.0.0.0' -CpeMatch $windowed) -eq $false) 'Below versionStartIncluding is outside the range.'
+Assert-True ((Test-VersionInCpeRange -Version '80.0.0.0' -CpeMatch $windowed) -eq $true)  'versionStartIncluding is inclusive.'
+$exact = @($nvd.'chrome-exact-version')[0]
+Assert-True ((Test-VersionInCpeRange -Version '86.0.4240.197' -CpeMatch $exact) -eq $true)  'A CPE pinning an exact version matches that version.'
+Assert-True ((Test-VersionInCpeRange -Version '86.0.4240.198' -CpeMatch $exact) -eq $false) 'A CPE pinning an exact version rejects any other version.'
+# An unbounded wildcard is deliberately undecidable - honouring it would resurrect the
+# false-positive emergencies the NVD gate exists to prevent.
+Assert-True ($null -eq (Test-VersionInCpeRange -Version '150.0.7871.47' -CpeMatch @($nvd.'chrome-unbounded')[0])) 'An unbounded wildcard CPE is undecidable, not affected.'
+Assert-True ($null -eq (Test-VersionInCpeRange -Version '3.14-64' -CpeMatch $chromeRange)) 'An uncomparable installed version is undecidable.'
+
+# Resolve-KEVExposure: the regression this whole gate exists for.
+# Chrome 150.0.7871.47 was reported as an actionable KEV match for CVE-2020-16017
+# (fixed in 86.0.4240.198) and triggered a maintenance-window bypass.
+$chromeExposure = Resolve-KEVExposure -InstalledVersion '150.0.7871.47' -Vendor 'Google' -Product 'Chrome' -CpeMatches @($nvd.'chrome-cve-2020-16017')
+Assert-True ($chromeExposure.State -eq 'NotAffected') 'Chrome 150 must resolve NotAffected against CVE-2020-16017.'
+Assert-True ($chromeExposure.FixedVersion -eq '86.0.4240.198') 'NotAffected should still report the fix boundary it cleared.'
+
+$vulnChrome = Resolve-KEVExposure -InstalledVersion '86.0.4240.197' -Vendor 'Google' -Product 'Chrome' -CpeMatches @($nvd.'chrome-cve-2020-16017')
+Assert-True ($vulnChrome.State -eq 'Affected') 'Chrome one patch below the fix must resolve Affected.'
+Assert-True ($vulnChrome.FixedVersion -eq '86.0.4240.198') 'Affected should report the version that fixes it.'
+
+# Unknown, never Affected, whenever the data cannot settle it.
+Assert-True ((Resolve-KEVExposure -InstalledVersion '150.0.0.0' -Vendor 'Google' -Product 'Chrome' -CpeMatches @()).State -eq 'Unknown') 'No CPE data -> Unknown.'
+Assert-True ((Resolve-KEVExposure -InstalledVersion '150.0.0.0' -Vendor 'Google' -Product 'Chrome' -CpeMatches $null).State -eq 'Unknown') 'Null CPE data -> Unknown.'
+Assert-True ((Resolve-KEVExposure -InstalledVersion '3.14-64' -Vendor 'Google' -Product 'Chrome' -CpeMatches @($nvd.'chrome-cve-2020-16017')).State -eq 'Unknown') 'An uncomparable installed version -> Unknown.'
+Assert-True ((Resolve-KEVExposure -InstalledVersion '150.0.0.0' -Vendor 'Google' -Product 'Chrome' -CpeMatches @($nvd.'chrome-unbounded')).State -eq 'Unknown') 'An unbounded wildcard range -> Unknown, never Affected.'
+Assert-True ((Resolve-KEVExposure -InstalledVersion '150.0.0.0' -Vendor 'Google' -Product 'Chrome' -CpeMatches @($nvd.'unrelated-product-only')).State -eq 'Unknown') 'No aligned product CPE -> Unknown.'
+
+# A 'vulnerable: false' CPE row must not be treated as an affected range.
+Assert-True ((Resolve-KEVExposure -InstalledVersion '32' -Vendor 'Fedoraproject' -Product 'Fedora' -CpeMatches @($nvd.'chrome-cve-2020-16017')).State -eq 'Unknown') 'A non-vulnerable CPE row cannot establish exposure.'
+
+# Edge GameAssist 1.0.4019.0 matched two 2016 legacy-Edge CVEs by name alone.
+$edgeExposure = Resolve-KEVExposure -InstalledVersion '1.0.4019.0' -Vendor 'Microsoft' -Product 'Edge' -CpeMatches @($nvd.'edge-legacy-cve-2016-7201')
+Assert-True ($edgeExposure.State -eq 'Unknown') 'Legacy Edge CVE with no version range -> Unknown, not a confirmed exposure.'
+
+#-- Python Install Manager provider (pymanager owns Store-installed Python) ----------
+# Runs after Compare-SoftwareVersion is in scope: Find-PyManagerUpgrades depends on it.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertFrom-PyManagerList')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Find-PyManagerUpgrades')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-PyUpdateOutcome')
+
+$pyInstalledRaw = Get-Content -Path (Join-Path $fixtureDir 'py-list-installed.json') -Raw
+$pyOnlineRaw    = Get-Content -Path (Join-Path $fixtureDir 'py-list-online.json')    -Raw
+
+# Parsing: pymanager prints signature-verification notices before the JSON body.
+$pyInstalled = @((ConvertFrom-PyManagerList -Json $pyInstalledRaw).Runtimes)
+Assert-True ($pyInstalled.Count -eq 4) 'py list parser: should read all four runtimes, notices and all.'
+$py314 = $pyInstalled | Where-Object { $_.Id -eq 'pythoncore-3.14-64' } | Select-Object -First 1
+Assert-True ($py314.Version -eq '3.14.5' -and $py314.Tag -eq '3.14-64') 'py list parser: reads sort-version and tag.'
+Assert-True (-not $py314.Unmanaged) 'py list parser: a pymanager-installed runtime is managed.'
+$pyAstral = $pyInstalled | Where-Object { $_.Company -eq 'Astral' } | Select-Object -First 1
+Assert-True ($pyAstral.Unmanaged) 'py list parser: an Astral/uv runtime is flagged unmanaged.'
+
+# $null (not an empty listing) distinguishes "not the Python Install Manager" from
+# "no runtimes". Resolve-PyManagerCommand keys its legacy-launcher rejection on that.
+Assert-True ($null -eq (ConvertFrom-PyManagerList -Json 'Python 3.14.5')) 'py list parser: non-JSON output (legacy py launcher) -> $null.'
+Assert-True ($null -eq (ConvertFrom-PyManagerList -Json '')) 'py list parser: empty output -> $null.'
+Assert-True ($null -eq (ConvertFrom-PyManagerList -Json '{"other": 1}')) 'py list parser: JSON without a versions key -> $null.'
+$pyNone = ConvertFrom-PyManagerList -Json '{"versions": []}'
+Assert-True ($null -ne $pyNone) 'py list parser: a manager reporting no runtimes is still the manager, not $null.'
+Assert-True (@($pyNone.Runtimes).Count -eq 0) 'py list parser: a manager reporting no runtimes -> empty Runtimes.'
+
+# Regression: a machine with exactly ONE managed runtime is the common case. A bare array
+# return unrolls in the pipeline, delivering a scalar whose .Count throws under StrictMode
+# (and an empty listing as $null, indistinguishable from "not the manager"). The wrapper
+# object is what keeps .Runtimes an array in both cases.
+$pySingle = ConvertFrom-PyManagerList -Json '{"versions": [{"id": "pythoncore-3.14-64", "sort-version": "3.14.5", "company": "PythonCore", "tag": "3.14-64", "display-name": "Python 3.14.5"}]}'
+Assert-True ($pySingle.Runtimes -is [array]) 'py list parser: a single runtime must still come back as an array.'
+Assert-True ($pySingle.Runtimes.Count -eq 1) 'py list parser: .Count must work on a single-runtime result (StrictMode).'
+$pySingleOnline = ConvertFrom-PyManagerList -Json '{"versions": [{"id": "pythoncore-3.14-64", "sort-version": "3.14.6", "company": "PythonCore", "tag": "3.14-64", "display-name": "Python 3.14.6"}]}'
+Assert-True (@(Find-PyManagerUpgrades -Installed @($pySingle.Runtimes) -Online @($pySingleOnline.Runtimes)).Count -eq 1) 'py upgrades: a lone managed runtime with a newer build is offered.'
+Assert-True (@(Find-PyManagerUpgrades -Installed @() -Online @()).Count -eq 0) 'py upgrades: empty in, empty out.'
+
+# Upgrade pairing: exact install-id match, strictly newer version only.
+$pyOnline   = @((ConvertFrom-PyManagerList -Json $pyOnlineRaw).Runtimes)
+$pyUpgrades = @(Find-PyManagerUpgrades -Installed $pyInstalled -Online $pyOnline)
+Assert-True ($pyUpgrades.Count -eq 1) 'py upgrades: only the one runtime with a newer build should be offered.'
+Assert-True ($pyUpgrades[0].Id -eq 'pythoncore-3.14-64') 'py upgrades: pairs installed to online by exact install id.'
+Assert-True ($pyUpgrades[0].Current -eq '3.14.5' -and $pyUpgrades[0].Available -eq '3.14.6') 'py upgrades: 3.14.5 -> 3.14.6, the case WinGet cannot see.'
+
+# The unmanaged Astral runtime has a NEWER online version in the fixture (3.11.99).
+# pymanager does not own it, so it must never be offered for update.
+Assert-True (@($pyUpgrades | Where-Object { $_.Id -like '__unmanaged*' }).Count -eq 0) 'py upgrades: an unmanaged runtime is never offered, even when a newer version exists.'
+# A runtime already on the latest build must not be offered.
+Assert-True (@($pyUpgrades | Where-Object { $_.Id -eq 'pythoncore-3.12-64' }).Count -eq 0) 'py upgrades: an already-current runtime is not offered.'
+# A 32-bit/arm64 build of the same tag must not be mistaken for the installed 64-bit one.
+Assert-True (@($pyUpgrades | Where-Object { $_.Id -match '32|arm64' }).Count -eq 0) 'py upgrades: a different architecture id is not an upgrade candidate.'
+Assert-True (@(Find-PyManagerUpgrades -Installed $pyInstalled -Online @()).Count -eq 0) 'py upgrades: an empty online index yields nothing.'
+Assert-True (@(Find-PyManagerUpgrades -Installed @() -Online $pyOnline).Count -eq 0) 'py upgrades: nothing installed yields nothing.'
+
+# Update verdict: the observed version decides, the exit code is only evidence.
+# Regression, observed on a real 3.14.5 -> 3.14.6 run: pymanager installed the runtime,
+# restored site-packages, then exited 1 from its shortcut refresh with
+# "INTERNAL ERROR: AttributeError: 'str' object has no attribute 'satisfied_by'".
+# Gating on the exit code reported an applied update as Failed and would retry it forever.
+$pyDirtyExit = Resolve-PyUpdateOutcome -ExitCode 1 -CurrentVersion '3.14.5' -ObservedVersion '3.14.6'
+Assert-True ($pyDirtyExit.Status -eq 'Succeeded' -and $pyDirtyExit.Success) 'py outcome: a non-zero exit with a verified version bump is Succeeded.'
+Assert-True ($pyDirtyExit.Note -match 'exited non-zero after applying') 'py outcome: the exit-code anomaly must be recorded in the evidence.'
+
+$pyClean = Resolve-PyUpdateOutcome -ExitCode 0 -CurrentVersion '3.14.5' -ObservedVersion '3.14.6'
+Assert-True ($pyClean.Status -eq 'Succeeded' -and $pyClean.Success) 'py outcome: clean exit with a version bump is Succeeded.'
+Assert-True ($pyClean.Note -notmatch 'exited non-zero') 'py outcome: a clean exit records no anomaly.'
+
+# The mirror image of the 1.4.2 defects: exit 0 must never imply an applied update.
+$pyLyingZero = Resolve-PyUpdateOutcome -ExitCode 0 -CurrentVersion '3.14.5' -ObservedVersion '3.14.5'
+Assert-True ($pyLyingZero.Status -eq 'Failed' -and -not $pyLyingZero.Success) 'py outcome: exit 0 with an unchanged version is Failed, not Succeeded.'
+$pyDirtyNoChange = Resolve-PyUpdateOutcome -ExitCode 1 -CurrentVersion '3.14.5' -ObservedVersion '3.14.5'
+Assert-True ($pyDirtyNoChange.Status -eq 'Failed') 'py outcome: non-zero exit with an unchanged version is Failed.'
+
+# Unverifiable outcomes: a clean exit is merely unconfirmed, a dirty one is a failure.
+Assert-True ((Resolve-PyUpdateOutcome -ExitCode 0 -CurrentVersion '3.14.5' -ObservedVersion '').Status -eq 'Verifying') 'py outcome: clean exit, unreadable version -> Verifying.'
+Assert-True ((Resolve-PyUpdateOutcome -ExitCode 1 -CurrentVersion '3.14.5' -ObservedVersion '').Status -eq 'Failed') 'py outcome: non-zero exit, unreadable version -> Failed.'
+Assert-True ((Resolve-PyUpdateOutcome -ExitCode $null -CurrentVersion '3.14.5' -ObservedVersion '').Status -eq 'Failed') 'py outcome: a null exit code (process never returned one) is never Verifying.'
+# A downgrade is not an update.
+Assert-True ((Resolve-PyUpdateOutcome -ExitCode 0 -CurrentVersion '3.14.6' -ObservedVersion '3.14.5').Status -eq 'Failed') 'py outcome: an observed downgrade is Failed.'
+# An uncomparable observed version must not be read as progress.
+Assert-True ((Resolve-PyUpdateOutcome -ExitCode 0 -CurrentVersion '3.14.5' -ObservedVersion '3.14-64').Status -eq 'Failed') 'py outcome: an uncomparable observed version is never Succeeded.'
+
+# Provider is config-gated, and the gate is documented in the shipped example config.
+$exampleCfg = Get-Content -Path $exampleConfigPath -Raw | ConvertFrom-Json
+Assert-True ($null -ne $exampleCfg.PackageManagers.PSObject.Properties['PythonManagerEnabled']) 'Example config should expose PackageManagers.PythonManagerEnabled.'
+# The provider must be reachable from the update pipeline, not merely defined.
+Assert-True ((Get-Content -Path $scriptPath -Raw) -match '@\(Invoke-PythonManagerProvider\)') 'Invoke-PythonManagerProvider must be wired into the update pipeline.'
+
 #-- End-of-life report (report-only; endoflife.date) --------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-VersionCycleKeys')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ReleaseLatestName')
@@ -437,21 +597,65 @@ Assert-True ((Test-EolStatus -Release $relNear   -WarnWithinDays 90).Status -eq 
 Assert-True ((Test-EolStatus -Release $relFuture -WarnWithinDays 90).Status -eq 'Supported') 'Test-EolStatus: beyond the warning window -> Supported.'
 Assert-True ((Test-EolStatus -Release $null).Status -eq 'Unknown') 'Test-EolStatus: a null release -> Unknown.'
 
-# Finding shape: EOL is a review finding; supported is info.
+# Finding shape: EOL is a review finding; fully current is info.
 $eolFinding = New-EolFindingFromRelease -Product 'python' -Item 'Python' -InstalledVersion '3.9.13' -Release $py39 -WarnWithinDays 90 -Recommendation 'Upgrade Python.'
 Assert-True ($eolFinding.Severity -eq 'review' -and $eolFinding.Status -eq 'EOL' -and $eolFinding.LatestSupported -eq '3.9.25') 'EOL finding should be a review with latest-supported populated.'
-$okFinding = New-EolFindingFromRelease -Product 'python' -Item 'Python' -InstalledVersion '3.13.1' -Release $py313 -WarnWithinDays 90
-Assert-True ($okFinding.Severity -eq 'info' -and $okFinding.Status -eq 'Supported') 'Supported finding should be info.'
+$okFinding = New-EolFindingFromRelease -Product 'python' -Item 'Python' -InstalledVersion '3.13.14' -Release $py313 -WarnWithinDays 90
+Assert-True ($okFinding.Severity -eq 'info' -and $okFinding.Status -eq 'Supported') 'A supported release on its latest patch should be info.'
+
+# Patch-level drift inside a supported release line is a review finding, not silence.
+# Regression: Python 3.14.5 with 3.14.6 available was reported as Supported/info.
+$behindFinding = New-EolFindingFromRelease -Product 'python' -Item 'Python' -InstalledVersion '3.13.1' -Release $py313 -WarnWithinDays 90
+Assert-True ($behindFinding.Status -eq 'PatchBehind') 'A supported cycle with a newer patch release -> PatchBehind.'
+Assert-True ($behindFinding.Severity -eq 'review') 'PatchBehind must be a review finding, not info.'
+Assert-True ($behindFinding.Recommendation -match '3\.13\.14') 'PatchBehind should recommend the specific latest patch release.'
+Assert-True ($behindFinding.Detail -match 'behind 3\.13\.14') 'PatchBehind detail should name the version it is behind.'
+
+# Windows reports a bare build against a '10.0.<build>' latest - different scales, so
+# patch drift must not be inferred there.
+$winFinding = New-EolFindingFromRelease -Product 'windows' -Item 'Windows 25H2' -InstalledVersion '26200' -Release $w25Pro -WarnWithinDays 90 -SkipPatchDrift
+Assert-True ($winFinding.Status -eq 'Supported') 'Windows build vs 10.0.x latest must not be graded as PatchBehind.'
 
 # HTML report renders the End-of-life panel when findings exist.
 $eolFindings = @(
-    (New-EolFindingFromRelease -Product 'windows' -Item 'Windows 23H2 (build 22631)' -InstalledVersion '22631' -Release $w23Pro -WarnWithinDays 90 -Recommendation 'Upgrade Windows.')
+    (New-EolFindingFromRelease -Product 'windows' -Item 'Windows 23H2 (build 22631)' -InstalledVersion '22631' -Release $w23Pro -WarnWithinDays 90 -SkipPatchDrift -Recommendation 'Upgrade Windows.')
     $okFinding
+    $behindFinding
 )
 $eolHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings $eolFindings
 Assert-True ($eolHtml -match 'End-of-life') 'HTML report should render the End-of-life panel when findings exist.'
 Assert-True ($eolHtml -match 'endoflife\.date') 'EOL panel should credit its data source.'
 Assert-True ($eolHtml -match 'End of life') 'EOL panel should show the End of life status badge for an EOL row.'
+Assert-True ($eolHtml -match 'Behind latest') 'EOL panel should show the Behind latest badge for a PatchBehind row.'
+
+#-- KEV report rendering: exposure state must be visible, and tone must follow it ----
+$kevNotAffected = [pscustomobject]@{
+    CVE='CVE-2020-16017'; VendorProject='Google'; Product='Chrome'; Description='Use-After-Free'
+    DateAdded='2021-11-03'; CISADueDate='2022-05-03'; InstalledApp='Google Chrome'
+    InstalledVer='150.0.7871.47'; PackageId='Google.Chrome'; Source='winget'
+    ExposureState='NotAffected'; FixedVersion='86.0.4240.198'; ExposureDetail='Outside the NVD vulnerable range.'
+}
+$kevAffected = [pscustomobject]@{
+    CVE='CVE-2020-16017'; VendorProject='Google'; Product='Chrome'; Description='Use-After-Free'
+    DateAdded='2021-11-03'; CISADueDate='2022-05-03'; InstalledApp='Google Chrome'
+    InstalledVer='86.0.4240.197'; PackageId='Google.Chrome'; Source='winget'
+    ExposureState='Affected'; FixedVersion='86.0.4240.198'; ExposureDetail='Inside the NVD vulnerable range.'
+}
+$emptyMetrics = [pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }
+
+$script:Stats.KEVMatches = 0
+$kevCleanHtml = New-HTMLReport -Results $sourceRows -KEVMatches @($kevNotAffected) -SLABreaches @() -Elapsed 0.1 -Metrics $emptyMetrics -InventoryKEVMatches @()
+Assert-True ($kevCleanHtml -match 'Not affected') 'KEV panel should render the Not affected badge.'
+Assert-True ($kevCleanHtml -match 'KEV product history, no confirmed exposure') 'A name-only KEV match must not be presented as an exposure.'
+Assert-True ($kevCleanHtml -match 'no version data') 'KEV panel should state that the catalogue carries no version data.'
+Assert-True ($kevCleanHtml -notmatch "danger-panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p>") 'A KEV panel with no confirmed exposure must not use the danger tone.'
+
+$script:Stats.KEVMatches = 1
+$kevDangerHtml = New-HTMLReport -Results $sourceRows -KEVMatches @($kevAffected) -SLABreaches @() -Elapsed 0.1 -Metrics $emptyMetrics -InventoryKEVMatches @()
+Assert-True ($kevDangerHtml -match '1 confirmed KEV exposure') 'A confirmed exposure should be headlined as such.'
+Assert-True ($kevDangerHtml -match '>Affected<') 'KEV panel should render the Affected badge.'
+Assert-True ($kevDangerHtml -match '86\.0\.4240\.198') 'KEV panel should show the fixing version.'
+$script:Stats.KEVMatches = 0
 
 #-- Firmware provider (opt-in, off by default) --------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-FirmwareCatalogue')
