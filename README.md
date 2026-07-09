@@ -10,12 +10,14 @@
 **Patch. Verify. Prove it.**
 
 PatchManager is a single-file PowerShell tool for evidence-led Windows patching.
-It discovers and applies updates across **Windows Update, WinGet, the Microsoft
-Store, Microsoft 365 Click-to-Run, Chrome, and Edge**, then writes audit-ready
-HTML, JSON, and CSV compliance reports. Use it as a set-and-forget updater on a
-personal machine or as a fleet patching agent across a commercial estate with
-rings, maintenance windows, SLA tracking, version-verified CISA KEV emergency
-handling, and SIEM-ready event logging.
+From one script it discovers and applies updates across **Windows Update, WinGet,
+the Microsoft Store, Microsoft 365, and browsers**, plus third-party managers and
+native updaters (Chocolatey, Scoop, Python, vendor apps, opt-in OEM firmware) —
+and flags out-of-support and actively-exploited software it can't patch directly.
+Every run writes audit-ready HTML, JSON, and CSV compliance reports. Use it as a
+set-and-forget updater on a personal machine or as a fleet patching agent across
+a commercial estate with rings, maintenance windows, SLA tracking, version-verified
+CISA KEV emergency handling, and SIEM-ready event logging.
 
 > **Public beta (v1.5.1).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
