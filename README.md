@@ -769,7 +769,7 @@ Source `PatchManager`, log `Application` — for SIEM correlation:
   restored even after a crash. The only persistent artifacts are logs,
   reports, state, cache, and the optional scheduled task.
 - TLS 1.2 is enforced for feed downloads on Windows PowerShell 5.1.
-- Vulnerability reports: see [SECURITY.md](SECURITY.md).
+- Vulnerability reports: see [SECURITY.md](.github/SECURITY.md).
 
 ## Data hygiene
 
@@ -831,7 +831,7 @@ PSScriptAnalyzer on Windows PowerShell 5.1 **and** PowerShell 7.
 ## Contributing
 
 Issues and pull requests are welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md) for the project constraints (single-file
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) for the project constraints (single-file
 script, PS 5.1 floor, never reboot, restore machine state) and the local
 dev loop.
 
