@@ -1,0 +1,4 @@
+# docs/decks holds presentation material for internal/customer use. It's tracked
+# on main but excluded from the source archives GitHub attaches to releases
+# (those are generated via `git archive`, which honors export-ignore).
+docs/decks/ export-ignore
