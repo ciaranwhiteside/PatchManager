@@ -98,6 +98,8 @@ foreach ($hostDir in $hostDirs) {
             KEVMatches      = $null
             InventoryKEV    = $null
             EolExposure     = $null
+            NvdCritical     = $null
+            NvdHigh         = $null
             StalenessReview = $null
             SLABreaches     = $null
             Errors          = $null
@@ -126,6 +128,8 @@ foreach ($hostDir in $hostDirs) {
             KEVMatches      = $null
             InventoryKEV    = $null
             EolExposure     = $null
+            NvdCritical     = $null
+            NvdHigh         = $null
             StalenessReview = $null
             SLABreaches     = $null
             Errors          = $null
@@ -175,6 +179,10 @@ foreach ($hostDir in $hostDirs) {
         KEVMatches      = [int](Get-JsonProperty $stats 'KEVMatches' 0)
         InventoryKEV    = $invKev.Count
         EolExposure     = $eolExposure
+        # Report-only NVD inventory scan: products with High/Critical CVEs at the
+        # installed version. Critical drives the posture; High is shown for visibility.
+        NvdCritical     = [int](Get-JsonProperty $stats 'NvdCritical' 0)
+        NvdHigh         = [int](Get-JsonProperty $stats 'NvdHigh' 0)
         StalenessReview = $stalenessReview
         SLABreaches     = [int](Get-JsonProperty $stats 'SLABreaches' 0)
         Errors          = $errors.Count
@@ -204,7 +212,7 @@ $hostsWithEol  = @($hostRows | Where-Object { $_.EolExposure -gt 0 }).Count
 $hostsReboot   = @($hostRows | Where-Object { $_.RebootRequired -gt 0 }).Count
 $totalApplied  = ($hostRows | Measure-Object -Property Applied -Sum).Sum
 $healthyHosts  = @($hostRows | Where-Object {
-    -not $_.Stale -and $_.Failed -eq 0 -and $_.KEVMatches -eq 0 -and $_.InventoryKEV -eq 0 -and $_.SLABreaches -eq 0 -and $_.Errors -eq 0 -and $_.RebootRequired -eq 0 -and (-not ($_.EolExposure -gt 0))
+    -not $_.Stale -and $_.Failed -eq 0 -and $_.KEVMatches -eq 0 -and $_.InventoryKEV -eq 0 -and $_.SLABreaches -eq 0 -and $_.Errors -eq 0 -and $_.RebootRequired -eq 0 -and (-not ($_.EolExposure -gt 0)) -and (-not ($_.NvdCritical -gt 0))
 }).Count
 
 $staleTone  = if ($staleHosts -gt 0) { 'danger' } else { 'good' }
@@ -213,7 +221,7 @@ $securityTone = if ($hostsWithKev -gt 0 -or $hostsWithSla -gt 0) { 'danger' } el
 $eolTone    = if ($hostsWithEol -gt 0) { 'danger' } else { 'good' }
 $rebootTone = if ($hostsReboot -gt 0) { 'danger' } else { 'good' }
 $attentionHosts = @($hostRows | Where-Object {
-    $_.Stale -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0)
+    $_.Stale -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0) -or ($_.NvdCritical -gt 0)
 }).Count
 $fleetVerdictTitle = if ($attentionHosts -eq 0) {
     'Fleet reporting is current.'
@@ -231,7 +239,7 @@ $fleetVerdictCopy = if ($attentionHosts -eq 0) {
 }
 
 $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{Expression='Failed';Descending=$true}, Hostname | ForEach-Object {
-    $rowAttention = ($_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0))
+    $rowAttention = ($_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0) -or ($_.NvdCritical -gt 0))
     $rowPosture = if ($_.Stale) { 'stale' } elseif ($rowAttention) { 'attention' } else { 'healthy' }
     $rowClass = if ($_.Stale) { 'stale' }
                 elseif ($rowAttention) { 'attention' }
@@ -241,8 +249,10 @@ $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{
     $ageSort = if ($null -ne $_.ReportAgeDays) { $_.ReportAgeDays } else { 999999 }
     $staleText = if ($_.Stale) { "STALE ($($_.ReportAgeDays)d)" } elseif ($null -ne $_.ReportAgeDays) { "$($_.ReportAgeDays)d ago" } else { '' }
     $noteText = if ($_.Note) { $_.Note } else { '-' }
+    # NVD cell: Critical count drives the posture; High shown alongside for context.
+    $nvdCell = if (($_.NvdCritical -gt 0) -or ($_.NvdHigh -gt 0)) { "$($_.NvdCritical)C / $($_.NvdHigh)H" } else { '0' }
     $searchText = "$(ConvertTo-FleetHtml $_.Hostname) $(ConvertTo-FleetHtml $_.Ring) $(ConvertTo-FleetHtml $_.ScopeProfile) $(ConvertTo-FleetHtml $_.Version) $(ConvertTo-FleetHtml $noteText)"
-    "<tr class='fleet-row $rowClass' data-search='$searchText' data-posture='$rowPosture' data-ring='$(ConvertTo-FleetHtml $_.Ring)' data-profile='$(ConvertTo-FleetHtml $_.ScopeProfile)' data-host='$(ConvertTo-FleetHtml $_.Hostname)' data-last='$lastRunSort' data-age='$ageSort' data-version='$(ConvertTo-FleetHtml $_.Version)' data-applied='$(ConvertTo-FleetHtml $_.Applied)' data-failed='$(ConvertTo-FleetHtml $_.Failed)' data-kev='$(ConvertTo-FleetHtml $_.KEVMatches)' data-invkev='$(ConvertTo-FleetHtml $_.InventoryKEV)' data-eol='$(ConvertTo-FleetHtml $_.EolExposure)' data-stalerev='$(ConvertTo-FleetHtml $_.StalenessReview)' data-sla='$(ConvertTo-FleetHtml $_.SLABreaches)' data-errors='$(ConvertTo-FleetHtml $_.Errors)' data-reboot='$(ConvertTo-FleetHtml $_.RebootRequired)'><td><strong>$(ConvertTo-FleetHtml $_.Hostname)</strong></td><td class='nowrap'>$(ConvertTo-FleetHtml $lastRunText)</td><td class='nowrap'>$(ConvertTo-FleetHtml $staleText)</td><td>$(ConvertTo-FleetHtml $_.Ring)</td><td>$(ConvertTo-FleetHtml $_.ScopeProfile)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Version)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Applied)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Failed)</td><td class='mono'>$(ConvertTo-FleetHtml $_.KEVMatches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.InventoryKEV)</td><td class='mono'>$(ConvertTo-FleetHtml $_.EolExposure)</td><td class='mono'>$(ConvertTo-FleetHtml $_.StalenessReview)</td><td class='mono'>$(ConvertTo-FleetHtml $_.SLABreaches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Errors)</td><td class='mono'>$(ConvertTo-FleetHtml $_.RebootRequired)</td><td class='details'>$(ConvertTo-FleetHtml $noteText)</td></tr>"
+    "<tr class='fleet-row $rowClass' data-search='$searchText' data-posture='$rowPosture' data-ring='$(ConvertTo-FleetHtml $_.Ring)' data-profile='$(ConvertTo-FleetHtml $_.ScopeProfile)' data-host='$(ConvertTo-FleetHtml $_.Hostname)' data-last='$lastRunSort' data-age='$ageSort' data-version='$(ConvertTo-FleetHtml $_.Version)' data-applied='$(ConvertTo-FleetHtml $_.Applied)' data-failed='$(ConvertTo-FleetHtml $_.Failed)' data-kev='$(ConvertTo-FleetHtml $_.KEVMatches)' data-invkev='$(ConvertTo-FleetHtml $_.InventoryKEV)' data-eol='$(ConvertTo-FleetHtml $_.EolExposure)' data-nvd='$(ConvertTo-FleetHtml $_.NvdCritical)' data-stalerev='$(ConvertTo-FleetHtml $_.StalenessReview)' data-sla='$(ConvertTo-FleetHtml $_.SLABreaches)' data-errors='$(ConvertTo-FleetHtml $_.Errors)' data-reboot='$(ConvertTo-FleetHtml $_.RebootRequired)'><td><strong>$(ConvertTo-FleetHtml $_.Hostname)</strong></td><td class='nowrap'>$(ConvertTo-FleetHtml $lastRunText)</td><td class='nowrap'>$(ConvertTo-FleetHtml $staleText)</td><td>$(ConvertTo-FleetHtml $_.Ring)</td><td>$(ConvertTo-FleetHtml $_.ScopeProfile)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Version)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Applied)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Failed)</td><td class='mono'>$(ConvertTo-FleetHtml $_.KEVMatches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.InventoryKEV)</td><td class='mono'>$(ConvertTo-FleetHtml $_.EolExposure)</td><td class='mono'>$(ConvertTo-FleetHtml $nvdCell)</td><td class='mono'>$(ConvertTo-FleetHtml $_.StalenessReview)</td><td class='mono'>$(ConvertTo-FleetHtml $_.SLABreaches)</td><td class='mono'>$(ConvertTo-FleetHtml $_.Errors)</td><td class='mono'>$(ConvertTo-FleetHtml $_.RebootRequired)</td><td class='details'>$(ConvertTo-FleetHtml $noteText)</td></tr>"
 }) -join "`n"
 
 $generatedAt = ConvertTo-FleetHtml (Get-Date -Format 'dd MMM yyyy HH:mm:ss')
@@ -337,7 +347,7 @@ $html = @"
       <div class="section-head"><div><p class="eyebrow">Host estate</p><h2>Latest report per host</h2></div><span class="count">$totalHosts total</span></div>
     <div class="table-wrap">
       <table id="fleetTable">
-        <thead><tr><th data-sort="host">Host</th><th data-sort="last">Last run</th><th data-sort="age">Age</th><th data-sort="ring">Ring</th><th data-sort="profile">Profile</th><th data-sort="version">Version</th><th data-sort="applied">Applied</th><th data-sort="failed">Failed</th><th data-sort="kev">KEV</th><th data-sort="invkev">Inv. KEV</th><th data-sort="eol">EOL</th><th data-sort="stalerev">Staleness</th><th data-sort="sla">SLA</th><th data-sort="errors">Errors</th><th data-sort="reboot">Reboot</th><th>Notes</th></tr></thead>
+        <thead><tr><th data-sort="host">Host</th><th data-sort="last">Last run</th><th data-sort="age">Age</th><th data-sort="ring">Ring</th><th data-sort="profile">Profile</th><th data-sort="version">Version</th><th data-sort="applied">Applied</th><th data-sort="failed">Failed</th><th data-sort="kev">KEV</th><th data-sort="invkev">Inv. KEV</th><th data-sort="eol">EOL</th><th data-sort="nvd">NVD</th><th data-sort="stalerev">Staleness</th><th data-sort="sla">SLA</th><th data-sort="errors">Errors</th><th data-sort="reboot">Reboot</th><th>Notes</th></tr></thead>
         <tbody>$tableRows</tbody>
       </table>
     </div>
@@ -356,7 +366,7 @@ $html = @"
   var clearFilters = document.getElementById('clearFleetFilters');
   var printReport = document.getElementById('printFleetReport');
   var resultCount = document.getElementById('fleetResultCount');
-  var numericSorts = ['last','age','applied','failed','kev','invkev','eol','stalerev','sla','errors','reboot'];
+  var numericSorts = ['last','age','applied','failed','kev','invkev','eol','nvd','stalerev','sla','errors','reboot'];
   function appendOption(select, value){if(!select || !value){return;}var exists = Array.prototype.some.call(select.options,function(option){return option.value === value;});if(exists){return;}var option = document.createElement('option');option.value = value;option.textContent = value;select.appendChild(option);}
   rows.forEach(function(row){appendOption(ringFilter, row.getAttribute('data-ring') || '');appendOption(profileFilter, row.getAttribute('data-profile') || '');});
   Array.prototype.slice.call(ringFilter.options).slice(1).sort(function(a,b){return a.value.localeCompare(b.value);}).forEach(function(option){ringFilter.appendChild(option);});

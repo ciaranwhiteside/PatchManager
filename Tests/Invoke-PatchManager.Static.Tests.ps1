@@ -602,6 +602,86 @@ Assert-True ($null -ne $exampleCfg.PackageManagers.PSObject.Properties['PythonMa
 # The provider must be reachable from the update pipeline, not merely defined.
 Assert-True ((Get-Content -Path $scriptPath -Raw) -match '@\(Invoke-PythonManagerProvider\)') 'Invoke-PythonManagerProvider must be wired into the update pipeline.'
 
+#-- NVD inventory vulnerability scan (report-only; NVD CPE dictionary + CVE API) -----
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-CpeVersionString')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-BestCpeMatch')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-CvssFromCve')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-CvssSeverityRank')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-NVDVulnFinding')
+
+# CPE version sanitisation: clean dotted-numeric passes, anything else signals fallback.
+Assert-True ((ConvertTo-CpeVersionString '100.0.4896.60') -eq '100.0.4896.60') 'CPE version: clean dotted-numeric passes through.'
+Assert-True ((ConvertTo-CpeVersionString 'v22.00') -eq '22.00') 'CPE version: leading v is stripped.'
+Assert-True ((ConvertTo-CpeVersionString '1.2 (build 3)') -eq '') 'CPE version: a trailing suffix means the version is not CPE-reliable.'
+Assert-True ((ConvertTo-CpeVersionString '2024-beta') -eq '') 'CPE version: non-numeric forms signal local-filter fallback.'
+Assert-True ((ConvertTo-CpeVersionString '') -eq '') 'CPE version: empty input yields empty.'
+
+# CPE dictionary match: collapse per-version CPEs to one product; never guess.
+$cpesFixture = Get-Content -Path (Join-Path $fixtureDir 'nvd-cpes-sample.json') -Raw | ConvertFrom-Json
+$chromeCpe = Resolve-BestCpeMatch -CpesResponse $cpesFixture -Name 'Google Chrome' -Publisher 'Google LLC'
+Assert-True ($chromeCpe -eq 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*') 'CPE match: Google Chrome/Google LLC -> canonical google:chrome application CPE.'
+# A response containing ONLY OS-part / deprecated entries must yield no match: the scan
+# targets applications, and a deprecated CPE is no longer canonical.
+$nonAppOnly = [pscustomobject]@{ products = @(
+    [pscustomobject]@{ cpe = [pscustomobject]@{ deprecated = $false; cpeName = 'cpe:2.3:o:google:chrome_os:1.0:*:*:*:*:*:*:*' } }
+    [pscustomobject]@{ cpe = [pscustomobject]@{ deprecated = $true;  cpeName = 'cpe:2.3:a:google:chrome:0.1.0.0:*:*:*:*:*:*:*' } }
+) }
+Assert-True ($null -eq (Resolve-BestCpeMatch -CpesResponse $nonAppOnly -Name 'Google Chrome' -Publisher 'Google LLC')) 'CPE match: OS-part and deprecated CPEs are never application matches.'
+Assert-True ($null -eq (Resolve-BestCpeMatch -CpesResponse $null -Name 'Google Chrome' -Publisher 'Google')) 'CPE match: a null response resolves to $null.'
+Assert-True ($null -eq (Resolve-BestCpeMatch -CpesResponse $cpesFixture -Name 'Totally Unrelated App' -Publisher 'Acme')) 'CPE match: no product-token overlap -> $null, never a guess.'
+# Ambiguity: two distinct products with equal scores must yield $null.
+$ambiguous = [pscustomobject]@{ products = @(
+    [pscustomobject]@{ cpe = [pscustomobject]@{ deprecated = $false; cpeName = 'cpe:2.3:a:foo:editor:1.0:*:*:*:*:*:*:*' } }
+    [pscustomobject]@{ cpe = [pscustomobject]@{ deprecated = $false; cpeName = 'cpe:2.3:a:bar:editor:1.0:*:*:*:*:*:*:*' } }
+) }
+Assert-True ($null -eq (Resolve-BestCpeMatch -CpesResponse $ambiguous -Name 'Editor' -Publisher 'Someone Else')) 'CPE match: a tie between distinct products is ambiguous -> $null.'
+# ...but a vendor hit breaks the tie.
+Assert-True ((Resolve-BestCpeMatch -CpesResponse $ambiguous -Name 'Editor' -Publisher 'Foo Inc') -eq 'cpe:2.3:a:foo:editor:*:*:*:*:*:*:*:*') 'CPE match: a Publisher/vendor hit breaks the tie.'
+
+# CVSS extraction: v3.1 preferred, v3.0 fallback, v2-only -> $null.
+$cveFixture = Get-Content -Path (Join-Path $fixtureDir 'nvd-cve-by-cpe-sample.json') -Raw | ConvertFrom-Json
+$vulns = @($cveFixture.vulnerabilities)
+$c31 = Get-CvssFromCve $vulns[0].cve
+Assert-True ($c31.Severity -eq 'CRITICAL' -and $c31.Score -eq 9.8) 'CVSS: v3.1 metric extracted with score and severity.'
+$c30 = Get-CvssFromCve $vulns[1].cve
+Assert-True ($c30.Severity -eq 'HIGH' -and $c30.Score -eq 7.5) 'CVSS: v3.0 fallback when no v3.1 metric exists.'
+Assert-True ($null -eq (Get-CvssFromCve $vulns[2].cve)) 'CVSS: a v2-only CVE yields $null (no v3 signal).'
+Assert-True ((Get-CvssSeverityRank 'CRITICAL') -gt (Get-CvssSeverityRank 'HIGH')) 'CVSS rank: CRITICAL outranks HIGH.'
+Assert-True ((Get-CvssSeverityRank 'bogus') -eq 0) 'CVSS rank: unknown severity ranks lowest.'
+
+# Grouped finding shape: counts, top severity, ranked CVE order.
+$nvdFinding = New-NVDVulnFinding -Item 'Google Chrome' -InstalledVersion '100.0.4896.60' -Cpe 'cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*' -Cves @(
+    [pscustomobject]@{ CVE='CVE-2022-0002'; CvssScore=8.8; CvssSeverity='HIGH';     Description='high';  Published='2022-01-01' }
+    [pscustomobject]@{ CVE='CVE-2024-1283'; CvssScore=9.8; CvssSeverity='CRITICAL'; Description='crit';  Published='2024-02-07' }
+)
+Assert-True ($nvdFinding.Severity -eq 'CRITICAL' -and $nvdFinding.MaxCvss -eq 9.8) 'NVD finding: top severity/score comes from the worst CVE.'
+Assert-True ($nvdFinding.CveCount -eq 2 -and $nvdFinding.CriticalCount -eq 1 -and $nvdFinding.HighCount -eq 1) 'NVD finding: per-severity counts are correct.'
+Assert-True ($nvdFinding.Cves[0].CVE -eq 'CVE-2024-1283') 'NVD finding: CVE list is ranked worst-first.'
+
+# Report-only isolation: the scan must never touch the emergency path, and the queue
+# tier must sit BELOW confirmed KEV. Source-level assertions keep this from regressing.
+$mainSrc = Get-Content -Path $scriptPath -Raw
+Assert-True ($mainSrc -match '(?s)EmergencyPatch\s*-and\s+-not\s+\$ReportOnly.*?NVD inventory scan: deferred') 'NVD scan must be deferred on an emergency run, never delay a KEV patch.'
+Assert-True ($mainSrc -notmatch '(?s)NVDVulnFindings[^\r\n]*EmergencyPatch\s*=\s*\$true') 'NVD findings must never set the emergency flag.'
+Assert-True ($mainSrc -match '-NVDFindings \$script:NVDVulnFindings') 'NVD findings must feed the patch-queue prioritiser.'
+
+# HTML report renders the NVD panel with the danger tone only when a Critical exists.
+$script:Stats.KEVMatches = 0
+$nvdHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings @() -NVDVulnFindings @($nvdFinding)
+Assert-True ($nvdHtml -match 'Known vulnerabilities \(NVD\)') 'HTML report should render the NVD panel when findings exist.'
+Assert-True ($nvdHtml -match 'not necessarily <em>actively exploited</em>') 'NVD panel must distinguish itself from KEV (known vs actively exploited).'
+Assert-True ($nvdHtml -match 'nvd\.nist\.gov/vuln/detail/CVE-2024-1283') 'NVD panel should link CVEs to nvd.nist.gov.'
+$highOnly = New-NVDVulnFinding -Item '7-Zip' -InstalledVersion '22.00' -Cpe 'cpe:2.3:a:7-zip:7-zip:*:*:*:*:*:*:*:*' -Cves @(
+    [pscustomobject]@{ CVE='CVE-2024-11477'; CvssScore=7.8; CvssSeverity='HIGH'; Description='zstd'; Published='2024-11-22' }
+)
+$nvdHighHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings @() -NVDVulnFindings @($highOnly)
+Assert-True ($nvdHighHtml -notmatch "danger-panel'><div class='section-head'><div><p class='eyebrow'>Known vulnerabilities") 'An NVD panel with no Critical must not take the danger tone.'
+
+# Example config exposes both new blocks.
+Assert-True ($null -ne $exampleCfg.PSObject.Properties['NVDInventoryScan']) 'Example config should expose the NVDInventoryScan block.'
+Assert-True ($exampleCfg.NVDInventoryScan.Enabled -eq $false) 'NVDInventoryScan must ship opt-in (off).'
+Assert-True ($null -ne $exampleCfg.NVD.PSObject.Properties['DataSource'] -and $null -ne $exampleCfg.NVD.PSObject.Properties['MirrorBaseUrl']) 'Example config should expose NVD.DataSource and NVD.MirrorBaseUrl.'
+
 #-- End-of-life report (report-only; endoflife.date) --------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-VersionCycleKeys')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ReleaseLatestName')

@@ -1,0 +1,13 @@
+{
+  "resultsPerPage": 4,
+  "startIndex": 0,
+  "totalResults": 10319,
+  "format": "NVD_CPE",
+  "version": "2.0",
+  "products": [
+    { "cpe": { "deprecated": false, "cpeName": "cpe:2.3:a:google:chrome:100.0.4896.60:*:*:*:*:*:*:*", "cpeNameId": "11111111-0000-0000-0000-000000000001" } },
+    { "cpe": { "deprecated": false, "cpeName": "cpe:2.3:a:google:chrome:101.0.4951.41:*:*:*:*:*:*:*", "cpeNameId": "11111111-0000-0000-0000-000000000002" } },
+    { "cpe": { "deprecated": true,  "cpeName": "cpe:2.3:a:google:chrome:0.1.0.0:*:*:*:*:*:*:*",       "cpeNameId": "11111111-0000-0000-0000-000000000003" } },
+    { "cpe": { "deprecated": false, "cpeName": "cpe:2.3:o:google:chrome_os:1.0:*:*:*:*:*:*:*",         "cpeNameId": "11111111-0000-0000-0000-000000000004" } }
+  ]
+}

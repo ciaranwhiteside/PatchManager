@@ -82,7 +82,7 @@ closes that gap with one auditable script:
 | Lifecycle intelligence | Report-only environment staleness (Defender signatures, Windows feature lag, dev runtimes) and end-of-life exposure from [endoflife.date](https://github.com/endoflife-date/endoflife.date) — out-of-support Windows/runtimes/inventory software, plus patch-level drift inside a still-supported release line — never counted as patch actions, rolled up estate-wide in the fleet dashboard |
 | Reporting | Interactive HTML report, JSON for automation, CSV for SIEM/Excel/Power BI, optional central share copy, fleet dashboard |
 | Rollout control | Pilot → Early → Broad rings (registry-driven), maintenance windows, hostname-seeded jitter, per-run update caps |
-| Security | CISA KEV emergency bypass gated on an NVD-confirmed version match, inventory-wide KEV scan, SLA tracking with breach events, Windows Event Log IDs for SIEM |
+| Security | CISA KEV emergency bypass gated on an NVD-confirmed version match, inventory-wide KEV scan, opt-in NVD inventory vulnerability scan (report-only High/Critical CVEs across all installed software, internal-mirror capable), SLA tracking with breach events, Windows Event Log IDs for SIEM |
 | Safety | Dry-run mode, pre-flight checks (disk/battery/reboot/network/winget health), system restore point, single-instance mutex, atomic state writes, BITS throttle restored on exit |
 | User experience | Optional close-app prompts with retry/defer, completion popup with one-click report open, quiet unattended operation |
 | Notifications | Optional webhook run summaries (Teams/Slack/generic JSON), optionally only when something needs attention |
@@ -103,6 +103,7 @@ closes that gap with one auditable script:
 | OEM firmware / BIOS | ⛔ Off | Opt-in only. Dell Command Update / HP Image Assistant / Lenovo System Update. Skipped on battery; never reboots on its own. |
 | Environment staleness | 🔎 Report-only | Never patches. Flags stale Microsoft Defender signatures, Windows feature-update lag, and installed dev-runtime versions in their own report section. |
 | End-of-life (endoflife.date) | 🔎 Report-only | Never patches. Flags software past (or nearing) end-of-support — out-of-support Windows, dev runtimes, and a best-effort scan of the whole inventory — plus patch-level drift inside a still-supported release line. Its own report section. Cached and offline-safe. |
+| NVD inventory vulnerability scan | 🔎 Report-only, opt-in | Never patches. Maps installed software to NVD CPEs and lists **High/Critical CVEs** the installed version is affected by — broader than KEV (known + version-matched, not necessarily actively exploited). May softly prioritise a matched product's available update; never bypasses the maintenance window. API-bound: benefits from an NVD API key or an internal mirror. Its own report section (HTML/JSON/CSV). |
 
 Commercial profiles keep everything above on except Chocolatey (licence
 opt-in). `CommercialManaged` additionally defers Windows Update, Microsoft 365,
@@ -540,12 +541,36 @@ CVEs that already matched by name are ever fetched — a handful per run at most
 | Key | Default | Purpose |
 |---|---|---|
 | `Enabled` | `true` | Resolve KEV candidates against NVD. `false` leaves every candidate `Unknown`: still reported, never an emergency. |
-| `ApiBaseUrl` | `https://services.nvd.nist.gov/rest/json/cves/2.0` | NVD CVE API v2 base. |
-| `ApiKey` | `""` | Optional. Raises NVD's rate limit from 5 to 50 requests / 30 s. |
+| `DataSource` | `PublicApi` | `PublicApi` hits nvd.nist.gov (rate-limited). `Mirror` points `MirrorBaseUrl` at an internal endpoint speaking the NVD 2.0 REST shape — unthrottled, keyless, works air-gapped. Shared by the KEV lookup **and** the inventory scan. |
+| `ApiBaseUrl` | `https://services.nvd.nist.gov/rest/json/cves/2.0` | NVD CVE API v2 base (PublicApi). |
+| `MirrorBaseUrl` | `""` | Internal mirror base, e.g. `https://nvd-mirror.corp/rest/json` (`/cves/2.0` and `/cpes/2.0` are appended). Used when `DataSource` is `Mirror`. |
+| `ApiKey` | `""` | Optional. Raises NVD's rate limit from 5 to 50 requests / 30 s (PublicApi only). |
 | `CacheHours` / `CachePath` | `720` / `…\Cache` | 30-day per-CVE cache (published CPE ranges rarely change), shared with the KEV cache. |
-| `MaxLookupsPerRun` | `25` | Hard cap on network lookups; anything beyond stays `Unknown`. |
+| `MaxLookupsPerRun` | `25` | Hard cap on KEV-path network lookups; anything beyond stays `Unknown`. |
 | `RequestDelayMs` | `6500` | Pacing between real fetches (unkeyed NVD allows ~5 requests / 30 s). Cache hits cost nothing. |
 | `Offline` | `false` | `true` = use the cache only, never fetch. |
+
+### `NVDInventoryScan`
+
+The reverse of the KEV lookup: instead of confirming a known-exploited CVE, this
+maps **all installed software** to NVD CPEs and lists the High/Critical CVEs the
+installed version is affected by — surfacing vulnerabilities that are *not*
+necessarily in the CISA KEV catalogue. **Report-only**: a generic CVE is not
+confirmed-exploited, so it never bypasses the maintenance window; it only reports
+and (optionally) bumps a matched product's available update up the queue. Off by
+default — it is API-bound and benefits greatly from an `NVD.ApiKey` or a `Mirror`.
+Credentials, pacing, and `DataSource` are shared from the `NVD` block.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `false` | Opt-in. When on, runs after the maintenance-window gate and before patching (deferred on emergency runs). |
+| `CpeApiBaseUrl` | `https://services.nvd.nist.gov/rest/json/cpes/2.0` | NVD CPE dictionary base (PublicApi; a `Mirror` overrides it). |
+| `MinCvssSeverity` | `HIGH` | `HIGH` surfaces HIGH + CRITICAL; `CRITICAL` narrows to Critical only. Filtered server-side by NVD. |
+| `MaxProductsPerRun` | `40` | Distinct products mapped + queried per run. The scan resumes across runs via the cache. |
+| `MaxLookupsPerRun` | `120` | Hard cap on NVD calls (dictionary + CVE) for this scan. |
+| `CpeCacheHours` / `CveCacheHours` | `720` / `48` | Name→CPE mapping is stable; CVE results refresh sooner (new CVEs get published). |
+| `PrioritiseUpdates` | `true` | Bump a matched product that has an available update ahead in the patch queue (below KEV, above normal). Never bypasses the window. |
+| `ExcludeNamePatterns` | redistributables / drivers / KBs | Regex skip-list — no useful app CPE, and querying them wastes the budget. |
 
 ## Scope profiles: Personal vs Commercial
 
@@ -701,6 +726,13 @@ Copy-Item $latestJson.FullName $hostFolder -Force
   catalogue but has *no* available update through PatchManager's sources is
   reported in its own section, with the same exposure resolution, so real
   exposure isn't invisible just because there's nothing to click.
+- **NVD inventory vulnerability scan (opt-in)** — the reverse of the KEV check:
+  maps *all* installed software to NVD CPEs and lists the High/Critical CVEs the
+  installed version is affected by, catching vulnerabilities that never reached
+  the KEV catalogue. Report-only — a generic CVE is known and version-matched but
+  not necessarily *actively exploited*, so it never triggers the maintenance-window
+  bypass; it may softly prioritise a matched product's available update. Point it
+  at an internal NVD mirror for estates and air-gapped networks (`NVD.DataSource`).
 - **SLA tracking** — the moment an update becomes available it is tracked in
   local state; if it is still unapplied after the configured window (default
   14 days) the run reports a breach and raises event `1020`.

@@ -132,8 +132,11 @@ $script:BITSPolicyApplied = $false
 $script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
 $script:NVDMemo = @{}                              # CVE id -> cpeMatch array (or $null)
-$script:NVDLookupCount = 0
-$script:NVDLastRequest = [datetime]::MinValue
+$script:NVDLookupCount = 0                          # KEV-path budget
+$script:NVDInventoryLookupCount = 0                 # inventory-scan budget (separate cap, shared pacer)
+$script:NVDCpeByName = @{}                          # display name -> chosen CPE (or $null), per run
+$script:NVDLastRequest = [datetime]::MinValue       # ONE pacing clock across both NVD paths
+$script:NVDVulnFindings = @()
 $script:StalenessFindings = @()
 $script:EndOfLifeFindings = @()
 $script:Inventory = @()
@@ -146,6 +149,8 @@ $script:Stats = [ordered]@{
     UpdatesSkipped  = 0
     KEVMatches      = 0   # confirmed-affected actionable matches (drives emergency)
     KEVCandidates   = 0   # name-only KEV catalogue hits, before version resolution
+    NvdHigh         = 0   # inventory products with a High (non-Critical) NVD finding
+    NvdCritical     = 0   # inventory products with a Critical NVD finding
     SLABreaches     = 0
     InventoryCount  = 0
     Errors          = [System.Collections.Generic.List[string]]::new()
@@ -412,13 +417,49 @@ $script:DefaultCfg = [ordered]@{
     # Disabling this leaves every candidate 'Unknown': reported, never an emergency.
     NVD = [ordered]@{
         Enabled          = $true
+        # DataSource: 'PublicApi' hits nvd.nist.gov (rate-limited; ApiKey raises the
+        # limit). 'Mirror' points at an internal endpoint that speaks the same NVD 2.0
+        # REST shape (/cves/2.0, /cpes/2.0) - unthrottled and keyless, the right choice
+        # for estates and air-gapped networks. Shared by the KEV lookup and the
+        # inventory vulnerability scan.
+        DataSource       = 'PublicApi'
         ApiBaseUrl       = 'https://services.nvd.nist.gov/rest/json/cves/2.0'
-        ApiKey           = ''      # optional; raises the rate limit from 5 to 50 req/30s
+        MirrorBaseUrl    = ''      # e.g. https://nvd-mirror.corp/rest/json (base; /cves/2.0 and /cpes/2.0 appended)
+        ApiKey           = ''      # optional; raises the rate limit from 5 to 50 req/30s (PublicApi only)
         CacheHours       = 720     # CPE ranges for a published CVE rarely change
         CachePath        = 'C:\ProgramData\PatchManager\Cache'
         Offline          = $false
         MaxLookupsPerRun = 25
-        RequestDelayMs   = 6500    # unkeyed NVD allows ~5 requests / 30s
+        RequestDelayMs   = 6500    # unkeyed NVD allows ~5 requests / 30s (PublicApi only)
+    }
+
+    # Report-only inventory vulnerability scan: maps installed software to NVD CPEs and
+    # surfaces High/Critical CVEs the installed version is affected by - vulnerabilities
+    # that are NOT necessarily in the CISA KEV catalogue. Never bypasses the maintenance
+    # window (a generic CVE is not confirmed-exploited); it only reports and, optionally,
+    # bumps a matched product that has an available update ahead in the patch queue.
+    # Off by default: it is API-bound and slow, and benefits from an NVD ApiKey or Mirror.
+    # Credentials, pacing, and DataSource are shared from the NVD block above.
+    NVDInventoryScan = [ordered]@{
+        Enabled           = $false
+        CpeApiBaseUrl     = 'https://services.nvd.nist.gov/rest/json/cpes/2.0'
+        MinCvssSeverity   = 'HIGH'   # HIGH queries HIGH + CRITICAL; CRITICAL narrows to CRITICAL only
+        MaxProductsPerRun = 40       # distinct products mapped + queried per run
+        MaxLookupsPerRun  = 120      # hard cap on NVD calls (dictionary + CVE) this scan
+        CpeCacheHours     = 720      # name -> CPE mapping is stable
+        CveCacheHours     = 48       # new CVEs get published against existing products
+        PrioritiseUpdates = $true    # bump a matched product that has an available update
+        # Skip redistributables / driver / system-component noise: no useful app CPE,
+        # and querying them wastes the per-run budget.
+        ExcludeNamePatterns = @(
+            'Visual C\+\+'
+            'redistributable'
+            '\.NET (Runtime|Host|Framework|SDK|Targeting Pack|Windows Desktop Runtime)'
+            'Windows (SDK|Driver|Software Development Kit)'
+            '^KB\d'
+            'Update for (Microsoft|Windows)'
+            'Microsoft (Edge WebView2|Visual Studio Code)?\s*Runtime'
+        )
     }
 }
 
@@ -1863,6 +1904,55 @@ function Resolve-KEVExposure {
     }
 }
 
+function Invoke-NVDPacedRequest {
+    # Shared NVD fetcher for both the KEV lookup and the inventory scan. Resolves the
+    # DataSource (public API vs internal mirror), paces public-API calls against ONE
+    # global clock ($script:NVDLastRequest) so both paths together respect NVD's rate
+    # limit, and delegates caching to Get-CachedApiJson. A mirror is unthrottled and
+    # keyless. Returns { Data = parsed JSON or $null; Fetched = [bool] } - callers use
+    # .Fetched to charge their own per-run budget only on a real network call.
+    param(
+        [Parameter(Mandatory)] $NvdCfg,          # the shared $script:CFG.NVD block
+        [Parameter(Mandatory)] [string]$Endpoint,# 'cves' | 'cpes' - mirror path segment
+        [Parameter(Mandatory)] [string]$PublicBaseUrl,  # PublicApi base for this endpoint
+        [Parameter(Mandatory)] [string]$Query,   # query string without a leading '?'
+        [Parameter(Mandatory)] [string]$CacheKey,
+        [double]$CacheHours = 720
+    )
+    $dataSource = [string](Get-ObjectPropertyValue $NvdCfg 'DataSource' 'PublicApi')
+    $mirror     = [string](Get-ObjectPropertyValue $NvdCfg 'MirrorBaseUrl' '')
+    $isMirror   = ($dataSource -eq 'Mirror' -and -not [string]::IsNullOrWhiteSpace($mirror))
+    $base       = if ($isMirror) { "$($mirror.TrimEnd('/'))/$Endpoint/2.0" } else { $PublicBaseUrl }
+
+    $hdrs = @{ 'User-Agent' = 'PatchManager-NVD' }
+    if (-not $isMirror) {
+        $apiKey = [string](Get-ObjectPropertyValue $NvdCfg 'ApiKey' '')
+        if ($apiKey) { $hdrs['apiKey'] = $apiKey }
+    }
+
+    # Decide willFetch exactly as Get-CachedApiJson would, so pacing tracks real calls.
+    $cacheDir   = [string](Get-ObjectPropertyValue $NvdCfg 'CachePath' 'C:\ProgramData\PatchManager\Cache')
+    $offline    = [bool](Get-ObjectPropertyValue $NvdCfg 'Offline' $false)
+    $cacheFile  = Join-Path $cacheDir "$(($CacheKey -replace '[^A-Za-z0-9._-]', '_')).json"
+    $fileExists = Test-Path $cacheFile
+    $willFetch  = (-not $offline) -and ((-not $fileExists) -or
+                  (((Get-Date) - (Get-Item $cacheFile -EA SilentlyContinue).LastWriteTime).TotalHours -ge $CacheHours))
+
+    # Pace only real network calls, and only against the public API (a mirror is unthrottled).
+    if ($willFetch -and -not $isMirror -and $script:NVDLastRequest -ne [datetime]::MinValue) {
+        $delayMs = [int](Get-ObjectPropertyValue $NvdCfg 'RequestDelayMs' 6500)
+        $waited  = ((Get-Date) - $script:NVDLastRequest).TotalMilliseconds
+        if ($waited -lt $delayMs) { Start-Sleep -Milliseconds ([int]($delayMs - $waited)) }
+    }
+
+    $fetchCfg = [ordered]@{ CachePath = $cacheDir; CacheHours = $CacheHours; Offline = $offline }
+    $sep  = if ($base -match '\?') { '&' } else { '?' }
+    $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
+
+    if ($willFetch -and -not $isMirror) { $script:NVDLastRequest = Get-Date }
+    return [PSCustomObject]@{ Data = $resp; Fetched = [bool]$willFetch }
+}
+
 function Get-NVDCpeMatches {
     # Flattened, vulnerable-only cpeMatch nodes for one CVE, or $null when unavailable.
     # Memoised per run; cached on disk across runs; rate-limited to respect NVD limits.
@@ -1878,29 +1968,12 @@ function Get-NVDCpeMatches {
         return $null
     }
 
-    $base   = [string](Get-ObjectPropertyValue $cfg 'ApiBaseUrl' 'https://services.nvd.nist.gov/rest/json/cves/2.0')
-    $apiKey = [string](Get-ObjectPropertyValue $cfg 'ApiKey' '')
-    $hdrs   = @{ 'User-Agent' = 'PatchManager-NVD' }
-    if ($apiKey) { $hdrs['apiKey'] = $apiKey }
-
-    # Rate limit only real network calls - a cache hit inside Get-CachedApiJson costs nothing,
-    # but we cannot see from here whether it hit, so pace on the pre-check instead.
-    $cacheDir  = [string](Get-ObjectPropertyValue $cfg 'CachePath' 'C:\ProgramData\PatchManager\Cache')
-    $cacheFile = Join-Path $cacheDir "nvd_$($CveId -replace '[^A-Za-z0-9._-]', '_').json"
-    $cacheHours = [double](Get-ObjectPropertyValue $cfg 'CacheHours' 720)
-    $willFetch = -not (Test-Path $cacheFile) -or
-                 (((Get-Date) - (Get-Item $cacheFile -EA SilentlyContinue).LastWriteTime).TotalHours -ge $cacheHours)
-    if ($willFetch -and $script:NVDLastRequest -ne [datetime]::MinValue) {
-        $delayMs = [int](Get-ObjectPropertyValue $cfg 'RequestDelayMs' 6500)
-        $waited  = ((Get-Date) - $script:NVDLastRequest).TotalMilliseconds
-        if ($waited -lt $delayMs) { Start-Sleep -Milliseconds ([int]($delayMs - $waited)) }
-    }
-
-    $resp = Get-CachedApiJson -Uri "$base`?cveId=$CveId" -CacheKey "nvd_$CveId" -Cfg $cfg -Headers $hdrs -Label 'NVD'
-    if ($willFetch) {
-        $script:NVDLastRequest = Get-Date
-        $script:NVDLookupCount++
-    }
+    $publicBase = [string](Get-ObjectPropertyValue $cfg 'ApiBaseUrl' 'https://services.nvd.nist.gov/rest/json/cves/2.0')
+    $req = Invoke-NVDPacedRequest -NvdCfg $cfg -Endpoint 'cves' -PublicBaseUrl $publicBase `
+               -Query "cveId=$CveId" -CacheKey "nvd_$CveId" `
+               -CacheHours ([double](Get-ObjectPropertyValue $cfg 'CacheHours' 720))
+    $resp = $req.Data
+    if ($req.Fetched) { $script:NVDLookupCount++ }
 
     $cpeMatches = $null
     if ($null -ne $resp) {
@@ -2011,6 +2084,286 @@ function Find-KEVCandidates {
     Write-Log "CISA KEV ($scope): $($kevMatchList.Count) name match(es) before version resolution." -Level $(if ($kevMatchList.Count -gt 0) { 'INFO' } else { 'DEBUG' })
 
     return $kevMatchList
+}
+
+#endregion
+
+#region -- NVD Inventory Vulnerability Scan (report-only) -----------------------------
+# Reverse of the KEV path: instead of confirming a known-exploited CVE against a version,
+# this asks NVD "what High/Critical CVEs affect this installed product at this version?"
+# - surfacing vulnerabilities that are NOT necessarily in the CISA KEV catalogue. It is
+# report-only (a generic CVE is not confirmed-exploited, so it never bypasses the
+# maintenance window) and may softly prioritise a matched product's available update.
+
+function ConvertTo-CpeVersionString {
+    # A display version usable as a CPE version component, or '' when it isn't clean
+    # dotted-numeric (e.g. '1.2 (build 3)', '2024-beta'). '' signals the caller to fall
+    # back to a product-level query + local range filtering. Pure - unit-testable.
+    param([string]$Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return '' }
+    $v = $Version.Trim()
+    if ($v -match '^[vV]\d') { $v = $v.Substring(1) }
+    $m = [regex]::Match($v, '^\d+(\.\d+)*')
+    if (-not $m.Success) { return '' }
+    # Require the WHOLE trimmed string to be that clean numeric run - a trailing suffix
+    # means the version is not a reliable CPE version.
+    if ($m.Value -ne $v) { return '' }
+    if ($null -eq (ConvertTo-VersionParts $m.Value)) { return '' }
+    return $m.Value
+}
+
+function Resolve-BestCpeMatch {
+    # Picks the canonical application CPE (cpe:2.3:a:vendor:product, version wildcarded)
+    # for an installed app from an NVD /cpes/2.0 keyword-search response, or $null when
+    # there is no confident single match. The dictionary returns one CPE per version, so
+    # we collapse to distinct part:vendor:product and score by token overlap of product
+    # (vs Name) and vendor (vs Publisher). Ambiguous (a tie between distinct products) ->
+    # $null: never guess, mirroring the KEV 'Unknown' philosophy. Pure - unit-testable.
+    param($CpesResponse, [string]$Name, [string]$Publisher)
+    if ($null -eq $CpesResponse) { return $null }
+
+    $nameLc = ([string]$Name).ToLowerInvariant()
+    $pubLc  = ([string]$Publisher).ToLowerInvariant()
+
+    $byProduct = @{}   # "vendor:product" -> [pscustomobject]{ Vendor; Product; Score }
+    foreach ($p in @(Get-ObjectPropertyValue $CpesResponse 'products' @())) {
+        $cpeNode = Get-ObjectPropertyValue $p 'cpe' $null
+        if ($null -eq $cpeNode) { continue }
+        if ([bool](Get-ObjectPropertyValue $cpeNode 'deprecated' $false)) { continue }
+        $cpe = ConvertFrom-CpeCriteria ([string](Get-ObjectPropertyValue $cpeNode 'cpeName' ''))
+        if ($null -eq $cpe -or $cpe.Part -ne 'a') { continue }          # applications only
+        $vendor = [string]$cpe.Vendor; $product = [string]$cpe.Product
+        if ($vendor -in @('*', '-', '') -or $product -in @('*', '-', '')) { continue }
+
+        $key = "$vendor`:$product"
+        if ($byProduct.ContainsKey($key)) { continue }
+
+        # Product match (the gate): every non-trivial product sub-token is a word in Name.
+        $prodWords = @(($product -split '_') | Where-Object { $_.Length -ge 3 })
+        if ($prodWords.Count -eq 0) { $prodWords = @($product) }
+        $productMatch = @($prodWords | Where-Object { $nameLc -match "\b$([regex]::Escape($_))\b" }).Count -eq $prodWords.Count
+        if (-not $productMatch) { continue }
+
+        # Vendor match (tie-breaker): vendor token appears in Publisher or Name.
+        $vendorMatch = ($pubLc  -match "\b$([regex]::Escape($vendor))\b") -or
+                       ($nameLc -match "\b$([regex]::Escape($vendor))\b")
+
+        $byProduct[$key] = [pscustomobject]@{
+            Vendor = $vendor; Product = $product; Score = (2 + $(if ($vendorMatch) { 1 } else { 0 }))
+        }
+    }
+
+    $candidates = @($byProduct.Values)
+    if ($candidates.Count -eq 0) { return $null }
+    $top = ($candidates | Sort-Object Score -Descending | Select-Object -First 1).Score
+    $winners = @($candidates | Where-Object { $_.Score -eq $top })
+    if ($winners.Count -ne 1) { return $null }     # ambiguous -> no guess
+    $w = $winners[0]
+    return "cpe:2.3:a:$($w.Vendor):$($w.Product):*:*:*:*:*:*:*:*"
+}
+
+function Get-CvssFromCve {
+    # Highest-priority CVSS v3 score for a CVE node (V3.1 preferred, then V3.0), or $null
+    # when no v3 metric is present. Returns { Score; Severity; Vector }. Pure.
+    param($CveNode)
+    $metrics = Get-ObjectPropertyValue $CveNode 'metrics' $null
+    if ($null -eq $metrics) { return $null }
+    foreach ($key in @('cvssMetricV31', 'cvssMetricV30')) {
+        $arr = @(Get-ObjectPropertyValue $metrics $key @())
+        if ($arr.Count -eq 0) { continue }
+        $data = Get-ObjectPropertyValue $arr[0] 'cvssData' $null
+        if ($null -eq $data) { continue }
+        return [pscustomobject]@{
+            Score    = [double](Get-ObjectPropertyValue $data 'baseScore' 0)
+            Severity = ([string](Get-ObjectPropertyValue $data 'baseSeverity' '')).ToUpperInvariant()
+            Vector   = [string](Get-ObjectPropertyValue $data 'vectorString' '')
+        }
+    }
+    return $null
+}
+
+function Get-CvssSeverityRank {
+    # Orders CVSS severities so 'highest' is comparable. Pure.
+    param([string]$Severity)
+    switch (([string]$Severity).ToUpperInvariant()) {
+        'CRITICAL' { 4 } 'HIGH' { 3 } 'MEDIUM' { 2 } 'LOW' { 1 } default { 0 }
+    }
+}
+
+function New-NVDVulnFinding {
+    # One grouped finding per installed product: highest severity/score, CVE count, and
+    # the CVE list. Report-only. Pure - unit-testable. $Cves items:
+    # { CVE, CvssScore, CvssSeverity, Description, Published }.
+    param(
+        [string]$Item,
+        [string]$InstalledVersion,
+        [string]$Cpe,
+        [array]$Cves
+    )
+    $list = @($Cves | Where-Object { $_ })
+    $ranked = @($list | Sort-Object @{ Expression = { Get-CvssSeverityRank $_.CvssSeverity } }, `
+                                     @{ Expression = { [double]$_.CvssScore } } -Descending)
+    $topSeverity = if ($ranked.Count -gt 0) { [string]$ranked[0].CvssSeverity } else { '' }
+    $topScore    = if ($ranked.Count -gt 0) { [double]$ranked[0].CvssScore } else { 0 }
+    $criticals   = @($list | Where-Object { (Get-CvssSeverityRank $_.CvssSeverity) -ge 4 }).Count
+    $highs       = @($list | Where-Object { (Get-CvssSeverityRank $_.CvssSeverity) -eq 3 }).Count
+
+    return [PSCustomObject]@{
+        Item             = $Item
+        InstalledVersion = $InstalledVersion
+        Cpe              = $Cpe
+        Severity         = $topSeverity
+        MaxCvss          = $topScore
+        CveCount         = $list.Count
+        CriticalCount    = $criticals
+        HighCount        = $highs
+        Cves             = $ranked
+        Detail           = "$($list.Count) High/Critical CVE(s) affect $Item $InstalledVersion (highest $topSeverity $topScore)."
+        Timestamp        = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    }
+}
+
+function Get-NVDCpeForApp {
+    # Maps an installed app to a canonical CPE via NVD's CPE dictionary. Memoised per run,
+    # cached on disk, charges the inventory-scan budget on a real fetch. $null when no
+    # confident match. Network.
+    param([string]$Name, [string]$Publisher, $NvdCfg, $ScanCfg)
+    if ($script:NVDCpeByName.ContainsKey($Name)) { return $script:NVDCpeByName[$Name] }
+
+    $maxLookups = [int](Get-ObjectPropertyValue $ScanCfg 'MaxLookupsPerRun' 120)
+    if ($script:NVDInventoryLookupCount -ge $maxLookups) {
+        Write-Log "NVD inventory: lookup budget ($maxLookups) exhausted; '$Name' unmapped." -Level WARN
+        return $null
+    }
+
+    $publicBase = [string](Get-ObjectPropertyValue $ScanCfg 'CpeApiBaseUrl' 'https://services.nvd.nist.gov/rest/json/cpes/2.0')
+    $req = Invoke-NVDPacedRequest -NvdCfg $NvdCfg -Endpoint 'cpes' -PublicBaseUrl $publicBase `
+               -Query "keywordSearch=$([uri]::EscapeDataString($Name))&resultsPerPage=50" `
+               -CacheKey "nvdcpe_$($Name -replace '[^A-Za-z0-9._-]', '_')" `
+               -CacheHours ([double](Get-ObjectPropertyValue $ScanCfg 'CpeCacheHours' 720))
+    if ($req.Fetched) { $script:NVDInventoryLookupCount++ }
+
+    $cpe = Resolve-BestCpeMatch -CpesResponse $req.Data -Name $Name -Publisher $Publisher
+    $script:NVDCpeByName[$Name] = $cpe
+    return $cpe
+}
+
+function Get-NVDVulnerabilitiesForCpe {
+    # High/Critical CVEs affecting a CPE at a specific version, using NVD's server-side
+    # isVulnerable + cvssV3Severity filtering. Returns an array (possibly empty). Network;
+    # charges the inventory-scan budget. $CpeVersion must already be CPE-clean.
+    param([string]$Cpe, [string]$CpeVersion, $NvdCfg, $ScanCfg)
+
+    $maxLookups = [int](Get-ObjectPropertyValue $ScanCfg 'MaxLookupsPerRun' 120)
+    $minSev = ([string](Get-ObjectPropertyValue $ScanCfg 'MinCvssSeverity' 'HIGH')).ToUpperInvariant()
+    # HIGH must query HIGH and CRITICAL separately (NVD's cvssV3Severity is not "and above").
+    $severities = switch ($minSev) {
+        'CRITICAL' { @('CRITICAL') }
+        'MEDIUM'   { @('MEDIUM', 'HIGH', 'CRITICAL') }
+        default    { @('HIGH', 'CRITICAL') }
+    }
+
+    $parts = $Cpe.Split(':'); $parts[5] = $CpeVersion; $exactCpe = ($parts -join ':')
+    $publicBase   = [string](Get-ObjectPropertyValue $NvdCfg 'ApiBaseUrl' 'https://services.nvd.nist.gov/rest/json/cves/2.0')
+    $cveCacheHours = [double](Get-ObjectPropertyValue $ScanCfg 'CveCacheHours' 48)
+
+    $collected = [System.Collections.Generic.List[pscustomobject]]::new()
+    $seenCve   = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($sev in $severities) {
+        if ($script:NVDInventoryLookupCount -ge $maxLookups) {
+            Write-Log "NVD inventory: budget exhausted mid-product ($exactCpe)." -Level WARN; break
+        }
+        $req = Invoke-NVDPacedRequest -NvdCfg $NvdCfg -Endpoint 'cves' -PublicBaseUrl $publicBase `
+                   -Query "cpeName=$([uri]::EscapeDataString($exactCpe))&isVulnerable&cvssV3Severity=$sev&resultsPerPage=200" `
+                   -CacheKey "nvdvuln_$(($exactCpe -replace '[^A-Za-z0-9._-]', '_'))_$sev" `
+                   -CacheHours $cveCacheHours
+        if ($req.Fetched) { $script:NVDInventoryLookupCount++ }
+        if ($null -eq $req.Data) { continue }
+
+        foreach ($v in @(Get-ObjectPropertyValue $req.Data 'vulnerabilities' @())) {
+            $cve = Get-ObjectPropertyValue $v 'cve' $null
+            if ($null -eq $cve) { continue }
+            $id = [string](Get-ObjectPropertyValue $cve 'id' '')
+            if (-not $id -or -not $seenCve.Add($id)) { continue }
+            $cvss = Get-CvssFromCve $cve
+            if ($null -eq $cvss) { continue }
+            if ((Get-CvssSeverityRank $cvss.Severity) -lt (Get-CvssSeverityRank $minSev)) { continue }
+
+            $desc = ''
+            foreach ($dn in @(Get-ObjectPropertyValue $cve 'descriptions' @())) {
+                if ([string](Get-ObjectPropertyValue $dn 'lang' '') -eq 'en') {
+                    $desc = [string](Get-ObjectPropertyValue $dn 'value' ''); break
+                }
+            }
+            $pub = [string](Get-ObjectPropertyValue $cve 'published' '')
+            if ($pub.Length -ge 10) { $pub = $pub.Substring(0, 10) }
+
+            $collected.Add([pscustomobject]@{
+                CVE          = $id
+                CvssScore    = $cvss.Score
+                CvssSeverity = $cvss.Severity
+                Vector       = $cvss.Vector
+                Description  = $desc
+                Published    = $pub
+            })
+        }
+    }
+    return @($collected)
+}
+
+function Invoke-NVDInventoryScan {
+    # Report-only orchestrator. Maps installed software to NVD CPEs and returns grouped
+    # High/Critical findings. Never throws - a network/parse hiccup yields fewer findings,
+    # never a failed run (like Invoke-EndOfLifeReport).
+    $scanCfg = Get-ObjectPropertyValue $script:CFG 'NVDInventoryScan' $null
+    if ($null -eq $scanCfg -or -not [bool](Get-ObjectPropertyValue $scanCfg 'Enabled' $false)) { return @() }
+    $nvdCfg = Get-ObjectPropertyValue $script:CFG 'NVD' $null
+    if ($null -eq $nvdCfg -or -not [bool](Get-ObjectPropertyValue $nvdCfg 'Enabled' $false)) {
+        Write-Log 'NVD inventory scan: the NVD block is disabled; skipping.' -Level DEBUG
+        return @()
+    }
+
+    $dataSource = [string](Get-ObjectPropertyValue $nvdCfg 'DataSource' 'PublicApi')
+    $hasKey     = -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue $nvdCfg 'ApiKey' ''))
+    if ($dataSource -ne 'Mirror' -and -not $hasKey) {
+        Write-Log 'NVD inventory scan: no ApiKey and DataSource=PublicApi - the public rate limit (~5 req/30s) means a full scan spans several runs. Consider an ApiKey or an internal Mirror.' -Level WARN
+    }
+
+    $findings    = [System.Collections.Generic.List[pscustomobject]]::new()
+    $excludes    = @(Get-ObjectPropertyValue $scanCfg 'ExcludeNamePatterns' @())
+    $maxProducts = [int](Get-ObjectPropertyValue $scanCfg 'MaxProductsPerRun' 40)
+    $seenCpe     = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $productsChecked = 0
+
+    # Reuse the inventory Invoke-Main already built; standalone calls enumerate fresh.
+    $apps = if (@($script:Inventory).Count -gt 0) { @($script:Inventory) } else { @(Get-SoftwareInventory) }
+    foreach ($app in $apps) {
+        if ($productsChecked -ge $maxProducts) { break }
+        $name = [string]$app.Name
+        $ver  = [string]$app.Version
+        if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($ver)) { continue }
+        if (@($excludes | Where-Object { $_ -and ($name -match $_) }).Count -gt 0) { continue }
+
+        # A version that isn't CPE-comparable can't be range-checked either way; skip it
+        # rather than spend budget on a query we can't trust.
+        $cpeVer = ConvertTo-CpeVersionString $ver
+        if (-not $cpeVer) { continue }
+
+        try {
+            $cpe = Get-NVDCpeForApp -Name $name -Publisher ([string]$app.Publisher) -NvdCfg $nvdCfg -ScanCfg $scanCfg
+            if (-not $cpe) { continue }
+            if (-not $seenCpe.Add($cpe)) { continue }   # one finding per product
+            $productsChecked++
+
+            $cves = @(Get-NVDVulnerabilitiesForCpe -Cpe $cpe -CpeVersion $cpeVer -NvdCfg $nvdCfg -ScanCfg $scanCfg)
+            if ($cves.Count -eq 0) { continue }
+            $findings.Add((New-NVDVulnFinding -Item $name -InstalledVersion $ver -Cpe $cpe -Cves $cves))
+        } catch { Write-Log "NVD inventory scan: '$name' failed: $_" -Level DEBUG }
+    }
+
+    $crit = @($findings | Where-Object { $_.CriticalCount -gt 0 }).Count
+    Write-Log "NVD inventory scan: $($findings.Count) product(s) with High/Critical CVEs ($crit with Critical); $script:NVDInventoryLookupCount NVD call(s)." -Level $(if ($findings.Count -gt 0) { 'WARN' } else { 'INFO' })
+    return @($findings)
 }
 
 #endregion
@@ -2581,7 +2934,7 @@ function Invoke-PackageUpdate {
 }
 
 function Invoke-AllUpdates {
-    param([array]$Upgrades, [array]$KEVMatches)
+    param([array]$Upgrades, [array]$KEVMatches, [array]$NVDFindings = @())
 
     if ($Upgrades.Count -eq 0) {
         Write-Log 'No eligible packages to update.' -Level INFO
@@ -2593,16 +2946,37 @@ function Invoke-AllUpdates {
     $confirmedNames = @($KEVMatches | Where-Object { $_.ExposureState -eq 'Affected' } | ForEach-Object { $_.InstalledApp })
     $candidateNames = @($KEVMatches | Where-Object { $_.ExposureState -ne 'NotAffected' } | ForEach-Object { $_.InstalledApp })
 
+    # Soft tier between KEV candidates and normal: products with an NVD High/Critical
+    # finding this run. Report-only otherwise - this only reorders, never bypasses the
+    # window. Match on the CPE product token against the upgrade Name/PackageId (more
+    # reliable than display-name equality across winget vs registry). Opt-out via config.
+    $nvdPrioritise = [bool](Get-ObjectPropertyValue (Get-ObjectPropertyValue $script:CFG 'NVDInventoryScan' @{}) 'PrioritiseUpdates' $false)
+    $nvdTokens = @()
+    if ($nvdPrioritise) {
+        $nvdTokens = @($NVDFindings | ForEach-Object {
+            $c = ConvertFrom-CpeCriteria $_.Cpe
+            if ($c) { ($c.Product -split '_') }
+        } | Where-Object { $_.Length -ge 3 } | Select-Object -Unique)
+    }
+    $isNvdMatch = {
+        param($u)
+        if ($nvdTokens.Count -eq 0) { return $false }
+        $hay = "$($u.Name) $(Get-ObjectPropertyValue $u 'PackageId' '')"
+        @($nvdTokens | Where-Object { Test-WordMatch $hay $_ }).Count -gt 0
+    }
+
     $prioritised = @(
         $Upgrades | Where-Object { $_.Name -in $confirmedNames }
         $Upgrades | Where-Object { $_.Name -notin $confirmedNames -and $_.Name -in $candidateNames }
-        $Upgrades | Where-Object { $_.Name -notin $candidateNames }
+        $Upgrades | Where-Object { $_.Name -notin $candidateNames -and (& $isNvdMatch $_) }
+        $Upgrades | Where-Object { $_.Name -notin $candidateNames -and -not (& $isNvdMatch $_) }
     )
 
     $max = $script:CFG.WinGet.MaxUpdatesPerRun
     if ($max -gt 0) { $prioritised = $prioritised | Select-Object -First $max }
 
-    Write-Log "Applying $($prioritised.Count) update(s). $($confirmedNames.Count) confirmed KEV exposure(s) prioritised." -Level INFO
+    $nvdBumped = @($Upgrades | Where-Object { $_.Name -notin $candidateNames -and (& $isNvdMatch $_) }).Count
+    Write-Log "Applying $($prioritised.Count) update(s). $($confirmedNames.Count) confirmed KEV, $nvdBumped NVD-flagged prioritised." -Level INFO
 
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
@@ -4811,6 +5185,7 @@ function New-ComplianceReport {
             InventoryKEVMatches = @($script:InventoryKEVMatches)
             StalenessFindings = @($script:StalenessFindings)
             EndOfLifeFindings = @($script:EndOfLifeFindings)
+            NVDVulnFindings = @($script:NVDVulnFindings)
             SLABreaches = $SLABreaches
         } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8
         Write-Log "JSON report: $jsonPath" -Level INFO
@@ -4851,6 +5226,25 @@ function New-ComplianceReport {
                 Write-Log "End-of-life CSV generation failed: $_" -Level WARN
             }
         }
+        if (@($script:NVDVulnFindings).Count -gt 0) {
+            try {
+                $nvdCsv = Join-Path $rptDir "$base.nvd.csv"
+                # One row per CVE (flattened) - the JSON keeps the grouped structure.
+                @($script:NVDVulnFindings) | ForEach-Object {
+                    $f = $_
+                    foreach ($c in @($f.Cves)) {
+                        [PSCustomObject]@{
+                            Item = $f.Item; InstalledVersion = $f.InstalledVersion; Cpe = $f.Cpe
+                            CVE = $c.CVE; CvssSeverity = $c.CvssSeverity; CvssScore = $c.CvssScore
+                            Published = $c.Published; Description = $c.Description; Timestamp = $f.Timestamp
+                        }
+                    }
+                } | Export-Csv -Path $nvdCsv -NoTypeInformation -Encoding UTF8
+                Write-Log "NVD vulnerabilities CSV: $nvdCsv" -Level INFO
+            } catch {
+                Write-Log "NVD CSV generation failed: $_" -Level WARN
+            }
+        }
     }
 
     if ($script:CFG.Reporting.GenerateHTML) {
@@ -4860,7 +5254,8 @@ function New-ComplianceReport {
                            -SLABreaches $SLABreaches -Elapsed $elapsed -Metrics $Metrics `
                            -InventoryKEVMatches @($script:InventoryKEVMatches) `
                            -StalenessFindings @($script:StalenessFindings) `
-                           -EndOfLifeFindings @($script:EndOfLifeFindings) |
+                           -EndOfLifeFindings @($script:EndOfLifeFindings) `
+                           -NVDVulnFindings @($script:NVDVulnFindings) |
                 Set-Content $htmlPath -Encoding UTF8 -EA Stop
             Write-Log "HTML report: $htmlPath" -Level INFO
         } catch {
@@ -4890,7 +5285,7 @@ function New-ComplianceReport {
 
 
 function New-HTMLReport {
-    param([array]$Results, [array]$KEVMatches, [array]$SLABreaches, [double]$Elapsed, [object]$Metrics, [array]$InventoryKEVMatches = @(), [array]$StalenessFindings = @(), [array]$EndOfLifeFindings = @())
+    param([array]$Results, [array]$KEVMatches, [array]$SLABreaches, [double]$Elapsed, [object]$Metrics, [array]$InventoryKEVMatches = @(), [array]$StalenessFindings = @(), [array]$EndOfLifeFindings = @(), [array]$NVDVulnFindings = @())
 
     function ConvertTo-ReportHtml {
         param($Value)
@@ -5152,6 +5547,27 @@ function New-HTMLReport {
         "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>End-of-life</p><h2>Support-lifecycle exposure</h2></div><span class='count $countTone'>$($eolReview.Count)</span></div><p class='note'>Authoritative end-of-support data from endoflife.date. Report-only - out-of-support software is fully patchable yet no longer receives fixes, so plan a major-version upgrade. <strong>Behind latest</strong> means the release line is still supported but the installed build is behind its newest patch release. $($eolReview.Count) of $($EndOfLifeFindings.Count) finding(s) need review.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Cycle</th><th>Status</th><th>EOL date</th><th>Latest supported</th><th>Detail</th></tr></thead><tbody>$eolRows</tbody></table></div></section>"
     } else { '' }
 
+    $nvdCriticalProducts = @($NVDVulnFindings | Where-Object { $_.CriticalCount -gt 0 }).Count
+    $nvdRows = ($NVDVulnFindings |
+        Sort-Object @{ Expression = { Get-CvssSeverityRank $_.Severity }; Descending = $true }, `
+                    @{ Expression = { [double]$_.MaxCvss }; Descending = $true } | ForEach-Object {
+        $f = $_
+        $sevHtml = if ((Get-CvssSeverityRank $f.Severity) -ge 4) { "<span class='status failed'>Critical</span>" } else { "<span class='status skipped'>High</span>" }
+        $cveList = (@($f.Cves | Select-Object -First 15 | ForEach-Object {
+            $id = ConvertTo-ReportHtml $_.CVE
+            "<div><a href='https://nvd.nist.gov/vuln/detail/$id' target='_blank' rel='noopener' class='mono'>$id</a> <span class='mono'>$(ConvertTo-ReportHtml $_.CvssSeverity) $(ConvertTo-ReportHtml $_.CvssScore)</span> - $(ConvertTo-ReportHtml $_.Description)</div>"
+        }) -join '')
+        $more = if ($f.CveCount -gt 15) { "<div class='note'>+ $($f.CveCount - 15) more (see JSON/CSV export)</div>" } else { '' }
+        $rowCls = if ((Get-CvssSeverityRank $f.Severity) -ge 4) { 'breach' } else { '' }
+        "<tr class='$rowCls'><td><strong>$(ConvertTo-ReportHtml $f.Item)</strong></td><td class='mono'>$(ConvertTo-ReportHtml $f.InstalledVersion)</td><td>$sevHtml</td><td class='mono'>$($f.CveCount)</td><td class='details'><details><summary>$($f.CriticalCount) Critical / $($f.HighCount) High</summary><div>$cveList$more</div></details></td></tr>"
+    }) -join "`n"
+    $nvdSection = if ($NVDVulnFindings.Count -gt 0) {
+        $tone = if ($nvdCriticalProducts -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($nvdCriticalProducts -gt 0) { 'danger' } else { '' }
+        $noteClass = if ($nvdCriticalProducts -gt 0) { 'note danger-text' } else { 'note' }
+        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>Known vulnerabilities (NVD)</p><h2>Installed software with High/Critical CVEs</h2></div><span class='count $countTone'>$($NVDVulnFindings.Count)</span></div><p class='$noteClass'>$($NVDVulnFindings.Count) installed product(s) match a High/Critical CVE in the NVD database at their installed version ($nvdCriticalProducts with a Critical). Report-only, and broader than the CISA KEV catalogue - a listed CVE is known and version-matched, but not necessarily <em>actively exploited</em> (that is what the KEV sections above flag). Plan an update; expand a row for the CVE list.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Top severity</th><th>CVEs</th><th>Detail</th></tr></thead><tbody>$nvdRows</tbody></table></div></section>"
+    } else { '' }
+
     $kevSection = if ($KEVMatches.Count -gt 0) {
         $tone      = if ($kevCount -gt 0) { 'danger-panel' } else { '' }
         $countTone = if ($kevCount -gt 0) { 'danger' } else { 'good' }
@@ -5280,6 +5696,7 @@ function New-HTMLReport {
       <section class="panel reveal" id="updates"><div class="section-head"><div><p class="eyebrow">Actionable package updates</p><h2>$($actionableRows.Count) action row(s)</h2></div><span class="count">$(ConvertTo-ReportHtml $Results.Count) total</span></div>$tableSection<div class="result-count" id="resultCount"></div></section>
       <div id="security" class="two-col reveal">$kevSection$slaSection</div>
       <div class="reveal">$invKevSection</div>
+      <div class="reveal">$nvdSection</div>
       <div class="reveal">$stalenessSection</div>
       <div class="reveal">$eolSection</div>
       <div class="audit-divider" id="auditDivider"><span>Audit detail</span><button type="button" class="audit-toggle" id="auditToggle" hidden aria-expanded="true" aria-controls="auditDetail">Hide audit detail</button></div>
@@ -5741,6 +6158,20 @@ function Invoke-Main {
             -Message "SLA BREACH on $($script:HOSTNAME): $($slaBreaches.Count) update(s) past the $($script:CFG.SLA.Critical)-day deadline. Packages: $(($slaBreaches | ForEach-Object { $_.PackageName }) -join ', ')"
     }
 
+    #-- Report-only NVD inventory vulnerability scan --------------------------
+    # Placed after the maintenance-window gate (so an out-of-window exit doesn't spend
+    # the scan budget) and before patching (so it can softly prioritise the queue).
+    # Deferred on a real emergency patch run: KEV items already lead the queue and speed
+    # matters - it resumes next normal run. Report-only: never bypasses the window.
+    if ($script:EmergencyPatch -and -not $ReportOnly) {
+        Write-Log 'NVD inventory scan: deferred (emergency patch run).' -Level INFO
+        $script:NVDVulnFindings = @()
+    } else {
+        $script:NVDVulnFindings = @(Invoke-NVDInventoryScan)
+    }
+    $script:Stats.NvdCritical = @($script:NVDVulnFindings | Where-Object { $_.CriticalCount -gt 0 }).Count
+    $script:Stats.NvdHigh     = @($script:NVDVulnFindings | Where-Object { $_.CriticalCount -eq 0 -and $_.HighCount -gt 0 }).Count
+
     #-- Patching --------------------------------------------------------------
     $updateResults = @($script:SourceCheckResults) + @($script:SkippedUpgradeResults)
 
@@ -5750,7 +6181,7 @@ function Invoke-Main {
         $updateResults = @($script:SourceCheckResults) +
                          @($script:SkippedUpgradeResults) +
                          @(Invoke-WindowsUpdateProvider) +
-                         @(Invoke-AllUpdates -Upgrades $filteredUpgrades -KEVMatches $kevMatches) +
+                         @(Invoke-AllUpdates -Upgrades $filteredUpgrades -KEVMatches $kevMatches -NVDFindings $script:NVDVulnFindings) +
                          @(Invoke-Microsoft365Provider) +
                          @(Invoke-BrowserProvider -Browser Chrome -WinGetCandidates $filteredUpgrades) +
                          @(Invoke-BrowserProvider -Browser Edge -WinGetCandidates $filteredUpgrades) +

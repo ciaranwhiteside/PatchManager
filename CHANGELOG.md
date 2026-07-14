@@ -4,6 +4,47 @@ All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **NVD inventory vulnerability scan** (`NVDInventoryScan`, opt-in). The reverse
+  of the KEV lookup: instead of confirming a known-exploited CVE against a
+  version, it maps **all installed software** to NVD CPEs and lists the
+  High/Critical CVEs the installed version is affected by — surfacing
+  vulnerabilities that are *not* necessarily in the CISA KEV catalogue.
+
+  - **Report-only.** A generic NVD CVE is known and version-matched but not
+    confirmed *actively exploited* (that is what KEV means), so it never sets the
+    emergency flag or bypasses the maintenance window. It runs after the
+    maintenance-window gate and before patching, and is deferred entirely on an
+    emergency run so it can never delay a KEV patch.
+  - **Soft queue priority** (`PrioritiseUpdates`): a matched product that has an
+    available update this run is patched below confirmed-KEV but above normal.
+  - **Dynamic CPE mapping** via NVD's CPE dictionary, scored by product/vendor
+    token overlap; an ambiguous match resolves to *no match* rather than a guess
+    (mirroring the KEV `Unknown` philosophy). Server-side `isVulnerable` +
+    `cvssV3Severity` filtering keeps responses small and version-accurate.
+  - Budgeted (`MaxProductsPerRun` / `MaxLookupsPerRun`), cached (name→CPE for 30
+    days, CVEs for 48 h), and degrades gracefully — it resumes across runs.
+  - New report surfaces: an HTML "Known vulnerabilities (NVD)" section, a
+    `NVDVulnFindings` JSON key, a `*.nvd.csv` export, `Statistics.NvdHigh` /
+    `NvdCritical`, and per-host `NVD` columns in the fleet dashboard (Critical
+    drives the attention posture).
+
+- **NVD data source abstraction** (`NVD.DataSource` / `NVD.MirrorBaseUrl`),
+  shared by the KEV lookup and the inventory scan. `Mirror` points at an internal
+  endpoint speaking the NVD 2.0 REST shape — **unthrottled, keyless, and works
+  air-gapped** — instead of every host hitting the public NVD API. The right
+  choice for estates. Scoped to NVD-2.0-compatible endpoints; third-party DB
+  formats (Trivy/Grype/OSV) and filesystem datasets are out of scope for now.
+
+### Changed
+
+- The NVD fetch/pacing core is extracted into a shared `Invoke-NVDPacedRequest`,
+  so the KEV path and the inventory scan honour **one** global rate-limit clock
+  and the `DataSource` setting together.
+
 ## [1.5.1] - 2026-07-08
 
 ### Fixed

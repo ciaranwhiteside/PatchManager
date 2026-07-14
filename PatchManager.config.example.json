@@ -226,13 +226,46 @@
     "emergency, and never presented as a confirmed exposure."
   ],
   "NVD": {
+    "_comment_datasource": "DataSource 'PublicApi' hits nvd.nist.gov (rate-limited; ApiKey raises 5->50 req/30s). 'Mirror' points MirrorBaseUrl at an internal endpoint speaking the same NVD 2.0 REST shape (/cves/2.0, /cpes/2.0) - unthrottled, keyless, works air-gapped. Shared by the KEV lookup and the inventory scan.",
     "Enabled": true,
+    "DataSource": "PublicApi",
     "ApiBaseUrl": "https://services.nvd.nist.gov/rest/json/cves/2.0",
+    "MirrorBaseUrl": "",
     "ApiKey": "",
     "CacheHours": 720,
     "CachePath": "C:\\ProgramData\\PatchManager\\Cache",
     "Offline": false,
     "MaxLookupsPerRun": 25,
     "RequestDelayMs": 6500
+  },
+
+  "_NVDInventoryScan": [
+    "Report-only inventory vulnerability scan. Maps installed software to NVD CPEs and",
+    "surfaces High/Critical CVEs the installed version is affected by - broader than the",
+    "CISA KEV catalogue (KEV = actively exploited; this = known + version-matched). It",
+    "NEVER bypasses the maintenance window; it only reports and, if PrioritiseUpdates is",
+    "on, bumps a matched product that has an available update ahead in the patch queue.",
+    "Off by default: it is API-bound and slow, and strongly benefits from an NVD ApiKey",
+    "or an internal Mirror (a full inventory scan spans many runs on the unkeyed public",
+    "rate limit). Credentials, pacing, and DataSource are shared from the NVD block.",
+    "MinCvssSeverity HIGH covers HIGH+CRITICAL; CRITICAL narrows to Critical only."
+  ],
+  "NVDInventoryScan": {
+    "Enabled": false,
+    "CpeApiBaseUrl": "https://services.nvd.nist.gov/rest/json/cpes/2.0",
+    "MinCvssSeverity": "HIGH",
+    "MaxProductsPerRun": 40,
+    "MaxLookupsPerRun": 120,
+    "CpeCacheHours": 720,
+    "CveCacheHours": 48,
+    "PrioritiseUpdates": true,
+    "ExcludeNamePatterns": [
+      "Visual C\\+\\+",
+      "redistributable",
+      "\\.NET (Runtime|Host|Framework|SDK|Targeting Pack|Windows Desktop Runtime)",
+      "Windows (SDK|Driver|Software Development Kit)",
+      "^KB\\d",
+      "Update for (Microsoft|Windows)"
+    ]
   }
 }
