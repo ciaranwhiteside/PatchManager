@@ -371,6 +371,8 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorU
 # streams on PS 5.1, which made every choco upgrade look Failed and choco discovery
 # look "failed to run". Invoke-CapturedProcess must return the real exit code.
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-SuccessfulProcessOutput')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserUpdaterArguments')
 $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
 if (Test-Path $cmdExe) {
     $cpZero = Invoke-CapturedProcess -FilePath $cmdExe -Arguments @('/c', 'exit 0') -TimeoutSeconds 30
@@ -385,6 +387,20 @@ if (Test-Path $cmdExe) {
 }
 $cpMissing = Invoke-CapturedProcess -FilePath 'C:\definitely\missing\nope.exe' -Arguments @('x') -TimeoutSeconds 5
 Assert-True ($null -eq $cpMissing.ExitCode -and $cpMissing.Output -match 'Exception') 'Invoke-CapturedProcess must report a launch failure as $null exit code with an Exception marker.'
+
+# A failed runtime probe must not leak stderr into the report as a version.
+Assert-True ((Get-SuccessfulProcessOutput ([pscustomobject]@{ ExitCode=0; TimedOut=$false; Output="  9.0.100`r`n" })) -eq '9.0.100') 'Successful process output should be normalised and returned.'
+Assert-True ((Get-SuccessfulProcessOutput ([pscustomobject]@{ ExitCode=-2147450725; TimedOut=$false; Output='No .NET SDKs were found.' })) -eq '') 'Failed process output must not be reported as a runtime version.'
+Assert-True ((Get-SuccessfulProcessOutput ([pscustomobject]@{ ExitCode=$null; TimedOut=$true; Output='Timed out.' })) -eq '') 'Timed-out process output must not be reported as a runtime version.'
+
+# Google Updater rejected the legacy /ua arguments with exit 75009. Machine and
+# per-user installs need the current Chromium updater command, while Edge keeps /ua.
+$chromeMachineArgs = @(Get-BrowserUpdaterArguments -Browser Chrome -UpdaterPath (Join-Path ${env:ProgramFiles(x86)} 'Google\Update\GoogleUpdate.exe'))
+$chromeUserArgs = @(Get-BrowserUpdaterArguments -Browser Chrome -UpdaterPath (Join-Path $env:LOCALAPPDATA 'Google\Update\GoogleUpdate.exe'))
+$edgeArgs = @(Get-BrowserUpdaterArguments -Browser Edge -UpdaterPath (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe'))
+Assert-True (($chromeMachineArgs -join ' ') -eq '--update-apps --system') 'Machine Chrome installs must use --update-apps --system.'
+Assert-True (($chromeUserArgs -join ' ') -eq '--update-apps') 'Per-user Chrome installs must use --update-apps without --system.'
+Assert-True (($edgeArgs -join ' ') -eq '/ua /installsource scheduler') 'Edge must retain its Omaha-compatible update arguments.'
 
 $browserProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-BrowserProvider'
 $vendorProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider'
@@ -494,6 +510,21 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertFrom-Cp
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-CpeProductAlignment')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-VersionInCpeRange')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-KEVExposure')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-WordMatch')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Find-KEVCandidates')
+
+# Live-feed regression: CISA returned product "Windows " with trailing whitespace.
+# Without trimming, it bypassed the Windows exclusion and matched the word Windows
+# in .NET Desktop Runtime, creating four false emergency exposures.
+$windowsKev = [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{
+    vendorProject=' Microsoft '; product='Windows '; cveID='CVE-2024-30088'
+    vulnerabilityName='Windows Kernel test'; dateAdded='2024-01-01'; dueDate='2024-01-31'
+}) }
+$dotnetUpgrade = [pscustomobject]@{
+    Name='Microsoft .NET Windows Desktop Runtime 10.0'; PackageId='Microsoft.DotNet.DesktopRuntime.10'
+    Publisher='Microsoft Corporation'; Version='10.0.9'; Source='winget'
+}
+Assert-True (@(Find-KEVCandidates -Packages @($dotnetUpgrade) -KEVData $windowsKev).Count -eq 0) 'Whitespace-padded Microsoft Windows KEV entries must never match .NET packages.'
 
 # Version comparison: dotted-numeric only; anything else is undecidable, never "equal".
 Assert-True ((Compare-SoftwareVersion '150.0.7871.47' '86.0.4240.198') -eq 1)  'Compare: Chrome 150 is newer than 86.0.4240.198.'
