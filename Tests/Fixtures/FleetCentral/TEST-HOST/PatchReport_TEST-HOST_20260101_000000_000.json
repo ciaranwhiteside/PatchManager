@@ -1,0 +1,26 @@
+{
+  "Metadata": {
+    "Hostname": "TEST-HOST",
+    "ScriptVer": "test",
+    "Ring": "Pilot",
+    "ScopeProfile": "Personal",
+    "DryRun": false,
+    "ProvidersExecuted": false,
+    "RunDisposition": "Maintenance-window deferral"
+  },
+  "Statistics": {
+    "UpdatesApplied": 0,
+    "UpdatesFailed": 0,
+    "UpdatesSkipped": 1,
+    "KEVMatches": 0,
+    "NvdCritical": 0,
+    "NvdHigh": 0,
+    "SLABreaches": 0,
+    "Errors": []
+  },
+  "AttentionItems": [],
+  "RebootRequiredItems": [],
+  "InventoryKEVMatches": [],
+  "EndOfLifeFindings": [],
+  "StalenessFindings": []
+}

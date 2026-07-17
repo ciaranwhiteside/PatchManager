@@ -28,6 +28,9 @@ By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 # Run the test suite (no dependencies needed)
 .\Tests\Invoke-PatchManager.Static.Tests.ps1
 
+# Validate the public configuration example with the runtime validator
+.\Invoke-PatchManager.ps1 -ValidateConfig -ConfigPath .\PatchManager.config.example.json
+
 # Lint (install once: Install-Module PSScriptAnalyzer)
 Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 
@@ -36,6 +39,8 @@ Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 ```
 
 CI runs the same three steps on `windows-latest` for pushes and pull requests.
+Provider integrations still require an elevated Windows test host; fixture and
+AST tests cannot prove Windows Update, Store, Office, or vendor behavior.
 
 ## Pull requests
 

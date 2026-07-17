@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.7.0] - 2026-07-17
+
+### Fixed
+
+- Configuration now fails closed. Malformed JSON, unknown keys/profiles, wrong
+  types, invalid regexes, and invalid ranges exit `2` instead of silently
+  reverting to the broad Personal profile.
+- Browser, Microsoft 365, vendor, Chocolatey, and Scoop paths now preserve and
+  enforce real process exit codes. Native updaters without observable versions
+  remain `Verifying` rather than being assumed successful.
+- WinGet SLA records now index same-run additions correctly and close exact
+  offers that disappear after healthy discovery, preventing permanent false
+  breaches. Failed discovery never clears records; ReportOnly advances SLA
+  evidence while DryRun stays non-mutating.
+- Pre-flight failures, user-active deferrals, maintenance-window deferrals, and
+  lock contention now write compliance reports for fleet visibility.
+- Self-update now runs after maintenance-window approval, so deferred patch
+  attempts are non-mutating.
+
+### Added
+
+- `-ValidateConfig`, `PatchManager.config.schema.json`, configuration and
+  operations guides, provider verification documentation, and regression tests
+  for the hardened paths above.
+
 All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).

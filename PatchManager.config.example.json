@@ -1,5 +1,7 @@
 {
+  "$schema": "./PatchManager.config.schema.json",
   "_comment": "Example config. Copy to PatchManager.config.json and edit locally; do not commit personal runtime config.",
+  "_comment_schema": "Validate with .\\Invoke-PatchManager.ps1 -ValidateConfig. Editor/pipeline schema: PatchManager.config.schema.json.",
 
   "_comment_scope": "ScopeProfile: Personal (full coverage, single machine), Commercial (full coverage + fleet behaviours - the safe default for organisations), or CommercialManaged (Intune/SCCM/RMM already owns OS/Office/browsers; PatchManager descopes those and covers the third-party gap).",
   "ScopeProfile": "Personal",
@@ -148,6 +150,7 @@
   },
 
   "SLA": {
+    "_comment": "Availability SLA applies to eligible WinGet offers (stable package ID + target version). ReportOnly advances evidence; DryRun does not. Other providers remain visible in reports but are not in this clock.",
     "Critical": 14,
     "High": 14,
     "Medium": 14,
