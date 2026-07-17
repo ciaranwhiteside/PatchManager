@@ -1,9 +1,8 @@
 ﻿#Requires -Version 5.1
-#Requires -RunAsAdministrator
 
 <#
 .SYNOPSIS
-    Patch Manager v1.6.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.7.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -63,6 +62,9 @@
 .PARAMETER UninstallStartupTask
     Remove the scheduled task previously registered with -InstallStartupTask.
 
+.PARAMETER ValidateConfig
+    Validate the selected configuration file and exit without patching.
+
 .EXAMPLE
     .\Invoke-PatchManager.ps1 -DryRun -Force
 
@@ -73,7 +75,7 @@
     Exit Codes:
         0    Success
         1    Completed with errors
-        2    Pre-flight failure - no changes made
+        2    Configuration, elevation, or pre-flight failure - no changes made
         3010 Success - reboot required
         99   Fatal unhandled exception
 
@@ -99,6 +101,7 @@ param(
     [switch]$Force,
     [switch]$InstallStartupTask,
     [switch]$UninstallStartupTask,
+    [switch]$ValidateConfig,
     [string]$TaskName = 'PatchManager Personal',
     [int]$TaskDelayMinutes = 2
 )
@@ -114,7 +117,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.6.0'
+$script:VERSION       = '1.7.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -141,6 +144,7 @@ $script:StalenessFindings = @()
 $script:EndOfLifeFindings = @()
 $script:Inventory = @()
 $script:SelfUpdateStatus = 'Not checked'
+$script:PreFlightOutcome = 'NotRun'
 
 $script:Stats = [ordered]@{
     UpdatesPlanned  = 0
@@ -467,34 +471,193 @@ $script:DefaultCfg = [ordered]@{
 
 #region -- Configuration --------------------------------------------------------------
 
+function Copy-ConfigurationValue {
+    param($Value)
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $copy = [ordered]@{}
+        foreach ($key in $Value.Keys) { $copy[$key] = Copy-ConfigurationValue -Value $Value[$key] }
+        return $copy
+    }
+    if ($Value -is [System.Array]) {
+        return ,@($Value | ForEach-Object { Copy-ConfigurationValue -Value $_ })
+    }
+    return $Value
+}
+
+function Test-ConfigurationType {
+    param($Value, $DefaultValue)
+
+    if ($null -eq $DefaultValue) { return $true }
+    if ($DefaultValue -is [System.Collections.IDictionary]) {
+        return $null -ne $Value -and
+               ($Value -is [System.Collections.IDictionary] -or $Value -is [pscustomobject])
+    }
+    if ($DefaultValue -is [System.Array]) { return $Value -is [System.Array] }
+    if ($DefaultValue -is [bool]) { return $Value -is [bool] }
+    if ($DefaultValue -is [string]) { return $Value -is [string] }
+    if ($DefaultValue -is [byte] -or $DefaultValue -is [int16] -or
+        $DefaultValue -is [int32] -or $DefaultValue -is [int64] -or
+        $DefaultValue -is [single] -or $DefaultValue -is [double] -or
+        $DefaultValue -is [decimal]) {
+        return $Value -is [byte] -or $Value -is [int16] -or
+               $Value -is [int32] -or $Value -is [int64] -or
+               $Value -is [single] -or $Value -is [double] -or
+               $Value -is [decimal]
+    }
+    return $true
+}
+
+function Assert-ValidConfiguration {
+    param([Parameter(Mandatory)] [object]$Config)
+
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $validProfiles = @('Personal', 'Commercial', 'CommercialManaged')
+    if ([string]$Config.ScopeProfile -notin $validProfiles) {
+        $errors.Add("ScopeProfile must be one of: $($validProfiles -join ', ').")
+    }
+
+    foreach ($hourKey in @('StartHour', 'EndHour')) {
+        $hour = $Config.MaintenanceWindow.$hourKey
+        if ($hour -lt 0 -or $hour -gt 23) { $errors.Add("MaintenanceWindow.$hourKey must be between 0 and 23.") }
+    }
+    $validDays = @('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')
+    foreach ($day in @($Config.MaintenanceWindow.AllowedDays)) {
+        if ([string]$day -notin $validDays) { $errors.Add("MaintenanceWindow.AllowedDays contains invalid day '$day'.") }
+    }
+
+    foreach ($pattern in @($Config.Descope.PackageNamePatterns)) {
+        try { [void][regex]::new([string]$pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+        catch { $errors.Add("Descope.PackageNamePatterns contains invalid regex '$pattern': $($_.Exception.Message)") }
+    }
+    foreach ($pattern in @($Config.NVDInventoryScan.ExcludeNamePatterns)) {
+        try { [void][regex]::new([string]$pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+        catch { $errors.Add("NVDInventoryScan.ExcludeNamePatterns contains invalid regex '$pattern': $($_.Exception.Message)") }
+    }
+
+    if ([string]$Config.WinGet.Scope -notin @('machine','user')) {
+        $errors.Add("WinGet.Scope must be 'machine' or 'user'.")
+    }
+    if ([string]$Config.MicrosoftStore.Provider -notin @('Auto','StoreCli','Cim')) {
+        $errors.Add("MicrosoftStore.Provider must be Auto, StoreCli, or Cim.")
+    }
+    if ([string]$Config.NVD.DataSource -notin @('PublicApi','Mirror')) {
+        $errors.Add("NVD.DataSource must be PublicApi or Mirror.")
+    }
+    if ([string]$Config.NVD.DataSource -eq 'Mirror' -and [string]::IsNullOrWhiteSpace([string]$Config.NVD.MirrorBaseUrl)) {
+        $errors.Add('NVD.MirrorBaseUrl is required when NVD.DataSource is Mirror.')
+    }
+    foreach ($nullableFlag in @(
+        @{ Name='Network.BITSThrottleEnabled'; Value=$Config.Network.BITSThrottleEnabled },
+        @{ Name='PackageManagers.ChocolateyEnabled'; Value=$Config.PackageManagers.ChocolateyEnabled },
+        @{ Name='SelfUpdate.Enabled'; Value=$Config.SelfUpdate.Enabled }
+    )) {
+        if ($null -ne $nullableFlag.Value -and -not ($nullableFlag.Value -is [bool])) {
+            $errors.Add("$($nullableFlag.Name) must be true, false, or null.")
+        }
+    }
+    $jitterValue = $Config.MaintenanceWindow.JitterMaxMinutes
+    if ($null -ne $jitterValue -and
+        -not ($jitterValue -is [byte] -or $jitterValue -is [int16] -or $jitterValue -is [int32] -or $jitterValue -is [int64] -or $jitterValue -is [single] -or $jitterValue -is [double] -or $jitterValue -is [decimal])) {
+        $errors.Add('MaintenanceWindow.JitterMaxMinutes must be a non-negative integer or null.')
+    }
+    $expectedHash = [string]$Config.SelfUpdate.ExpectedSha256
+    if ($expectedHash -and $expectedHash -notmatch '^[A-Fa-f0-9]{64}$') {
+        $errors.Add('SelfUpdate.ExpectedSha256 must be empty or exactly 64 hexadecimal characters.')
+    }
+    if ($Config.PreFlight.MinBatteryPercent -gt 100) {
+        $errors.Add('PreFlight.MinBatteryPercent cannot exceed 100.')
+    }
+
+    $nonNegativeValues = @(
+        @{ Name='MaintenanceWindow.JitterMaxMinutes'; Value=$Config.MaintenanceWindow.JitterMaxMinutes },
+        @{ Name='Network.ConnectivityTimeoutSec'; Value=$Config.Network.ConnectivityTimeoutSec },
+        @{ Name='WinGet.PackageTimeoutSeconds'; Value=$Config.WinGet.PackageTimeoutSeconds },
+        @{ Name='WinGet.MaxUpdatesPerRun'; Value=$Config.WinGet.MaxUpdatesPerRun },
+        @{ Name='WinGet.MaxRetries'; Value=$Config.WinGet.MaxRetries },
+        @{ Name='Logging.RetentionDays'; Value=$Config.Logging.RetentionDays },
+        @{ Name='PreFlight.MinFreeSpaceGB'; Value=$Config.PreFlight.MinFreeSpaceGB },
+        @{ Name='PreFlight.MinBatteryPercent'; Value=$Config.PreFlight.MinBatteryPercent }
+    )
+    foreach ($item in $nonNegativeValues) {
+        if ($null -ne $item.Value -and [double]$item.Value -lt 0) { $errors.Add("$($item.Name) cannot be negative.") }
+    }
+
+    foreach ($entry in @($Config.VendorUpdaters.ExtraCatalogue)) {
+        $allowedVendorFields = @('Name','PackageId','Provider','WinGetOverlapId','VersionFilePaths','VersionRegistryPaths','VersionValueName','UpdaterPathCandidates','UpdaterArgs')
+        foreach ($property in $entry.PSObject.Properties) {
+            if ($property.Name -notin $allowedVendorFields -and $property.Name -notlike '_*') {
+                $errors.Add("VendorUpdaters.ExtraCatalogue contains unknown key '$($property.Name)'.")
+            }
+        }
+        foreach ($required in @('Name','PackageId','Provider','UpdaterPathCandidates')) {
+            if ($null -eq $entry.PSObject.Properties[$required] -or
+                ($required -ne 'UpdaterPathCandidates' -and [string]::IsNullOrWhiteSpace([string]$entry.$required)) -or
+                ($required -eq 'UpdaterPathCandidates' -and @($entry.$required).Count -eq 0)) {
+                $errors.Add("VendorUpdaters.ExtraCatalogue entry is missing required field '$required'.")
+            }
+        }
+        foreach ($arrayField in @('VersionFilePaths','VersionRegistryPaths','UpdaterPathCandidates','UpdaterArgs')) {
+            if ($entry.PSObject.Properties[$arrayField] -and -not ($entry.$arrayField -is [System.Array])) {
+                $errors.Add("VendorUpdaters.ExtraCatalogue.$arrayField must be an array.")
+            }
+        }
+    }
+
+    $ringDelayKeys = @('Pilot','Early','Broad')
+    $ringDelayNames = if ($Config.Ring.Delays -is [System.Collections.IDictionary]) {
+        @($Config.Ring.Delays.Keys)
+    } else {
+        @($Config.Ring.Delays.PSObject.Properties | ForEach-Object { $_.Name })
+    }
+    foreach ($delayName in $ringDelayNames) {
+        $delayValue = Get-ObjectPropertyValue $Config.Ring.Delays $delayName $null
+        if ($delayName -notin $ringDelayKeys -and $delayName -notlike '_*') {
+            $errors.Add("Ring.Delays contains unknown key '$delayName'.")
+        } elseif ($delayName -in $ringDelayKeys -and [double]$delayValue -lt 0) {
+            $errors.Add("Ring.Delays.$delayName cannot be negative.")
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        throw "Configuration validation failed:`n - $($errors -join "`n - ")"
+    }
+}
+
 function Import-Configuration {
     param([string]$Path)
-    $cfg = $script:DefaultCfg
+    $cfg = Copy-ConfigurationValue -Value $script:DefaultCfg
     if (Test-Path $Path) {
         try {
             $overrides = Get-Content $Path -Raw -EA Stop | ConvertFrom-Json
             foreach ($section in $overrides.PSObject.Properties) {
-                if ($section.Name -like '_*') { continue }  # Skip comment keys
-                if ($cfg.Contains($section.Name)) {
-                    $sectionIsObject = $null -ne $section.Value -and
-                                       -not ($section.Value -is [string]) -and
-                                       -not ($section.Value -is [System.Array]) -and
-                                       @($section.Value.PSObject.Properties).Count -gt 0
-                    if ($cfg[$section.Name] -is [System.Collections.IDictionary] -and $sectionIsObject) {
-                        foreach ($key in $section.Value.PSObject.Properties) {
-                            if ($key.Name -like '_*') { continue }  # Skip comment keys
-                            $cfg[$section.Name][$key.Name] = $key.Value
+                if ($section.Name -like '_*' -or $section.Name -eq '$schema') { continue }  # Skip metadata/comment keys
+                if (-not $cfg.Contains($section.Name)) { throw "Unknown configuration key '$($section.Name)'." }
+                if (-not (Test-ConfigurationType -Value $section.Value -DefaultValue $cfg[$section.Name])) {
+                    throw "Configuration key '$($section.Name)' has the wrong type."
+                }
+                $sectionIsObject = $cfg[$section.Name] -is [System.Collections.IDictionary]
+                if ($sectionIsObject) {
+                    foreach ($key in $section.Value.PSObject.Properties) {
+                        if ($key.Name -like '_*') { continue }  # Skip comment keys
+                        if (-not $cfg[$section.Name].Contains($key.Name)) {
+                            throw "Unknown configuration key '$($section.Name).$($key.Name)'."
                         }
-                    } else {
-                        $cfg[$section.Name] = $section.Value
+                        if (-not (Test-ConfigurationType -Value $key.Value -DefaultValue $cfg[$section.Name][$key.Name])) {
+                            throw "Configuration key '$($section.Name).$($key.Name)' has the wrong type."
+                        }
+                        $cfg[$section.Name][$key.Name] = $key.Value
                     }
+                } else {
+                    $cfg[$section.Name] = $section.Value
                 }
             }
             Write-Host "[CONFIG] Overrides loaded from: $Path" -ForegroundColor Cyan
         }
-        catch { Write-Warning "[CONFIG] Failed to parse '$Path': $_. Defaults used." }
+        catch { throw "Configuration file '$Path' is invalid. PatchManager will not continue with defaults. $($_.Exception.Message)" }
     }
     Set-ScopeProfileDefaults -Config $cfg
+    Assert-ValidConfiguration -Config $cfg
     return $cfg
 }
 
@@ -505,14 +668,21 @@ function Test-IsFleetProfile {
     return $ScopeProfile -ieq 'Commercial' -or $ScopeProfile -ieq 'CommercialManaged'
 }
 
+function Test-IsAdministrator {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
 function Set-ScopeProfileDefaults {
     param([Parameter(Mandatory)] [object]$Config)
 
     $scopeProfile = [string]$Config.ScopeProfile
     if ([string]::IsNullOrWhiteSpace($scopeProfile)) { $scopeProfile = 'Personal' }
     if ($scopeProfile -notin @('Personal', 'Commercial', 'CommercialManaged')) {
-        Write-Warning "[CONFIG] Unknown ScopeProfile '$scopeProfile'. Falling back to 'Personal' (full coverage)."
-        $scopeProfile = 'Personal'
+        throw "Unknown ScopeProfile '$scopeProfile'. Expected Personal, Commercial, or CommercialManaged."
     }
     $Config.ScopeProfile = $scopeProfile
 
@@ -1398,6 +1568,7 @@ public class Win32Idle {
 }
 
 function Invoke-PreFlightChecks {
+    $script:PreFlightOutcome = 'Running'
     Write-Log '--- Pre-flight checks starting ---' -Level INFO
     $pass = $true
     $pf   = $script:CFG.PreFlight
@@ -1451,8 +1622,8 @@ function Invoke-PreFlightChecks {
         $idleMin  = Get-UserIdleMinutes
         if ($idleMin -lt $minIdle) {
             Write-Log "User active (idle: ${idleMin} min, required: ${minIdle} min). Deferring gracefully." -Level INFO
-            # Graceful exit - user is at their desk, come back later
-            exit 0
+            $script:PreFlightOutcome = 'DeferredUserActive'
+            return $false
         } else {
             Write-Log "User idle: ${idleMin} min - OK." -Level INFO
         }
@@ -1523,6 +1694,7 @@ function Invoke-PreFlightChecks {
 
     Write-Log "--- Pre-flight result: $(if ($pass) {'PASS'} else {'FAIL'}) ---" `
               -Level $(if ($pass) { 'INFO' } else { 'WARN' })
+    $script:PreFlightOutcome = if ($pass) { 'Passed' } else { 'Failed' }
     return $pass
 }
 
@@ -2452,7 +2624,8 @@ function Save-PatchState {
     param(
         [Parameter(Mandatory)] [object]$State,
         [array]$AvailableUpgrades,
-        [array]$AppliedResults
+        [array]$AppliedResults,
+        [bool]$DiscoveryHealthy = $true
     )
 
     if ($null -eq $AvailableUpgrades) { $AvailableUpgrades = @() }
@@ -2472,7 +2645,7 @@ function Save-PatchState {
     foreach ($upgrade in $AvailableUpgrades) {
         $key = "$($upgrade.PackageId)|$($upgrade.Available)"
         if (-not $existingIndex.ContainsKey($key)) {
-            $State.TrackedUpdates += [PSCustomObject]@{
+            $newEntry = [PSCustomObject]@{
                 PackageId          = $upgrade.PackageId
                 PackageName        = $upgrade.Name
                 VersionAvailable   = $upgrade.Available
@@ -2483,7 +2656,12 @@ function Save-PatchState {
                 Applied            = $false
                 AppliedOn          = $null
                 DaysToApply        = $null
+                Closed             = $false
+                ClosedOn           = $null
+                ClosureReason      = ''
             }
+            $State.TrackedUpdates += $newEntry
+            $existingIndex[$key] = $newEntry
         }
     }
 
@@ -2512,13 +2690,46 @@ function Save-PatchState {
             $entry.Applied     = $true
             $entry.AppliedOn   = $today
             $entry.DaysToApply = ([datetime]$today - [datetime]$entry.FirstSeenAvailable).Days
+            if (-not $entry.PSObject.Properties['Closed']) { $entry | Add-Member -NotePropertyName Closed -NotePropertyValue $true }
+            else { $entry.Closed = $true }
+            if (-not $entry.PSObject.Properties['ClosedOn']) { $entry | Add-Member -NotePropertyName ClosedOn -NotePropertyValue $today }
+            else { $entry.ClosedOn = $today }
+            if (-not $entry.PSObject.Properties['ClosureReason']) { $entry | Add-Member -NotePropertyName ClosureReason -NotePropertyValue 'Applied by PatchManager' }
+            else { $entry.ClosureReason = 'Applied by PatchManager' }
         }
     }
 
-    # Prune old applied records beyond retention window
+    # Reconcile records that disappeared from a healthy WinGet discovery. This
+    # happens when an update was installed outside PatchManager, superseded by a
+    # newer release, the package was removed, or it left the configured scope.
+    # Keeping such rows open forever creates false SLA breaches. Do not reconcile
+    # after a failed source query: an empty list is not evidence of resolution.
+    if ($DiscoveryHealthy) {
+        $offeredKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($upgrade in $AvailableUpgrades) { [void]$offeredKeys.Add("$($upgrade.PackageId)|$($upgrade.Available)") }
+        foreach ($entry in @($State.TrackedUpdates)) {
+            $closed = $entry.PSObject.Properties['Closed'] -and [bool]$entry.Closed
+            if ($entry.Applied -or $closed) { continue }
+            $key = "$($entry.PackageId)|$($entry.VersionAvailable)"
+            if (-not $offeredKeys.Contains($key)) {
+                if (-not $entry.PSObject.Properties['Closed']) { $entry | Add-Member -NotePropertyName Closed -NotePropertyValue $true }
+                else { $entry.Closed = $true }
+                if (-not $entry.PSObject.Properties['ClosedOn']) { $entry | Add-Member -NotePropertyName ClosedOn -NotePropertyValue $today }
+                else { $entry.ClosedOn = $today }
+                if (-not $entry.PSObject.Properties['ClosureReason']) { $entry | Add-Member -NotePropertyName ClosureReason -NotePropertyValue 'No longer offered by healthy WinGet discovery (externally applied, superseded, removed, or descoped)' }
+                else { $entry.ClosureReason = 'No longer offered by healthy WinGet discovery (externally applied, superseded, removed, or descoped)' }
+            }
+        }
+    }
+
+    # Prune old applied/resolved records beyond retention window. Open records
+    # are retained regardless of age so SLA evidence is never lost.
     $cutoff = (Get-Date).AddDays(-$script:CFG.Logging.RetentionDays).ToString('yyyy-MM-dd')
     $State.TrackedUpdates = @($State.TrackedUpdates | Where-Object {
-        -not $_.Applied -or $_.AppliedOn -ge $cutoff
+        $closed = $_.PSObject.Properties['Closed'] -and [bool]$_.Closed
+        if ($_.Applied) { return $_.AppliedOn -ge $cutoff }
+        if ($closed) { return $_.ClosedOn -ge $cutoff }
+        return $true
     })
 
     Set-ContentAtomic -Path $stateFile -Content ($State | ConvertTo-Json -Depth 10) | Out-Null
@@ -2529,14 +2740,19 @@ function Get-SLABreaches {
     param([object]$State)
     $today = Get-Date -Format 'yyyy-MM-dd'
     return @($State.TrackedUpdates | Where-Object {
-        -not $_.Applied -and $_.SLADue -and $_.SLADue -lt $today
+        $closed = $_.PSObject.Properties['Closed'] -and [bool]$_.Closed
+        -not $_.Applied -and -not $closed -and $_.SLADue -and $_.SLADue -lt $today
     })
 }
 
 function Get-PatchMetrics {
     param([object]$State)
     $applied  = @($State.TrackedUpdates | Where-Object { $_.Applied })
-    $pending  = @($State.TrackedUpdates | Where-Object { -not $_.Applied })
+    $pending  = @($State.TrackedUpdates | Where-Object {
+        $closed = $_.PSObject.Properties['Closed'] -and [bool]$_.Closed
+        -not $_.Applied -and -not $closed
+    })
+    $resolved = @($State.TrackedUpdates | Where-Object { $_.PSObject.Properties['Closed'] -and [bool]$_.Closed -and -not $_.Applied })
     $breaches = @(Get-SLABreaches -State $State)
     $avgDays  = if ($applied.Count -gt 0) {
         [Math]::Round(($applied | Measure-Object -Property DaysToApply -Average).Average, 1)
@@ -2546,6 +2762,7 @@ function Get-PatchMetrics {
         TotalTracked   = $State.TrackedUpdates.Count
         Applied        = $applied.Count
         Pending        = $pending.Count
+        Resolved       = $resolved.Count
         SLABreaches    = $breaches.Count
         AvgDaysToApply = $avgDays
     }
@@ -3240,11 +3457,14 @@ function Invoke-Microsoft365Provider {
         Write-Log "Microsoft 365: running Click-to-Run update ($($before.ClientPath) $($c2rArgs -join ' '))." -Level INFO
         $timeoutSec = [Math]::Max(60, [int]$script:CFG.Microsoft365.TimeoutSeconds)
         $deadline = (Get-Date).AddSeconds($timeoutSec)
-        $proc = Start-Process -FilePath $before.ClientPath -ArgumentList $c2rArgs -PassThru -WindowStyle Hidden
-        $completed = $proc.WaitForExit($timeoutSec * 1000)
-        if (-not $completed) {
-            try { $proc.Kill() } catch { }
+        $run = Invoke-CapturedProcess -FilePath $before.ClientPath -Arguments $c2rArgs -TimeoutSeconds $timeoutSec
+        if ($run.TimedOut) {
             return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -Status 'Failed' -Evidence "OfficeC2RClient timed out after ${timeoutSec}s."))
+        }
+        if ($null -eq $run.ExitCode -or $run.ExitCode -ne 0) {
+            $summary = (([string]$run.Output -replace '\s+', ' ').Trim())
+            if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+            return @((New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Provider $provider -Source $provider -InstalledVersion $before.Version -Status 'Failed' -Evidence "OfficeC2RClient failed with exit code $($run.ExitCode). $summary"))
         }
 
         # OfficeC2RClient hands the actual work to the Click-to-Run service and can
@@ -3476,15 +3696,19 @@ function Invoke-BrowserProvider {
     try {
         $updaterArgs = @('/ua', '/installsource', 'scheduler')
         Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
-        $proc = Start-Process -FilePath $updater -ArgumentList $updaterArgs -PassThru -WindowStyle Hidden
-        $completed = $proc.WaitForExit([int]$script:CFG.Browsers.NativeTimeoutSeconds * 1000)
-        if (-not $completed) {
-            try { $proc.Kill() } catch { }
+        $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds ([int]$script:CFG.Browsers.NativeTimeoutSeconds)
+        if ($run.TimedOut) {
             return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after $($script:CFG.Browsers.NativeTimeoutSeconds)s."))
+        }
+        if ($null -eq $run.ExitCode -or $run.ExitCode -ne 0) {
+            $summary = (([string]$run.Output -replace '\s+', ' ').Trim())
+            if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+            return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater failed with exit code $($run.ExitCode). $summary"))
         }
         $afterVersion = Get-BrowserVersion -Browser $Browser
         $updated = $afterVersion -and $currentVersion -and $afterVersion -ne $currentVersion
-        return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -AvailableVersion $afterVersion -ConfirmedVersion $afterVersion -Status $(if ($updated) { 'Updated' } else { 'AlreadyCurrent' }) -Success $true -Evidence "Native updater exit code=$($proc.ExitCode); Before=$currentVersion; After=$afterVersion."))
+        $status = if ($updated) { 'Updated' } elseif ($currentVersion -and $afterVersion) { 'AlreadyCurrent' } else { 'Verifying' }
+        return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -AvailableVersion $afterVersion -ConfirmedVersion $(if ($updated) { $afterVersion } else { '' }) -Status $status -Success ($status -ne 'Verifying') -Evidence "Native updater exit code=$($run.ExitCode); Before=$currentVersion; After=$afterVersion."))
     } catch {
         return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Browser provider exception: $_"))
     }
@@ -3552,6 +3776,12 @@ function Invoke-ChocolateyProvider {
         # The process never launched (or died before returning a code) - do not
         # report a clean "0 outdated" when discovery itself failed.
         $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Failed' -Evidence "Chocolatey outdated discovery failed to run: $($discovery.Output)"))
+        return @($results)
+    }
+    if ($discovery.ExitCode -ne 0) {
+        $summary = (([string]$discovery.Output -replace '\s+', ' ').Trim())
+        if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+        $results.Add((New-PatchResult -Name 'Chocolatey source' -PackageId 'Chocolatey.Source' -Provider 'chocolatey-discovery' -Source $provider -Status 'Failed' -Evidence "Chocolatey outdated discovery returned exit code $($discovery.ExitCode). $summary"))
         return @($results)
     }
 
@@ -3635,7 +3865,12 @@ function Invoke-ScoopProvider {
     # is the control (disable it, or use `scoop hold <app>`). Refresh buckets,
     # then update all apps, and report one summary result.
     Write-Log "Scoop: refreshing buckets and updating all apps ($scoop update *)." -Level INFO
-    $null = Invoke-CapturedProcess -FilePath $scoop -Arguments @('update') -TimeoutSeconds $timeout
+    $refresh = Invoke-CapturedProcess -FilePath $scoop -Arguments @('update') -TimeoutSeconds $timeout
+    if ($refresh.TimedOut -or $null -eq $refresh.ExitCode -or $refresh.ExitCode -ne 0) {
+        $summary = (([string]$refresh.Output -replace '\s+', ' ').Trim())
+        if ($summary.Length -gt 600) { $summary = $summary.Substring(0, 600) + '...' }
+        return @((New-PatchResult -Name 'Scoop buckets' -PackageId 'Scoop.Buckets' -Provider $provider -Source $provider -Status 'Failed' -Evidence "Scoop bucket refresh failed (exit=$($refresh.ExitCode), timedOut=$($refresh.TimedOut)). $summary"))
+    }
     $upd = Invoke-CapturedProcess -FilePath $scoop -Arguments @('update', '*') -TimeoutSeconds $timeout
     $summary = (([string]$upd.Output -replace '\s+', ' ').Trim())
     if ($summary.Length -gt 600) { $summary = $summary.Substring(0, 600) + '...' }
@@ -3966,23 +4201,25 @@ function Invoke-VendorUpdaterProvider {
             Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
             # -ArgumentList rejects an empty array, and an ExtraCatalogue entry
             # may legitimately declare an updater that takes no arguments.
-            $startArgs = @{ FilePath = $updater; PassThru = $true; WindowStyle = 'Hidden' }
-            if ($updaterArgs.Count -gt 0) { $startArgs.ArgumentList = $updaterArgs }
-            $proc = Start-Process @startArgs
-            $completed = $proc.WaitForExit($timeout * 1000)
-            if (-not $completed) {
-                try { $proc.Kill() } catch { }
+            $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds $timeout
+            if ($run.TimedOut) {
                 $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after ${timeout}s."))
+                continue
+            }
+            if ($null -eq $run.ExitCode -or $run.ExitCode -ne 0) {
+                $summary = (([string]$run.Output -replace '\s+', ' ').Trim())
+                if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) + '...' }
+                $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater failed with exit code $($run.ExitCode). $summary"))
                 continue
             }
             $afterVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
             if (-not $afterVersion) { $afterVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
-            # If we can read a version delta, report Updated/AlreadyCurrent; otherwise
-            # the vendor updater ran headlessly and we report Completed.
+            # If we can read a version delta, report Updated/AlreadyCurrent;
+            # otherwise keep the outcome Verifying rather than assuming success.
             $status = if ($currentVersion -and $afterVersion) {
                 if ($afterVersion -ne $currentVersion) { 'Updated' } else { 'AlreadyCurrent' }
-            } else { 'Completed' }
-            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -AvailableVersion $afterVersion -ConfirmedVersion $afterVersion -Status $status -Success $true -Evidence "Native updater exit code=$($proc.ExitCode); Before=$currentVersion; After=$afterVersion."))
+            } else { 'Verifying' }
+            $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -AvailableVersion $afterVersion -ConfirmedVersion $(if ($status -eq 'Updated') { $afterVersion } else { '' }) -Status $status -Success ($status -ne 'Verifying') -Evidence "Native updater exit code=$($run.ExitCode); Before=$currentVersion; After=$afterVersion."))
         } catch {
             $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Vendor updater exception: $_"))
         }
@@ -5132,7 +5369,9 @@ function New-ComplianceReport {
     $rptDir = $script:CFG.Reporting.LocalReportPath
     if (-not (Test-Path $rptDir)) { New-Item -ItemType Directory -Path $rptDir -Force | Out-Null }
 
-    $stamp   = Get-Date -Format 'yyyyMMdd_HHmmss'
+    # Milliseconds avoid collisions when a lock-contention attempt and the
+    # active run both produce evidence within the same second.
+    $stamp   = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
     $base    = "PatchReport_$($script:HOSTNAME)_$stamp"
     $elapsed = [Math]::Round(((Get-Date) - $script:STARTTIME).TotalMinutes, 2)
     $jsonPath = $null
@@ -5155,6 +5394,9 @@ function New-ComplianceReport {
         [PSCustomObject]@{ Source = $_.Name; Count = $_.Count }
     })
     $attentionItems = @($Results | Where-Object { (Get-PatchRowKind $_) -eq 'attention' })
+    $terminalRow = @($Results | Where-Object { $_.Provider -eq 'patchmanager-orchestration' } | Select-Object -First 1)
+    $providersExecuted = ($terminalRow.Count -eq 0)
+    $runDisposition = if ($providersExecuted) { 'Providers completed' } else { [string]$terminalRow[0].Name }
     $rebootItems = @($Results | Where-Object {
         $_.PSObject.Properties['RebootRequired'] -and [bool]$_.RebootRequired
     })
@@ -5172,6 +5414,8 @@ function New-ComplianceReport {
                 Emergency   = $script:EmergencyPatch
                 ScopeProfile = $script:CFG.ScopeProfile
                 SelfUpdate   = $script:SelfUpdateStatus
+                ProvidersExecuted = $providersExecuted
+                RunDisposition = $runDisposition
             }
             Statistics  = $script:Stats
             Metrics     = $Metrics
@@ -5281,6 +5525,49 @@ function New-ComplianceReport {
         HtmlPath  = $htmlPath
         ReportDir = $rptDir
     }
+}
+
+function Complete-EarlyRun {
+    # Produce the same machine-readable evidence for terminal paths that occur
+    # before provider execution (pre-flight failure, user deferral, lock
+    # contention, or an out-of-window run). Fleet reporting must never have to
+    # infer the latest attempt from an older successful report.
+    param(
+        [Parameter(Mandatory)] [string]$Name,
+        [ValidateSet('Failed','Skipped')] [string]$Status,
+        [Parameter(Mandatory)] [string]$Evidence,
+        [int]$ExitCode = 0
+    )
+
+    $result = New-PatchResult -Name $Name -PackageId "PatchManager.Run.$($Name -replace '[^A-Za-z0-9]+','')" `
+                              -Provider 'patchmanager-orchestration' -Source 'patchmanager' `
+                              -Status $Status -Success $false -Evidence $Evidence
+    $results = @($result)
+    Update-StatsFromResults -Results $results
+
+    $reportInfo = $null
+    try {
+        $patchState = Get-PatchState
+        $metrics = Get-PatchMetrics -State $patchState
+        $reportInfo = New-ComplianceReport -Results $results -KEVMatches @() -SLABreaches @(Get-SLABreaches -State $patchState) `
+                                           -PatchState $patchState -Metrics $metrics
+        Copy-LogsToCentral
+    } catch {
+        Write-Log "Early-run compliance report generation failed: $_" -Level ERROR
+    }
+
+    $elapsed = [Math]::Round(((Get-Date) - $script:STARTTIME).TotalMinutes, 2)
+    $message = "PatchManager ended before provider execution on $($script:HOSTNAME) after ${elapsed}m: $Name - $Evidence"
+    if ($Status -eq 'Failed') {
+        Write-RunEvent -EventId 1011 -Type Warning -Message $message
+    } else {
+        Write-RunEvent -EventId 1010 -Type Information -Message $message
+    }
+
+    try { Send-RunNotification -ReportInfo $reportInfo -KEVMatches @() -SLABreaches @() } catch { }
+    if ($reportInfo -and $reportInfo.HtmlPath) { try { Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath } catch { } }
+    $script:ExitCode = $ExitCode
+    return $reportInfo
 }
 
 
@@ -6044,7 +6331,23 @@ function Test-RebootRequired {
 #region -- Main Orchestration ---------------------------------------------------------
 
 function Invoke-Main {
-    $script:CFG = Import-Configuration -Path $ConfigPath
+    try {
+        $script:CFG = Import-Configuration -Path $ConfigPath
+    } catch {
+        Write-Host "[CONFIG] $($_.Exception.Message)" -ForegroundColor Red
+        exit 2
+    }
+
+    if ($ValidateConfig) {
+        $sourceText = if (Test-Path $ConfigPath) { $ConfigPath } else { 'built-in defaults (no override file found)' }
+        Write-Host "Configuration is valid: $sourceText" -ForegroundColor Green
+        return
+    }
+
+    if (-not (Test-IsAdministrator)) {
+        Write-Host 'PatchManager patching and scheduled-task operations require an elevated Administrator PowerShell session. Use -ValidateConfig for non-elevated validation.' -ForegroundColor Red
+        exit 2
+    }
 
     if ($InstallStartupTask) {
         Install-PatchManagerStartupTask -Name $TaskName -DelayMinutes $TaskDelayMinutes
@@ -6065,6 +6368,8 @@ function Invoke-Main {
 
     # Single-instance guard - prevents overlapping runs corrupting state
     if (-not (Enter-SingleInstance)) {
+        Complete-EarlyRun -Name 'Overlapping instance' -Status 'Skipped' `
+            -Evidence 'Another PatchManager instance already holds the machine-wide lock; this attempt made no changes.' -ExitCode 0 | Out-Null
         exit 0
     }
 
@@ -6074,14 +6379,17 @@ function Invoke-Main {
 
     #-- Pre-flight ------------------------------------------------------------
     if (-not (Invoke-PreFlightChecks)) {
+        if ($script:PreFlightOutcome -eq 'DeferredUserActive') {
+            Write-Log 'Pre-flight deferred because the user is active. No changes made.' -Level INFO
+            Complete-EarlyRun -Name 'User-active deferral' -Status 'Skipped' `
+                -Evidence 'PreFlight.RequireUserIdle is enabled and the current session had not been idle for the configured minimum.' -ExitCode 0 | Out-Null
+            exit 0
+        }
         Write-Log 'Pre-flight checks failed. Aborting without changes.' -Level ERROR
+        Complete-EarlyRun -Name 'Pre-flight failure' -Status 'Failed' `
+            -Evidence 'One or more safety checks failed. Review the report row and local log; no patch providers were run.' -ExitCode 2 | Out-Null
         exit 2
     }
-
-    #-- Self-update -----------------------------------------------------------
-    # Runs after pre-flight (network confirmed). If it applies an update, this run
-    # continues on the current version; the next run uses the new one.
-    Invoke-SelfUpdate
 
     #-- BITS throttle ---------------------------------------------------------
     Set-BITSThrottle
@@ -6136,6 +6444,8 @@ function Invoke-Main {
         $inWindow = Test-MaintenanceWindow
         if (-not $inWindow -and -not $script:EmergencyPatch) {
             Write-Log 'Outside maintenance window and no emergency detected. Exiting.' -Level INFO
+            Complete-EarlyRun -Name 'Maintenance-window deferral' -Status 'Skipped' `
+                -Evidence 'The host was outside its configured maintenance window and had no confirmed CISA KEV emergency. No patch providers were run.' -ExitCode 0 | Out-Null
             exit 0
         }
 
@@ -6143,6 +6453,12 @@ function Invoke-Main {
         $jitterCap = if ($script:EmergencyPatch) { 5 } else { 0 }
         Start-JitteredDelay -Ring $script:RING -CapMinutes $jitterCap
     }
+
+    #-- Self-update -----------------------------------------------------------
+    # Run only after the maintenance decision so an out-of-window attempt is
+    # genuinely non-mutating. If applied, the current run continues on the old
+    # version and the next run uses the validated replacement.
+    Invoke-SelfUpdate
 
     #-- Load patch state + SLA breaches ---------------------------------------
     $patchState  = Get-PatchState
@@ -6197,10 +6513,16 @@ function Invoke-Main {
     $updateResults = @($updateResults | ForEach-Object { ConvertTo-PatchResult -InputObject $_ })
     Update-StatsFromResults -Results $updateResults
 
-    if (-not $ReportOnly -and -not $DryRun) {
+    # ReportOnly is an audit mode and should advance/reconcile SLA evidence.
+    # DryRun remains strictly non-mutating.
+    if (-not $DryRun) {
+        $winGetDiscoveryHealthy = @($script:SourceCheckResults | Where-Object {
+            $_.Provider -in @('winget-discovery','winget-msstore-discovery') -and $_.Status -eq 'Failed'
+        }).Count -eq 0
         $patchState = Save-PatchState -State $patchState `
                                        -AvailableUpgrades $filteredUpgrades `
-                                       -AppliedResults $updateResults
+                                       -AppliedResults $updateResults `
+                                       -DiscoveryHealthy $winGetDiscoveryHealthy
     }
     $slaBreaches = @(Get-SLABreaches -State $patchState)
     $script:Stats.SLABreaches = $slaBreaches.Count
@@ -6281,4 +6603,3 @@ try {
     try { Restore-BITSThrottle } catch { }
     try { Exit-SingleInstance } catch { }
 }
-

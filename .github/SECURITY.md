@@ -32,6 +32,10 @@ You can expect an acknowledgement within a week during the beta period.
   `C:\ProgramData\PatchManager\` — never under a user profile, where any
   process running as that user could replace the file and gain SYSTEM/admin at
   next logon. `-InstallStartupTask` warns when the path looks user-writable.
+- **Configuration fails closed.** If an override file exists but is malformed,
+  contains unknown keys or profiles, or fails runtime validation, PatchManager
+  exits with code `2` before self-update or provider execution. Validate staged
+  configurations with `-ValidateConfig` and the bundled JSON Schema.
 - **Protect the central shares.** `CentralReportPath`/`CentralLogPath` receive
   hostnames, software inventories, and patch posture for every device — treat
   the share as sensitive: write access for devices, read access only for the

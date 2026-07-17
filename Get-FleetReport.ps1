@@ -105,6 +105,7 @@ foreach ($hostDir in $hostDirs) {
             Errors          = $null
             RebootRequired  = $null
             AttentionItems  = $null
+            ProvidersExecuted = $false
             Note            = 'Folder exists but contains no JSON reports.'
         })
         continue
@@ -135,6 +136,7 @@ foreach ($hostDir in $hostDirs) {
             Errors          = $null
             RebootRequired  = $null
             AttentionItems  = $null
+            ProvidersExecuted = $false
             Note            = "Could not parse $($latestJson.Name): $_"
         })
         continue
@@ -188,7 +190,8 @@ foreach ($hostDir in $hostDirs) {
         Errors          = $errors.Count
         RebootRequired  = $reboot.Count
         AttentionItems  = $attention.Count
-        Note            = ''
+        ProvidersExecuted = [bool](Get-JsonProperty $metadata 'ProvidersExecuted' $true)
+        Note            = $(if ([bool](Get-JsonProperty $metadata 'ProvidersExecuted' $true)) { '' } else { [string](Get-JsonProperty $metadata 'RunDisposition' 'Providers did not run') })
     })
 }
 
@@ -206,22 +209,23 @@ $hostRows | Sort-Object Hostname | Export-Csv -Path $csvPath -NoTypeInformation 
 $totalHosts    = $hostRows.Count
 $staleHosts    = @($hostRows | Where-Object { $_.Stale }).Count
 $hostsWithFail = @($hostRows | Where-Object { $_.Failed -gt 0 }).Count
+$deferredHosts = @($hostRows | Where-Object { -not $_.ProvidersExecuted }).Count
 $hostsWithKev  = @($hostRows | Where-Object { ($_.KEVMatches -gt 0) -or ($_.InventoryKEV -gt 0) }).Count
 $hostsWithSla  = @($hostRows | Where-Object { $_.SLABreaches -gt 0 }).Count
 $hostsWithEol  = @($hostRows | Where-Object { $_.EolExposure -gt 0 }).Count
 $hostsReboot   = @($hostRows | Where-Object { $_.RebootRequired -gt 0 }).Count
 $totalApplied  = ($hostRows | Measure-Object -Property Applied -Sum).Sum
 $healthyHosts  = @($hostRows | Where-Object {
-    -not $_.Stale -and $_.Failed -eq 0 -and $_.KEVMatches -eq 0 -and $_.InventoryKEV -eq 0 -and $_.SLABreaches -eq 0 -and $_.Errors -eq 0 -and $_.RebootRequired -eq 0 -and (-not ($_.EolExposure -gt 0)) -and (-not ($_.NvdCritical -gt 0))
+    -not $_.Stale -and $_.ProvidersExecuted -and $_.Failed -eq 0 -and $_.KEVMatches -eq 0 -and $_.InventoryKEV -eq 0 -and $_.SLABreaches -eq 0 -and $_.Errors -eq 0 -and $_.RebootRequired -eq 0 -and (-not ($_.EolExposure -gt 0)) -and (-not ($_.NvdCritical -gt 0))
 }).Count
 
 $staleTone  = if ($staleHosts -gt 0) { 'danger' } else { 'good' }
-$failTone   = if ($hostsWithFail -gt 0) { 'danger' } else { 'good' }
+$failTone   = if ($hostsWithFail -gt 0 -or $deferredHosts -gt 0) { 'danger' } else { 'good' }
 $securityTone = if ($hostsWithKev -gt 0 -or $hostsWithSla -gt 0) { 'danger' } else { 'good' }
 $eolTone    = if ($hostsWithEol -gt 0) { 'danger' } else { 'good' }
 $rebootTone = if ($hostsReboot -gt 0) { 'danger' } else { 'good' }
 $attentionHosts = @($hostRows | Where-Object {
-    $_.Stale -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0) -or ($_.NvdCritical -gt 0)
+    $_.Stale -or -not $_.ProvidersExecuted -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0) -or ($_.NvdCritical -gt 0)
 }).Count
 $fleetVerdictTitle = if ($attentionHosts -eq 0) {
     'Fleet reporting is current.'
@@ -235,11 +239,11 @@ $fleetVerdictCopy = if ($attentionHosts -eq 0) {
 } elseif ($hostsWithKev -gt 0 -or $hostsWithSla -gt 0) {
     'Prioritise hosts with KEV, inventory KEV, and SLA pressure before treating the estate as current.'
 } else {
-    'Review stale hosts, failed runs, end-of-life exposure, script errors, and reboot-required rows before closing the fleet view.'
+    'Review stale hosts, deferred provider runs, failures, end-of-life exposure, script errors, and reboot-required rows before closing the fleet view.'
 }
 
 $tableRows = ($hostRows | Sort-Object @{Expression='Stale';Descending=$true}, @{Expression='Failed';Descending=$true}, Hostname | ForEach-Object {
-    $rowAttention = ($_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0) -or ($_.NvdCritical -gt 0))
+    $rowAttention = (-not $_.ProvidersExecuted -or $_.Failed -gt 0 -or $_.KEVMatches -gt 0 -or $_.InventoryKEV -gt 0 -or $_.SLABreaches -gt 0 -or $_.Errors -gt 0 -or $_.RebootRequired -gt 0 -or ($_.EolExposure -gt 0) -or ($_.NvdCritical -gt 0))
     $rowPosture = if ($_.Stale) { 'stale' } elseif ($rowAttention) { 'attention' } else { 'healthy' }
     $rowClass = if ($_.Stale) { 'stale' }
                 elseif ($rowAttention) { 'attention' }
@@ -323,7 +327,7 @@ $html = @"
   <section class="fleet-bento reveal" id="summary" aria-label="Fleet summary">
     <article class="bento-card bento-primary good"><span class="bento-kicker">Healthy hosts</span><strong>$healthyHosts</strong><p>$fleetVerdictCopy</p></article>
     <article class="bento-card bento-stale $staleTone"><span class="bento-kicker">Stale hosts</span><strong>$staleHosts</strong><p>Hosts whose newest report is older than ${StaleDays} day(s), or folders without readable JSON.</p></article>
-    <article class="bento-card bento-fail $failTone"><span class="bento-kicker">Failures</span><strong>$hostsWithFail</strong><p>Hosts with failed update activity in their latest imported run.</p></article>
+    <article class="bento-card bento-fail $failTone"><span class="bento-kicker">Failures / deferred</span><strong>$hostsWithFail / $deferredHosts</strong><p>Hosts with failed update activity or a latest attempt that ended before providers ran.</p></article>
     <article class="bento-card bento-security $securityTone"><span class="bento-kicker">KEV / SLA</span><strong>$hostsWithKev / $hostsWithSla</strong><p>Hosts with actionable KEV, inventory KEV, or SLA pressure.</p></article>
     <article class="bento-card bento-eol $eolTone"><span class="bento-kicker">End-of-life</span><strong>$hostsWithEol</strong><p>Hosts running software past (or nearing) end-of-support, from endoflife.date. Plan major-version upgrades.</p></article>
     <article class="bento-card bento-reboot $rebootTone"><span class="bento-kicker">Reboot pending</span><strong>$hostsReboot</strong><p>Latest host reports that include reboot-required evidence.</p></article>
@@ -331,7 +335,7 @@ $html = @"
   </section>
   <section class="fleet-lanes reveal" id="risk" aria-label="Fleet risk lanes">
     <a href="#hosts" class="lane lane-wide"><span>Stale reporting</span><strong>$staleHosts</strong><p>Hosts that may be offline, misconfigured, or unable to write to the share.</p></a>
-    <a href="#hosts" class="lane"><span>Failures</span><strong>$hostsWithFail</strong><p>Patch activity requiring operator follow-up.</p></a>
+    <a href="#hosts" class="lane"><span>Failures / deferred</span><strong>$hostsWithFail / $deferredHosts</strong><p>Patch activity or terminal attempts requiring operator follow-up.</p></a>
     <a href="#hosts" class="lane"><span>KEV / SLA</span><strong>$hostsWithKev / $hostsWithSla</strong><p>Security-driven priority lanes.</p></a>
     <a href="#hosts" class="lane"><span>End-of-life</span><strong>$hostsWithEol</strong><p>Hosts on out-of-support software.</p></a>
     <a href="#hosts" class="lane"><span>Reboot</span><strong>$hostsReboot</strong><p>Pending restart signals in latest runs.</p></a>
@@ -387,7 +391,7 @@ $html = @"
 Set-Content -Path $htmlPath -Value $html -Encoding UTF8
 
 Write-Host ''
-Write-Host "Fleet summary: $totalHosts host(s) | healthy: $healthyHosts | stale: $staleHosts | failures: $hostsWithFail | KEV: $hostsWithKev | SLA: $hostsWithSla | EOL: $hostsWithEol" -ForegroundColor Cyan
+Write-Host "Fleet summary: $totalHosts host(s) | healthy: $healthyHosts | stale: $staleHosts | failures: $hostsWithFail | deferred: $deferredHosts | KEV: $hostsWithKev | SLA: $hostsWithSla | EOL: $hostsWithEol" -ForegroundColor Cyan
 Write-Host "CSV : $csvPath" -ForegroundColor Green
 Write-Host "HTML: $htmlPath" -ForegroundColor Green
 

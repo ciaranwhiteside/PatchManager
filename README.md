@@ -14,12 +14,13 @@ From one script it discovers and applies updates across **Windows Update, WinGet
 the Microsoft Store, Microsoft 365, and browsers**, plus third-party managers and
 native updaters (Chocolatey, Scoop, Python, vendor apps, opt-in OEM firmware) —
 and flags out-of-support and actively-exploited software it can't patch directly.
-Every run writes audit-ready HTML, JSON, and CSV compliance reports. Use it as a
+Every patch attempt that reaches runtime logging writes audit-ready HTML, JSON,
+and CSV compliance reports, including pre-flight and scheduling deferrals. Use it as a
 set-and-forget updater on a personal machine or as a fleet patching agent across
 a commercial estate with rings, maintenance windows, SLA tracking, version-verified
 CISA KEV emergency handling, and SIEM-ready event logging.
 
-> **Public beta (v1.6.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.7.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -32,6 +33,8 @@ CISA KEV emergency handling, and SIEM-ready event logging.
 - [What it updates](#what-it-updates)
 - [Requirements](#requirements)
 - [Get started](#get-started)
+- [Configuration guide](docs/CONFIGURATION.md)
+- [Operations runbook](docs/OPERATIONS.md)
 - [Scheduled runs](#scheduled-runs)
 - [Configuration reference](#configuration-reference)
 - [Scope profiles: Personal vs Commercial](#scope-profiles-personal-vs-commercial)
@@ -133,8 +136,9 @@ What it deliberately does **not** do:
 
 ## Get started
 
-All commands run in an **elevated PowerShell** (right-click Start → *Terminal
-(Admin)*).
+Patching and scheduled-task commands run in an **elevated PowerShell**
+(right-click Start → *Terminal (Admin)*). `-ValidateConfig` is read-only and
+can run from a standard session.
 
 ### Personal device
 
@@ -146,6 +150,7 @@ git clone https://github.com/ciaranwhiteside/PatchManager.git C:\ProgramData\Pat
 cd C:\ProgramData\PatchManager
 
 # 2. Preview - shows exactly what would be updated, changes nothing
+.\Invoke-PatchManager.ps1 -ValidateConfig
 .\Invoke-PatchManager.ps1 -DryRun -Force
 
 # 3. Patch for real
@@ -229,6 +234,7 @@ with [scope profiles and descoping](#scope-profiles-personal-vs-commercial).
 | `-ForceRing Pilot\|Early\|Broad` | Override ring detection for this run. |
 | `-InstallStartupTask` | Register a scheduled task (startup + logon triggers). |
 | `-UninstallStartupTask` | Remove that scheduled task. |
+| `-ValidateConfig` | Validate the selected config and exit without patching. Invalid existing configs fail closed with exit code `2`. |
 | `-TaskName <name>` / `-TaskDelayMinutes <n>` | Customise the scheduled task. |
 
 ## Scheduled runs
@@ -274,6 +280,18 @@ override only the keys you care about — unspecified keys keep their defaults,
 sections merge key-by-key, and `_comment` keys are ignored.
 `PatchManager.config.json` is git-ignored on purpose: it may contain local
 paths and share names.
+
+Validate every change before rollout:
+
+```powershell
+.\Invoke-PatchManager.ps1 -ValidateConfig
+```
+
+Configuration is fail-closed: invalid JSON, unknown keys/profiles, wrong value
+types, invalid regex patterns, and unsafe ranges stop the run before any
+provider or self-update action. Editor and pipeline validation can use
+[`PatchManager.config.schema.json`](PatchManager.config.schema.json). For the
+short rollout-oriented guide, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ### `ScopeProfile`
 
@@ -453,7 +471,7 @@ the HTML report directly.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Critical` / `High` / `Medium` / `Low` | `14` | Days from *update available* to *update applied* before a breach is reported. The clock starts when PatchManager first sees the update, not at CVE publication. |
+| `Critical` / `High` / `Medium` / `Low` | `14` | Days from eligible *WinGet update available* to resolution before a breach is reported. Report-only runs advance this evidence; dry runs do not. Other providers remain visible in reports but are not part of the availability SLA clock. |
 
 ### `Logging`
 
@@ -682,6 +700,9 @@ exposure** (hosts running out-of-support software or lagging the latest patch
 release, from the per-host endoflife.date findings), per-host staleness review
 counts, script errors, and pending reboots — the "is my estate actually patched,
 and is any of it abandoned?" view.
+Terminal deferrals are marked as attention with their disposition in Notes, so
+an out-of-window, user-active, or lock-contention attempt cannot masquerade as
+a completed clean provider run.
 
 To preview the fleet dashboard on one machine before you have a central share,
 wrap the newest local JSON report in a host-named folder and point the
@@ -733,9 +754,12 @@ Copy-Item $latestJson.FullName $hostFolder -Force
   not necessarily *actively exploited*, so it never triggers the maintenance-window
   bypass; it may softly prioritise a matched product's available update. Point it
   at an internal NVD mirror for estates and air-gapped networks (`NVD.DataSource`).
-- **SLA tracking** — the moment an update becomes available it is tracked in
-  local state; if it is still unapplied after the configured window (default
-  14 days) the run reports a breach and raises event `1020`.
+- **SLA tracking** — when an eligible WinGet update becomes available it is
+  tracked in local state; if it remains unresolved after the configured window
+  (default 14 days) the run reports a breach and raises event `1020`. Exact
+  offers that disappear after a healthy discovery are closed as externally
+  applied, superseded, removed, or descoped; failed discovery never clears
+  evidence. See [the configuration guide](docs/CONFIGURATION.md#sla-scope).
 - **Word-boundary KEV matching** with vendor+product agreement, minimum-length
   guards, and Microsoft-Windows exclusions, narrowing the candidate set before
   NVD ever settles exposure.
@@ -769,7 +793,7 @@ Copy-Item $latestJson.FullName $hostFolder -Force
 |---|---|
 | `0` | Success. |
 | `1` | Completed with errors (see report / event log). |
-| `2` | Pre-flight failure — no changes made. |
+| `2` | Configuration, elevation, or pre-flight failure — no patch providers run. |
 | `3010` | Success — reboot required to finish (standard MSI convention). |
 | `99` | Fatal unhandled exception. |
 
@@ -856,11 +880,17 @@ objects instead of parsing winget's localised text table.
 .\Tests\Invoke-PatchManager.Static.Tests.ps1
 ```
 
-Dependency-free static and fixture tests: parser health, winget table parsing
+Dependency-free static and fixture tests: parser health, fail-closed config
+validation and merge behavior, winget table parsing
 against captured fixtures, config merge and scope profiles, descoping rules,
 maintenance window math, SLA state lifecycle, report grouping and counters,
-and a scan for personal data in public files. CI runs the same suite plus
+provider exit-code guards, early-run reporting, SLA reconciliation, and a scan
+for personal data in public files. CI runs the same suite plus
 PSScriptAnalyzer on Windows PowerShell 5.1 **and** PowerShell 7.
+
+These tests do not replace integration runs against Windows Update, Store,
+Office, and vendor updaters. Follow the staged validation checklist in
+[docs/OPERATIONS.md](docs/OPERATIONS.md#release-checklist).
 
 ## Contributing
 

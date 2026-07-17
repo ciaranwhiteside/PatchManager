@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ciaranwhiteside/PatchManager/PatchManager.config.schema.json",
+  "title": "PatchManager configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "patternProperties": { "^_": true },
+  "properties": {
+    "$schema": { "type": "string" },
+    "ScopeProfile": { "enum": ["Personal", "Commercial", "CommercialManaged"] },
+    "Descope": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "PackageIds": { "$ref": "#/$defs/stringArray" },
+        "PackageNamePatterns": { "$ref": "#/$defs/stringArray" },
+        "Providers": { "$ref": "#/$defs/stringArray" },
+        "Sources": { "$ref": "#/$defs/stringArray" },
+        "Reasons": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "Ring": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "RegistryPath": { "type": "string" }, "RegistryKey": { "type": "string" },
+        "Default": { "enum": ["Pilot", "Early", "Broad"] },
+        "Delays": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "Pilot": { "$ref": "#/$defs/nonNegativeInteger" }, "Early": { "$ref": "#/$defs/nonNegativeInteger" }, "Broad": { "$ref": "#/$defs/nonNegativeInteger" } }
+        }
+      }
+    },
+    "MaintenanceWindow": {
+      "type": "object", "additionalProperties": false, "patternProperties": { "^_": true },
+      "properties": {
+        "Enabled": { "type": "boolean" }, "StartHour": { "type": "integer", "minimum": 0, "maximum": 23 },
+        "EndHour": { "type": "integer", "minimum": 0, "maximum": 23 },
+        "AllowedDays": { "type": "array", "items": { "enum": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] }, "uniqueItems": true },
+        "JitterMaxMinutes": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      }
+    },
+    "Network": { "$ref": "#/$defs/network" },
+    "WinGet": { "$ref": "#/$defs/winget" },
+    "PackageManagers": { "$ref": "#/$defs/packageManagers" },
+    "WindowsUpdate": { "$ref": "#/$defs/windowsUpdate" },
+    "Microsoft365": { "$ref": "#/$defs/microsoft365" },
+    "Browsers": { "$ref": "#/$defs/browsers" },
+    "VendorUpdaters": { "$ref": "#/$defs/vendorUpdaters" },
+    "UserExperience": { "$ref": "#/$defs/userExperience" },
+    "MicrosoftStore": { "$ref": "#/$defs/microsoftStore" },
+    "StalenessReport": { "$ref": "#/$defs/stalenessReport" },
+    "EndOfLife": { "$ref": "#/$defs/endOfLife" },
+    "Firmware": { "$ref": "#/$defs/firmware" },
+    "SLA": { "$ref": "#/$defs/sla" },
+    "Logging": { "$ref": "#/$defs/logging" },
+    "Reporting": { "$ref": "#/$defs/reporting" },
+    "Notifications": { "$ref": "#/$defs/notifications" },
+    "SelfUpdate": { "$ref": "#/$defs/selfUpdate" },
+    "State": { "$ref": "#/$defs/state" },
+    "PreFlight": { "$ref": "#/$defs/preFlight" },
+    "SystemRestore": { "$ref": "#/$defs/systemRestore" },
+    "CISAKEV": { "$ref": "#/$defs/cisaKev" },
+    "NVD": { "$ref": "#/$defs/nvd" },
+    "NVDInventoryScan": { "$ref": "#/$defs/nvdInventoryScan" }
+  },
+  "$defs": {
+    "stringArray": { "type": "array", "items": { "type": "string" } },
+    "nonNegativeInteger": { "type": "integer", "minimum": 0 },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "nullableBoolean": { "type": ["boolean", "null"] },
+    "nullableNonNegativeInteger": { "type": ["integer", "null"], "minimum": 0 },
+    "sectionBase": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true } },
+    "network": {
+      "type": "object", "additionalProperties": false, "patternProperties": { "^_": true },
+      "properties": { "BITSThrottleEnabled": { "$ref": "#/$defs/nullableBoolean" }, "BITSMaxBandwidthKbps": { "$ref": "#/$defs/nonNegativeInteger" }, "TestConnectivityUrl": { "type": "string", "format": "uri" }, "ConnectivityTimeoutSec": { "$ref": "#/$defs/positiveInteger" } }
+    },
+    "winget": {
+      "type": "object", "additionalProperties": false, "patternProperties": { "^_": true },
+      "properties": { "ExcludePackagePrefixes": { "$ref": "#/$defs/stringArray" }, "ApprovedPackages": { "$ref": "#/$defs/stringArray" }, "PublisherManagedPackageIds": { "$ref": "#/$defs/stringArray" }, "IncludeMSStore": { "type": "boolean" }, "Scope": { "enum": ["machine", "user"] }, "AcceptAgreements": { "type": "boolean" }, "PackageTimeoutSeconds": { "$ref": "#/$defs/positiveInteger" }, "MaxUpdatesPerRun": { "$ref": "#/$defs/nonNegativeInteger" }, "SuppressReboot": { "type": "boolean" }, "MaxRetries": { "$ref": "#/$defs/positiveInteger" } }
+    },
+    "packageManagers": {
+      "type": "object", "additionalProperties": false, "patternProperties": { "^_": true },
+      "properties": { "ChocolateyEnabled": { "$ref": "#/$defs/nullableBoolean" }, "ScoopEnabled": { "type": "boolean" }, "PythonManagerEnabled": { "type": "boolean" }, "TimeoutSeconds": { "$ref": "#/$defs/positiveInteger" }, "MaxUpdatesPerRun": { "$ref": "#/$defs/nonNegativeInteger" } }
+    },
+    "windowsUpdate": {
+      "type": "object", "additionalProperties": false, "patternProperties": { "^_": true },
+      "properties": { "Enabled": { "type": "boolean" }, "IncludeDrivers": { "type": "boolean" }, "IncludeOptionalUpdates": { "type": "boolean" }, "IncludeFeatureUpdates": { "type": "boolean" }, "SearchCriteria": { "type": "string", "minLength": 1 }, "TimeoutSeconds": { "$ref": "#/$defs/positiveInteger" } }
+    },
+    "microsoft365": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "ForceAppShutdown": { "type": "boolean" }, "TimeoutSeconds": { "$ref": "#/$defs/positiveInteger" } } },
+    "browsers": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "ChromeEnabled": { "type": "boolean" }, "EdgeEnabled": { "type": "boolean" }, "NativeTimeoutSeconds": { "$ref": "#/$defs/positiveInteger" } } },
+    "vendorUpdaters": {
+      "type": "object", "additionalProperties": false, "patternProperties": { "^_": true },
+      "properties": {
+        "Enabled": { "type": "boolean" }, "NativeTimeoutSeconds": { "$ref": "#/$defs/positiveInteger" },
+        "ExtraCatalogue": { "type": "array", "items": { "$ref": "#/$defs/vendorUpdater" } }
+      }
+    },
+    "vendorUpdater": {
+      "type": "object", "additionalProperties": false,
+      "required": ["Name", "PackageId", "Provider", "UpdaterPathCandidates"],
+      "properties": { "Name": { "type": "string", "minLength": 1 }, "PackageId": { "type": "string", "minLength": 1 }, "Provider": { "type": "string", "minLength": 1 }, "WinGetOverlapId": { "type": "string" }, "VersionFilePaths": { "$ref": "#/$defs/stringArray" }, "VersionRegistryPaths": { "$ref": "#/$defs/stringArray" }, "VersionValueName": { "type": "string" }, "UpdaterPathCandidates": { "$ref": "#/$defs/stringArray", "minItems": 1 }, "UpdaterArgs": { "$ref": "#/$defs/stringArray" } }
+    },
+    "userExperience": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "PromptOnAppInUse": { "type": "boolean" }, "CompletionPopup": { "type": "boolean" }, "OpenReportPrompt": { "type": "boolean" }, "PromptTimeoutSeconds": { "$ref": "#/$defs/nonNegativeInteger" }, "ShowOnDryRun": { "type": "boolean" } } },
+    "microsoftStore": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "Provider": { "enum": ["Auto", "StoreCli", "Cim"] }, "TimeoutSeconds": { "$ref": "#/$defs/positiveInteger" }, "UseCimFallback": { "type": "boolean" }, "CaptureAppxDiff": { "type": "boolean" }, "PostUpdateSettleSeconds": { "$ref": "#/$defs/nonNegativeInteger" } } },
+    "stalenessReport": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "DefenderSignatures": { "type": "boolean" }, "DefenderMaxAgeDays": { "$ref": "#/$defs/nonNegativeInteger" }, "FeatureUpdateLag": { "type": "boolean" }, "FeatureUpdateMaxAgeDays": { "$ref": "#/$defs/nonNegativeInteger" }, "DevRuntimes": { "type": "boolean" } } },
+    "endOfLife": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "ApiBaseUrl": { "type": "string", "format": "uri" }, "CacheHours": { "$ref": "#/$defs/nonNegativeInteger" }, "CachePath": { "type": "string" }, "WarnWithinDays": { "$ref": "#/$defs/nonNegativeInteger" }, "CheckWindows": { "type": "boolean" }, "CheckRuntimes": { "type": "boolean" }, "InventoryScan": { "type": "boolean" }, "InventoryMaxLookups": { "$ref": "#/$defs/nonNegativeInteger" }, "Offline": { "type": "boolean" } } },
+    "firmware": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "TimeoutSeconds": { "$ref": "#/$defs/positiveInteger" } } },
+    "sla": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Critical": { "$ref": "#/$defs/nonNegativeInteger" }, "High": { "$ref": "#/$defs/nonNegativeInteger" }, "Medium": { "$ref": "#/$defs/nonNegativeInteger" }, "Low": { "$ref": "#/$defs/nonNegativeInteger" } } },
+    "logging": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "LocalLogPath": { "type": "string", "minLength": 1 }, "CentralLogPath": { "type": "string" }, "EventLogName": { "type": "string" }, "EventLogSource": { "type": "string" }, "RetentionDays": { "$ref": "#/$defs/nonNegativeInteger" }, "LogLevel": { "enum": ["Debug", "Info", "Warning", "Error"] } } },
+    "reporting": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "LocalReportPath": { "type": "string", "minLength": 1 }, "CentralReportPath": { "type": "string" }, "GenerateHTML": { "type": "boolean" }, "GenerateJSON": { "type": "boolean" }, "GenerateCSV": { "type": "boolean" } } },
+    "notifications": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "WebhookUrl": { "type": "string" }, "OnlyOnProblems": { "type": "boolean" }, "TimeoutSec": { "$ref": "#/$defs/positiveInteger" } } },
+    "selfUpdate": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "$ref": "#/$defs/nullableBoolean" }, "Repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" }, "Ref": { "type": "string", "minLength": 1 }, "AutoApply": { "type": "boolean" }, "ExpectedSha256": { "type": "string", "pattern": "^$|^[A-Fa-f0-9]{64}$" }, "TimeoutSec": { "$ref": "#/$defs/positiveInteger" } } },
+    "state": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "StatePath": { "type": "string", "minLength": 1 }, "StateFile": { "type": "string", "minLength": 1 } } },
+    "preFlight": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "MinFreeSpaceGB": { "type": "number", "minimum": 0 }, "CheckBattery": { "type": "boolean" }, "MinBatteryPercent": { "type": "number", "minimum": 0, "maximum": 100 }, "RequireACPower": { "type": "boolean" }, "AbortOnPendingReboot": { "type": "boolean" }, "RequireUserIdle": { "type": "boolean" }, "MinIdleMinutes": { "$ref": "#/$defs/nonNegativeInteger" } } },
+    "systemRestore": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "Description": { "type": "string" } } },
+    "cisaKev": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "FeedUrl": { "type": "string", "format": "uri" }, "CacheHours": { "$ref": "#/$defs/nonNegativeInteger" }, "CachePath": { "type": "string" } } },
+    "nvd": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "DataSource": { "enum": ["PublicApi", "Mirror"] }, "ApiBaseUrl": { "type": "string", "format": "uri" }, "MirrorBaseUrl": { "type": "string" }, "ApiKey": { "type": "string" }, "CacheHours": { "$ref": "#/$defs/nonNegativeInteger" }, "CachePath": { "type": "string" }, "Offline": { "type": "boolean" }, "MaxLookupsPerRun": { "$ref": "#/$defs/nonNegativeInteger" }, "RequestDelayMs": { "$ref": "#/$defs/nonNegativeInteger" } } },
+    "nvdInventoryScan": { "type": "object", "additionalProperties": false, "patternProperties": { "^_": true }, "properties": { "Enabled": { "type": "boolean" }, "CpeApiBaseUrl": { "type": "string", "format": "uri" }, "MinCvssSeverity": { "enum": ["MEDIUM", "HIGH", "CRITICAL"] }, "MaxProductsPerRun": { "$ref": "#/$defs/nonNegativeInteger" }, "MaxLookupsPerRun": { "$ref": "#/$defs/nonNegativeInteger" }, "CpeCacheHours": { "$ref": "#/$defs/nonNegativeInteger" }, "CveCacheHours": { "$ref": "#/$defs/nonNegativeInteger" }, "PrioritiseUpdates": { "type": "boolean" }, "ExcludeNamePatterns": { "$ref": "#/$defs/stringArray" } } }
+  }
+}

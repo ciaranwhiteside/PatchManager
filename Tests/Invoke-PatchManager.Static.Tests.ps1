@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $scriptPath = Join-Path $root 'Invoke-PatchManager.ps1'
 $exampleConfigPath = Join-Path $root 'PatchManager.config.example.json'
+$configSchemaPath = Join-Path $root 'PatchManager.config.schema.json'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -30,6 +31,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $
 Assert-True ($errors.Count -eq 0) "PowerShell parser errors:`n$($errors | Out-String)"
 
 Get-Content -Path $exampleConfigPath -Raw | ConvertFrom-Json | Out-Null
+Get-Content -Path $configSchemaPath -Raw | ConvertFrom-Json | Out-Null
 
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchRowKind')
@@ -205,6 +207,9 @@ Assert-True ($script:StoreCliDiscoveryReason -match 'code 5') 'Store CLI: discov
 #-- Config merge + scope profiles ---------------------------------------------------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-IsFleetProfile')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Copy-ConfigurationValue')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Test-ConfigurationType')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Assert-ValidConfiguration')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ScopeProfileDefaults')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Import-Configuration')
 
@@ -212,15 +217,22 @@ function New-TestDefaultCfg {
     [ordered]@{
         ScopeProfile = 'Personal'
         Descope = [ordered]@{ PackageIds = @(); PackageNamePatterns = @(); Providers = @(); Sources = @(); Reasons = [ordered]@{} }
-        MaintenanceWindow = [ordered]@{ Enabled = $true; JitterMaxMinutes = $null }
-        Network = [ordered]@{ BITSThrottleEnabled = $null; BITSMaxBandwidthKbps = 4096 }
+        Ring = [ordered]@{ Delays = [ordered]@{ Pilot = 0; Early = 3; Broad = 7 } }
+        MaintenanceWindow = [ordered]@{ Enabled = $true; StartHour = 22; EndHour = 6; AllowedDays = @('Monday'); JitterMaxMinutes = $null }
+        Network = [ordered]@{ BITSThrottleEnabled = $null; BITSMaxBandwidthKbps = 4096; ConnectivityTimeoutSec = 10 }
+        WinGet = [ordered]@{ Scope = 'machine'; PackageTimeoutSeconds = 300; MaxUpdatesPerRun = 0; MaxRetries = 2 }
         WindowsUpdate = [ordered]@{ Enabled = $true }
         Microsoft365 = [ordered]@{ Enabled = $true }
         Browsers = [ordered]@{ Enabled = $true; ChromeEnabled = $true; EdgeEnabled = $true }
         PackageManagers = [ordered]@{ ChocolateyEnabled = $null; ScoopEnabled = $true; PythonManagerEnabled = $true }
-        VendorUpdaters = [ordered]@{ Enabled = $true }
-        SelfUpdate = [ordered]@{ Enabled = $null; Ref = 'latest' }
+        VendorUpdaters = [ordered]@{ Enabled = $true; ExtraCatalogue = @() }
+        MicrosoftStore = [ordered]@{ Provider = 'Auto' }
+        SelfUpdate = [ordered]@{ Enabled = $null; Ref = 'latest'; ExpectedSha256 = '' }
         SLA = [ordered]@{ Critical = 14 }
+        Logging = [ordered]@{ RetentionDays = 90 }
+        PreFlight = [ordered]@{ MinFreeSpaceGB = 5; MinBatteryPercent = 20 }
+        NVD = [ordered]@{ DataSource = 'PublicApi'; MirrorBaseUrl = '' }
+        NVDInventoryScan = [ordered]@{ ExcludeNamePatterns = @() }
     }
 }
 
@@ -229,8 +241,7 @@ $tempCfgPath = Join-Path ([System.IO.Path]::GetTempPath()) "pm-test-config-$([gu
 {
   "_comment": "test override",
   "Network": { "_comment": "section comment should be skipped", "BITSMaxBandwidthKbps": 1024 },
-  "SLA": { "Critical": 7 },
-  "UnknownSection": { "Ignored": true }
+  "SLA": { "Critical": 7 }
 }
 '@ | Set-Content -Path $tempCfgPath -Encoding UTF8
 
@@ -241,7 +252,6 @@ try {
     Assert-True ($mergedCfg.SLA.Critical -eq 7) 'Config merge: SLA override should apply.'
     Assert-True ($mergedCfg.Network.Contains('BITSThrottleEnabled')) 'Config merge: unlisted defaults should survive a partial section override.'
     Assert-True (-not $mergedCfg.Network.Contains('_comment')) 'Config merge: section-level _comment keys should be skipped.'
-    Assert-True (-not $mergedCfg.Contains('UnknownSection')) 'Config merge: unknown sections should be ignored.'
     Assert-True ($mergedCfg.Network.BITSThrottleEnabled -eq $false) 'Personal profile should resolve BITSThrottleEnabled to false.'
     Assert-True ($mergedCfg.MaintenanceWindow.JitterMaxMinutes -eq 0) 'Personal profile should resolve JitterMaxMinutes to 0 - a single device should not delay itself.'
 
@@ -298,12 +308,36 @@ try {
     $explicitChoco = Import-Configuration -Path 'nonexistent-config.json'
     Assert-True ($explicitChoco.PackageManagers.ChocolateyEnabled -eq $true) 'An explicit ChocolateyEnabled=true must win over the commercial-off default.'
 
-    # Unknown profile values must fail SAFE: full Personal coverage.
+    # Unknown profile values must fail closed; falling back to Personal can
+    # unexpectedly patch OS/browser providers on a managed estate.
     $script:DefaultCfg = New-TestDefaultCfg
     $script:DefaultCfg.ScopeProfile = 'Enterprise'
-    $unknownCfg = Import-Configuration -Path 'nonexistent-config.json' 3>$null
-    Assert-True ($unknownCfg.ScopeProfile -eq 'Personal') 'Unknown ScopeProfile should fall back to Personal (full coverage).'
-    Assert-True ($unknownCfg.WindowsUpdate.Enabled -eq $true) 'Unknown ScopeProfile fallback must keep full coverage.'
+    $threw = $false
+    try { $null = Import-Configuration -Path 'nonexistent-config.json' } catch { $threw = $true }
+    Assert-True $threw 'Unknown ScopeProfile must stop configuration loading.'
+
+    # Unknown keys, malformed JSON, invalid regex, and wrong types must also
+    # stop the run instead of silently reverting to broad defaults.
+    $invalidCases = @(
+        '{ "UnknownSection": { "Ignored": true } }',
+        '{ invalid json',
+        '{ "Descope": { "PackageNamePatterns": ["["] } }',
+        '{ "Network": { "ConnectivityTimeoutSec": "ten" } }',
+        '{ "Ring": { "Delays": { "Pilot": 0, "Early": 3, "Broad": 7, "Wave": 9 } } }',
+        '{ "VendorUpdaters": { "ExtraCatalogue": [{ "Name": "X", "PackageId": "X", "Provider": "x", "UpdaterPathCandidates": ["x.exe"], "Unexpected": true }] } }'
+    )
+    foreach ($invalidJson in $invalidCases) {
+        $invalidPath = Join-Path ([System.IO.Path]::GetTempPath()) "pm-invalid-config-$([guid]::NewGuid()).json"
+        try {
+            Set-Content -Path $invalidPath -Value $invalidJson -Encoding UTF8
+            $script:DefaultCfg = New-TestDefaultCfg
+            $threw = $false
+            try { $null = Import-Configuration -Path $invalidPath } catch { $threw = $true }
+            Assert-True $threw "Invalid configuration should fail closed: $invalidJson"
+        } finally {
+            Remove-Item $invalidPath -Force -EA SilentlyContinue
+        }
+    }
 } finally {
     Remove-Item $tempCfgPath -Force -EA SilentlyContinue
 }
@@ -351,6 +385,16 @@ if (Test-Path $cmdExe) {
 }
 $cpMissing = Invoke-CapturedProcess -FilePath 'C:\definitely\missing\nope.exe' -Arguments @('x') -TimeoutSeconds 5
 Assert-True ($null -eq $cpMissing.ExitCode -and $cpMissing.Output -match 'Exception') 'Invoke-CapturedProcess must report a launch failure as $null exit code with an Exception marker.'
+
+$browserProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-BrowserProvider'
+$vendorProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider'
+$m365ProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Microsoft365Provider'
+$chocoProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-ChocolateyProvider'
+Assert-True ($browserProviderText -match '\$run\.ExitCode\s+-ne\s+0') 'Browser provider must fail a non-zero native-updater exit code.'
+Assert-True ($vendorProviderText -match '\$run\.ExitCode\s+-ne\s+0') 'Vendor provider must fail a non-zero native-updater exit code.'
+Assert-True ($m365ProviderText -match '\$run\.ExitCode\s+-ne\s+0') 'Microsoft 365 provider must fail a non-zero OfficeC2RClient exit code.'
+Assert-True ($chocoProviderText -match '\$discovery\.ExitCode\s+-ne\s+0') 'Chocolatey discovery must fail on a non-zero exit code.'
+Assert-True ($vendorProviderText -match "else \{ 'Verifying' \}") 'A vendor updater without observable versions must remain Verifying, not report clean completion.'
 
 # The Store CLI wrapper must preserve real exit codes and only flag Failed for
 # launch failures - a $null exit code previously slipped through the exit-code
@@ -920,10 +964,33 @@ try {
     Assert-True ($state.TrackedUpdates[0].Applied) 'SLA state: applied result should mark the tracked update applied.'
     Assert-True (@(Get-SLABreaches -State $state).Count -eq 0) 'SLA state: applied update should no longer breach.'
 
+    # A failed discovery must not close pending rows, but a healthy discovery
+    # that no longer offers the exact update must resolve it rather than leave a
+    # permanent false breach.
+    $gone = [pscustomobject]@{ PackageId = 'Gone.App'; Name = 'Gone App'; Available = '4.0'; Version = '3.0' }
+    $state = Save-PatchState -State $state -AvailableUpgrades @($gone) -AppliedResults @()
+    $goneEntry = @($state.TrackedUpdates | Where-Object PackageId -eq 'Gone.App')[0]
+    $goneEntry.SLADue = (Get-Date).AddDays(-1).ToString('yyyy-MM-dd')
+    $state = Save-PatchState -State $state -AvailableUpgrades @() -AppliedResults @() -DiscoveryHealthy $false
+    Assert-True (-not [bool]$goneEntry.Closed) 'SLA state: failed discovery must not resolve a pending update.'
+    $state = Save-PatchState -State $state -AvailableUpgrades @() -AppliedResults @() -DiscoveryHealthy $true
+    Assert-True ([bool]$goneEntry.Closed) 'SLA state: a no-longer-offered update should close after healthy discovery.'
+    Assert-True (@(Get-SLABreaches -State $state | Where-Object PackageId -eq 'Gone.App').Count -eq 0) 'SLA state: resolved rows must not remain breached.'
+
+    # When an older version is already pending and a newer version is discovered
+    # and applied in the same run, the exact new row must be marked applied.
+    $old = [pscustomobject]@{ PackageId = 'Multi.App'; Name = 'Multi App'; Available = '2.0'; Version = '1.0' }
+    $state = Save-PatchState -State $state -AvailableUpgrades @($old) -AppliedResults @()
+    $new = [pscustomobject]@{ PackageId = 'Multi.App'; Name = 'Multi App'; Available = '3.0'; Version = '1.0' }
+    $newApplied = [pscustomobject]@{ PackageId = 'Multi.App'; Success = $true; Status = 'Succeeded'; ConfirmedVersion = '3.0'; AvailableVersion = '3.0'; NewVer = '3.0' }
+    $state = Save-PatchState -State $state -AvailableUpgrades @($new) -AppliedResults @($newApplied)
+    $newEntry = @($state.TrackedUpdates | Where-Object { $_.PackageId -eq 'Multi.App' -and $_.VersionAvailable -eq '3.0' })[0]
+    Assert-True ([bool]$newEntry.Applied) 'SLA state: exact newly-added version should be marked applied in the same run.'
+
     # State survives a round-trip through the JSON file
     $state2 = Get-PatchState
-    Assert-True (@($state2.TrackedUpdates).Count -eq 1) 'SLA state: state file round-trip should preserve tracked updates.'
-    Assert-True ($state2.TrackedUpdates[0].Applied) 'SLA state: applied flag should persist to disk.'
+    Assert-True (@($state2.TrackedUpdates).Count -ge 1) 'SLA state: state file round-trip should preserve tracked updates.'
+    Assert-True (@($state2.TrackedUpdates | Where-Object { $_.PackageId -eq 'Vendor.App' -and $_.Applied }).Count -eq 1) 'SLA state: applied flag should persist to disk.'
 } finally {
     Remove-Item $tempStateDir -Recurse -Force -EA SilentlyContinue
 }
@@ -988,13 +1055,45 @@ Assert-True ($interactiveFnText -match 'SessionId') 'Test-InteractiveSession sho
 $taskInstallText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Install-PatchManagerStartupTask'
 Assert-True ($taskInstallText -match '-WindowStyle Hidden') 'The startup task must run PowerShell hidden so scheduled runs stay in the background.'
 
+$mainText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Main'
+$earlyRunText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun'
+$liveScriptText = Get-Content -Path $scriptPath -Raw
+Assert-True ($liveScriptText -notmatch '#Requires\s+-RunAsAdministrator') '-ValidateConfig must remain usable from a non-elevated session.'
+Assert-True ($mainText -match 'Test-IsAdministrator') 'Live patch and task operations must retain an explicit administrator gate.'
+Assert-True ($earlyRunText -match 'New-ComplianceReport') 'Early terminal paths must generate a compliance report.'
+Assert-True ($mainText -match "Complete-EarlyRun -Name 'Pre-flight failure'") 'Pre-flight failures must be fleet-visible reports.'
+Assert-True ($mainText -match "Complete-EarlyRun -Name 'User-active deferral'") 'User-active deferrals must be fleet-visible reports.'
+Assert-True ($mainText -match "Complete-EarlyRun -Name 'Maintenance-window deferral'") 'Maintenance-window deferrals must be fleet-visible reports.'
+Assert-True ($mainText -match "Complete-EarlyRun -Name 'Overlapping instance'") 'Overlapping attempts must be fleet-visible reports.'
+
+#-- Fleet terminal-disposition integration ------------------------------------------
+$fleetFixtureRoot = Join-Path $PSScriptRoot 'Fixtures\FleetCentral'
+$fleetOutputDir = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-test-$([guid]::NewGuid())"
+try {
+    & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $fleetFixtureRoot -OutputPath $fleetOutputDir -StaleDays 9999
+    $fleetCsvPath = Get-ChildItem $fleetOutputDir -Filter 'FleetReport_*.csv' | Select-Object -First 1
+    $fleetHtmlPath = Get-ChildItem $fleetOutputDir -Filter 'FleetReport_*.html' | Select-Object -First 1
+    Assert-True ($null -ne $fleetCsvPath -and $null -ne $fleetHtmlPath) 'Fleet integration: HTML and CSV should be generated.'
+    $fleetRow = Import-Csv $fleetCsvPath.FullName | Select-Object -First 1
+    Assert-True ($fleetRow.ProvidersExecuted -eq 'False') 'Fleet integration: terminal report must preserve ProvidersExecuted=false.'
+    Assert-True ($fleetRow.Note -eq 'Maintenance-window deferral') 'Fleet integration: terminal disposition should appear in Notes.'
+    $fleetHtmlText = Get-Content $fleetHtmlPath.FullName -Raw
+    Assert-True ($fleetHtmlText -match "data-posture='attention'") 'Fleet integration: a terminal deferral must be classified as attention.'
+    Assert-True ($fleetHtmlText -match 'Failures / deferred') 'Fleet integration: dashboard should expose deferred provider runs.'
+} finally {
+    Remove-Item $fleetOutputDir -Recurse -Force -EA SilentlyContinue
+}
+
 #-- Public file hygiene ---------------------------------------------------------------
 $publicFiles = @(
     'Invoke-PatchManager.ps1'
     'Get-FleetReport.ps1'
     'PatchManager.config.example.json'
+    'PatchManager.config.schema.json'
     'README.md'
     'CHANGELOG.md'
+    'docs/CONFIGURATION.md'
+    'docs/OPERATIONS.md'
     'docs/brand/BRAND.md'
     'docs/brand/patchmanager-mark.svg'
     'docs/brand/patchmanager-wordmark.svg'
@@ -1062,6 +1161,7 @@ Assert-True ($fleetScript -match 'id="profileFilter"') 'Fleet report should incl
 Assert-True ($fleetScript -match 'id="fleetResultCount"') 'Fleet report should include a visible row count.'
 Assert-True ($fleetScript -match 'data-ring=') 'Fleet report ring filter should be populated from row data.'
 Assert-True ($fleetScript -match 'data-profile=') 'Fleet report profile filter should be populated from row data.'
+Assert-True ($fleetScript -match 'ProvidersExecuted') 'Fleet report must distinguish terminal deferrals from completed provider runs.'
 Assert-True ($fleetScript -match 'data-sort="host"') 'Fleet report host table should keep sortable host columns.'
 Assert-True ($fleetScript -match '<th data-sort="invkev">Inv\. KEV</th>') 'Fleet report host table should keep the inventory KEV column.'
 Assert-True ($fleetScript -match 'https://github.com/ciaranwhiteside/PatchManager') 'Fleet report footer should link to the PatchManager repository.'
