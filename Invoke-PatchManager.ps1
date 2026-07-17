@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.7.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.7.1 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -117,7 +117,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.7.0'
+$script:VERSION       = '1.7.1'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -2197,8 +2197,12 @@ function Find-KEVCandidates {
     $matchKeys    = [System.Collections.Generic.HashSet[string]]::new()
 
     foreach ($entry in $KEVData.vulnerabilities) {
-        $vendor  = [string]$entry.vendorProject
-        $product = [string]$entry.product
+        # Catalogue strings are external data. Normalise surrounding whitespace
+        # before exclusions and whole-word matching: the live KEV feed has carried
+        # values such as "Windows ", which previously bypassed the Windows exclusion
+        # and falsely matched ".NET Windows Desktop Runtime" packages.
+        $vendor  = ([string]$entry.vendorProject).Trim()
+        $product = ([string]$entry.product).Trim()
 
         # Skip entries with very short vendor/product names - too generic, all noise
         # (e.g. product "ATS", "PAN" would match half the estate)
@@ -3660,6 +3664,37 @@ function Invoke-CapturedProcess {
     }
 }
 
+function Get-SuccessfulProcessOutput {
+    # Returns normalised output only for a completed, successful native process.
+    # Report-only probes must never mistake an error message on stderr for a
+    # detected product version (for example, `dotnet --version` with no SDK).
+    param($Result)
+    if ($null -eq $Result -or [bool](Get-ObjectPropertyValue $Result 'TimedOut' $false)) { return '' }
+    $exitCode = Get-ObjectPropertyValue $Result 'ExitCode' $null
+    if ($null -eq $exitCode -or [int]$exitCode -ne 0) { return '' }
+    return (([string](Get-ObjectPropertyValue $Result 'Output' '') -replace '\s+', ' ').Trim())
+}
+
+function Get-BrowserUpdaterArguments {
+    # Chromium's current Google Updater uses --update-apps [--system]. Edge's
+    # updater still exposes the Omaha-compatible /ua command used here.
+    param(
+        [ValidateSet('Chrome','Edge')] [string]$Browser,
+        [string]$UpdaterPath
+    )
+    if ($Browser -eq 'Edge') { return @('/ua', '/installsource', 'scheduler') }
+
+    $argumentList = @('--update-apps')
+    $machineRoots = @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    if (@($machineRoots | Where-Object {
+        $root = ([string]$_).TrimEnd('\') + '\'
+        $UpdaterPath.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+    }).Count -gt 0) {
+        $argumentList += '--system'
+    }
+    return $argumentList
+}
+
 function Invoke-BrowserProvider {
     param(
         [ValidateSet('Chrome','Edge')] [string]$Browser,
@@ -3689,12 +3724,12 @@ function Invoke-BrowserProvider {
         return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Descoped' -Evidence $reason))
     }
 
+    $updaterArgs = @(Get-BrowserUpdaterArguments -Browser $Browser -UpdaterPath $updater)
     if ($DryRun) {
-        return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Planned' -Evidence "Would run native updater: $updater /ua /installsource scheduler."))
+        return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Planned' -Evidence "Would run native updater: $updater $($updaterArgs -join ' ')."))
     }
 
     try {
-        $updaterArgs = @('/ua', '/installsource', 'scheduler')
         Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
         $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds ([int]$script:CFG.Browsers.NativeTimeoutSeconds)
         if ($run.TimedOut) {
@@ -4318,7 +4353,7 @@ function Invoke-StalenessReport {
             if (-not $cmd) { continue }
             try {
                 $res = Invoke-CapturedProcess -FilePath $cmd.Source -Arguments $rt.Args -TimeoutSeconds 30
-                $ver = (([string]$res.Output -replace '\s+', ' ').Trim())
+                $ver = Get-SuccessfulProcessOutput -Result $res
                 if ($ver) {
                     $findings.Add((New-StalenessFinding -Category 'Developer runtime' -Item $rt.Item -Detail "Installed: $ver. Verify against the vendor's supported-version lifecycle." -Severity 'info'))
                 }
@@ -4619,7 +4654,8 @@ function Invoke-EndOfLifeReport {
             $ver = ''
             try {
                 $res = Invoke-CapturedProcess -FilePath $cmd.Source -Arguments $rt.Args -TimeoutSeconds 30
-                $ver = ([string]$res.Output -split '\r?\n' | ForEach-Object { ([regex]::Match($_, '\d+\.\d+(\.\d+)?')).Value } | Where-Object { $_ } | Select-Object -First 1)
+                $successfulOutput = Get-SuccessfulProcessOutput -Result $res
+                $ver = ([string]$successfulOutput -split '\r?\n' | ForEach-Object { ([regex]::Match($_, '\d+\.\d+(\.\d+)?')).Value } | Where-Object { $_ } | Select-Object -First 1)
             } catch { }
             if (-not $ver) { continue }
             $product = Get-EndOfLifeProduct -Name $rt.Product -Cfg $cfg

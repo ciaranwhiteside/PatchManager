@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.7.1] - 2026-07-17
+
+### Fixed
+
+- CISA KEV vendor/product strings are trimmed before matching, preventing a
+  trailing-space `Windows ` catalogue value from falsely classifying .NET
+  Desktop Runtime packages as exposed to Windows kernel or Hyper-V CVEs.
+- Chrome uses the current Google Updater `--update-apps --system` interface for
+  machine installs (and omits `--system` for per-user installs); Edge retains
+  its supported Omaha-compatible invocation.
+- Developer-runtime probes only report output from successful processes, so a
+  machine with the .NET runtime but no SDK no longer displays `dotnet` error
+  text as an installed SDK version.
+
 ## [1.7.0] - 2026-07-17
 
 ### Fixed
