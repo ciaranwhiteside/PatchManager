@@ -1,5 +1,51 @@
 # Changelog
 
+All notable changes to PatchManager are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[Semantic Versioning](https://semver.org/).
+
+## [1.8.0] - 2026-09-04
+
+### Added
+
+- Triage-first device and fleet reports that lead with the estate or run
+  verdict, the next required action, and a prioritized evidence sequence.
+- Deterministic fleet risk ranking, functional risk-lane filters, live result
+  announcements, host report links, and expandable secondary host evidence.
+- Accessible progressive disclosure, responsive card layouts, print and
+  no-JavaScript fallbacks, reduced-motion support, and Windows High Contrast
+  accommodations across report surfaces.
+- DPI-aware native prompts with semantic tones, expandable technical details,
+  live automatic-deferral countdowns, and outcome-aware completion messaging.
+- Optional SLA evaluation. Personal profiles default to disabled while
+  commercial profiles retain SLA evaluation; an explicit setting overrides the
+  profile default.
+
+### Changed
+
+- Device package results now prioritize package identity, version transition,
+  source, result, reboot state, time, and evidence instead of an eleven-column
+  primary table.
+- Fleet HTML now focuses on host posture, report age, profile, security and
+  lifecycle signals, update outcome, reboot state, notes, and report action.
+  The full CSV export remains unchanged.
+- WinGet updates are verified against observed installed and available versions;
+  successful process exit without observable version movement remains
+  `Verifying` instead of being reported as completed.
+- WinGet no longer injects installer-specific restart arguments. Restart
+  suppression relies on WinGet's supported invocation behavior.
+- Update-cap deferrals are recorded as report rows, and vendor fallbacks remain
+  eligible unless WinGet actually handled the package.
+
+### Fixed
+
+- Strict-mode failures caused by scalar `.Count` access and missing
+  `PackageName` properties in early or pre-flight reports.
+- False-green report verdicts for stale, EOL, NVD, KEV, reboot, and unverified
+  update evidence, including NVD High signals in fleet triage.
+- User-facing report overflow, cramped tablet tables, truncated prompt evidence,
+  and misleading success emphasis when work failed, skipped, or was deferred.
+
 ## [1.7.1] - 2026-07-17
 
 ### Fixed
@@ -38,10 +84,6 @@
 - `-ValidateConfig`, `PatchManager.config.schema.json`, configuration and
   operations guides, provider verification documentation, and regression tests
   for the hardened paths above.
-
-All notable changes to PatchManager are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[Semantic Versioning](https://semver.org/).
 
 ## [1.6.0] - 2026-07-15
 

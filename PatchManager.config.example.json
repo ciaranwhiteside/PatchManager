@@ -1,4 +1,4 @@
-{
+﻿{
   "$schema": "./PatchManager.config.schema.json",
   "_comment": "Example config. Copy to PatchManager.config.json and edit locally; do not commit personal runtime config.",
   "_comment_schema": "Validate with .\\Invoke-PatchManager.ps1 -ValidateConfig. Editor/pipeline schema: PatchManager.config.schema.json.",
@@ -150,7 +150,8 @@
   },
 
   "SLA": {
-    "_comment": "Availability SLA applies to eligible WinGet offers (stable package ID + target version). ReportOnly advances evidence; DryRun does not. Other providers remain visible in reports but are not in this clock.",
+    "_comment": "Enabled: null resolves by profile (Personal off, Commercial/CommercialManaged on); explicit true/false overrides it. Availability SLA applies only to eligible WinGet offers. ReportOnly advances evidence when enabled; DryRun does not.",
+    "Enabled": null,
     "Critical": 14,
     "High": 14,
     "Medium": 14,

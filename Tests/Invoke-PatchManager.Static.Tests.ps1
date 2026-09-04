@@ -1,4 +1,8 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
+
+param(
+    [string]$VisualArtifactPath = ''
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -6,10 +10,31 @@ $root = Split-Path -Parent $PSScriptRoot
 $scriptPath = Join-Path $root 'Invoke-PatchManager.ps1'
 $exampleConfigPath = Join-Path $root 'PatchManager.config.example.json'
 $configSchemaPath = Join-Path $root 'PatchManager.config.schema.json'
+$readmePath = Join-Path $root 'README.md'
+$changelogPath = Join-Path $root 'CHANGELOG.md'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
+}
+
+function Get-RelativeLuminance {
+    param([Parameter(Mandatory)] [string]$Hex)
+    $value = $Hex.TrimStart('#')
+    Assert-True ($value.Length -eq 6) "Contrast helper requires a six-digit hex color: $Hex"
+    $channels = foreach ($offset in @(0, 2, 4)) {
+        $channel = [Convert]::ToInt32($value.Substring($offset, 2), 16) / 255
+        if ($channel -le 0.04045) { $channel / 12.92 }
+        else { [Math]::Pow((($channel + 0.055) / 1.055), 2.4) }
+    }
+    return (0.2126 * $channels[0]) + (0.7152 * $channels[1]) + (0.0722 * $channels[2])
+}
+
+function Get-ContrastRatio {
+    param([Parameter(Mandatory)] [string]$Foreground, [Parameter(Mandatory)] [string]$Background)
+    $first = Get-RelativeLuminance $Foreground
+    $second = Get-RelativeLuminance $Background
+    return ([Math]::Max($first, $second) + 0.05) / ([Math]::Min($first, $second) + 0.05)
 }
 
 function Get-FunctionTextFromScriptAst {
@@ -33,6 +58,16 @@ Assert-True ($errors.Count -eq 0) "PowerShell parser errors:`n$($errors | Out-St
 Get-Content -Path $exampleConfigPath -Raw | ConvertFrom-Json | Out-Null
 Get-Content -Path $configSchemaPath -Raw | ConvertFrom-Json | Out-Null
 
+$scriptContent = Get-Content -Path $scriptPath -Raw
+$readmeContent = Get-Content -Path $readmePath -Raw
+$changelogContent = Get-Content -Path $changelogPath -Raw
+$versionMatch = [regex]::Match($scriptContent, "\`$script:VERSION\s*=\s*'([^']+)'")
+Assert-True $versionMatch.Success 'Release version should be declared as a script literal.'
+$releaseVersion = $versionMatch.Groups[1].Value
+Assert-True ($scriptContent -match "Patch Manager v$([regex]::Escape($releaseVersion))") 'Script help header and runtime version should match.'
+Assert-True ($readmeContent -match "Public beta \(v$([regex]::Escape($releaseVersion))\)") 'README public-beta version should match the runtime version.'
+Assert-True ($changelogContent -match "## \[$([regex]::Escape($releaseVersion))\]") 'Changelog should contain the runtime release version.'
+
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ObjectPropertyValue')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchRowKind')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchResult')
@@ -40,6 +75,10 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-Patc
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Update-StatsFromResults')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-HTMLReport')
 
+$falsePropertyObject = [pscustomobject]@{ Enabled = $false }
+$falsePropertyDictionary = [ordered]@{ Enabled = $false }
+Assert-True ((Get-ObjectPropertyValue $falsePropertyObject 'Enabled' $true) -eq $false) 'Object-property lookup must preserve an explicit false value.'
+Assert-True ((Get-ObjectPropertyValue $falsePropertyDictionary 'Enabled' $true) -eq $false) 'Dictionary lookup must preserve an explicit false value.'
 $dialogText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-PatchManagerDialog'
 $appPromptText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-AppInUsePrompt'
 $completionPromptText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-CompletionPopup'
@@ -53,6 +92,23 @@ Assert-True ($dialogText -match 'FromArgb\(196, 154, 61\)') 'User dialogs should
 Assert-True ($dialogText -match 'DrawBeziers') 'User dialogs should draw the PatchManager ledger curve in the brand mark.'
 Assert-True ($appPromptText -match 'Close the app to verify the update') 'App-in-use prompts should use evidence-led wording.'
 Assert-True ($completionPromptText -match 'Patch evidence is ready') 'Completion popups should use evidence-led wording.'
+Assert-True ($dialogText -match 'AutoScaleMode.*Dpi') 'Dialogs should scale at high DPI.'
+Assert-True ($dialogText -match 'AutoScaleDimensions.*96, 96') 'Dialogs should declare a 96-DPI design baseline for deterministic scaling.'
+Assert-True ($dialogText -match 'TableLayoutPanel') 'Dialogs should use responsive layout containers.'
+Assert-True ($dialogText -match '\$header\s*=\s*New-Object System\.Windows\.Forms\.TableLayoutPanel') 'Dialog headers should use layout containers rather than fixed coordinates.'
+Assert-True ($dialogText -notmatch '\.(?:Location|Size)\s*=\s*New-Object System\.Drawing') 'Dialog controls should not rely on fixed coordinates or fixed control sizes.'
+Assert-True ($dialogText -match 'MinimumSize\s*=\s*New-Object System\.Drawing\.Size\(120, 44\)') 'Dialog actions should retain a 44px minimum target before DPI scaling.'
+Assert-True ($dialogText -match '\$brandIcon\.MaximumSize\s*=\s*New-Object System\.Drawing\.Size\(52, 52\)') 'The dialog brand mark should keep its intended footprint instead of stretching the header column.'
+Assert-True ($dialogText -match '\$content\.AutoScroll\s*=\s*\$true') 'Long localized or technical dialog content should remain reachable.'
+Assert-True ($dialogText -notmatch '\$form\.Height\s*\+=') 'Expanding technical evidence should reflow instead of applying an unscaled height delta.'
+Assert-True ($dialogText -match '\$accent\.Margin\s*=\s*New-Object System\.Windows\.Forms\.Padding\(0\)') 'Dialog tone accents should remain visible inside the DPI-aware header row.'
+Assert-True ($dialogText -match "ValidateSet\('Neutral',\s*'Success',\s*'Attention',\s*'Failure'\)") 'Dialogs should expose explicit semantic tones.'
+Assert-True ($dialogText -match 'SystemInformation.*HighContrast') 'Dialogs should respect Windows High Contrast.'
+Assert-True ($dialogText -match 'DetailText') 'Dialogs should expose long technical evidence in an expandable details area.'
+Assert-True ($dialogText -notmatch 'AutoEllipsis\s*=\s*\$true') 'Dialog copy should not be ellipsized.'
+Assert-True ($dialogText -match 'Automatically defers in') 'Timed app-in-use prompts should announce the live defer countdown.'
+Assert-True ($completionPromptText -match "else \{ 'Success' \}") 'Clean completion prompts should use the success tone.'
+Assert-True ($completionPromptText -match "hasFailure\) \{ 'Failure' \}") 'Failed completion prompts should use the failure tone.'
 
 $script:Stats = [ordered]@{
     UpdatesPlanned = 0
@@ -69,7 +125,7 @@ $script:RING = 'Pilot'
 $script:STARTTIME = Get-Date
 $script:VERSION = 'test'
 $script:EmergencyPatch = $false
-$script:CFG = [pscustomobject]@{ SLA = [pscustomobject]@{ Critical = 14 } }
+$script:CFG = [pscustomobject]@{ SLA = [pscustomobject]@{ Enabled = $true; Critical = 14 } }
 $DryRun = [System.Management.Automation.SwitchParameter]::new($false)
 
 $sourceRows = @(
@@ -89,6 +145,14 @@ $updatedRows = @(
 
 Update-StatsFromResults -Results $updatedRows
 Assert-True ($script:Stats.UpdatesApplied -eq 2) 'Succeeded and Updated app rows must count as applied updates.'
+$script:ExitCode = 0
+$failedOutcomeRows = @(
+    New-PatchResult -Name 'Blocked app' -PackageId 'Test.Blocked' -Provider 'winget' -Source 'winget' -Status 'Blocked' -Success $false -Evidence 'Still open.'
+)
+Update-StatsFromResults -Results $failedOutcomeRows
+Assert-True ($script:Stats.UpdatesFailed -eq 1 -and $script:ExitCode -eq 1) 'Failed/blocked/verifying provider results must set a non-zero process exit code.'
+$script:ExitCode = 0
+Update-StatsFromResults -Results $updatedRows
 
 $html = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{
     AvgDaysToApply = 'N/A'
@@ -100,10 +164,23 @@ Assert-True ($html -match 'Source and provider checks') 'HTML report should incl
 Assert-True ($html -match 'WinGet source: winget') 'HTML report should show winget source check.'
 Assert-True ($html -match 'WinGet source: msstore') 'HTML report should show msstore source check.'
 Assert-True ($html -match 'Microsoft Store library updates') 'HTML report should show Microsoft Store client check.'
-Assert-True ($html -match '0 action row\(s\)') 'Source checks alone should not create actionable update rows.'
-Assert-True ($html -match 'class="bento-board') 'HTML report should include the audit summary board.'
-Assert-True ($html -match 'class="report-nav') 'HTML report should include the sticky report command navigation.'
-Assert-True ($html -match 'class="evidence-rail') 'HTML report should include the pinned evidence trail.'
+Assert-True ($html -match '0 prioritized package row\(s\)') 'Source checks alone should not create actionable update rows.'
+Assert-True ($html -match 'class="verdict-rail') 'HTML report should include the compact device verdict rail.'
+Assert-True ($html -match '\.panel\{min-width:0;') 'Report panels must be allowed to shrink inside grid columns.'
+Assert-True ($html -match '\.two-col\{display:grid;grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)') 'Two-column evidence grids must contain wide tables instead of clipping adjacent panels.'
+Assert-True ($html -match 'class="report-nav') 'HTML report should include the compact report command navigation.'
+Assert-True ($html -match 'class="run-identity nav-run-identity"') 'Device run identity should sit in the compact evidence header.'
+Assert-True ($html -match 'class="toolbar ledger-toolbar"') 'Device search and filters should sit beside the package ledger they control.'
+Assert-True ($html.IndexOf('class="toolbar ledger-toolbar"') -gt $html.IndexOf('id="updates"')) 'Device ledger controls should not consume the opening header.'
+Assert-True ($html -notmatch 'class="nav-links"') 'Device report should avoid pill-style anchor navigation in the evidence header.'
+Assert-True ($html -match 'class="panel health-map"') 'HTML report should include the provider systems health map.'
+Assert-True ($html -match 'class="health-root') 'Device health map should expose a device root node.'
+Assert-True ($html -match "class='health-node") 'Device health map should expose provider evidence nodes.'
+Assert-True ($html -match 'class="primary-action"') 'Device verdict should expose one clear primary action.'
+Assert-True ($html -match '@media\(max-width:820px\)[^{]*\{[^}]*.*?\.primary-action\{min-height:44px\}') 'Device compact cascade should restore a 44px primary action at tablet width.'
+Assert-True ($html -match '@media\(pointer:coarse\)\{[^}]*min-height:44px') 'Device report should preserve 44px controls for coarse pointers.'
+Assert-True ($html -match 'seed a79596f6') 'Device report should preserve the selected Impeccable direction contract in emitted HTML.'
+Assert-True ($html -like '*#updatesTable td:nth-child(6):before*') 'Device package rows should become labelled evidence cards on narrow screens.'
 Assert-True ($html -match 'No package updates required action') 'HTML report should preserve the composed zero-action empty state.'
 
 # End-user report layout: payload-first ordering + progressive-disclosure appendix.
@@ -116,9 +193,22 @@ Assert-True ($html -match '@media print') 'The report must retain print-specific
 # Ordering: the actionable updates section must precede the breakdown counts.
 Assert-True ($html.IndexOf('id="updates"') -lt $html.IndexOf('Result breakdown')) 'The actionable updates table must appear before the status/source/provider breakdown counts.'
 Assert-True ($html.IndexOf('id="updates"') -lt $html.IndexOf('id="auditDetail"')) 'The actionable updates table must appear before the audit-detail appendix.'
-# Slimmed summary board: four decision cards, no leftover Coverage/Action-rows cards.
-Assert-True ($html -match 'bento-kicker">Reboot required') 'The slimmed summary board should include a Reboot required card.'
-Assert-True ($html -notmatch 'bento-kicker">Coverage') 'The Coverage card should be folded into Run metrics, not shown on the summary board.'
+# Evidence-ladder opening: verdict, compact status, then prioritized action.
+Assert-True ($html -match 'class="verdict-state') 'The compact verdict rail should expose the run decision signals.'
+Assert-True ($html -match 'Package verification ledger') 'The primary package section should use evidence-led ledger wording.'
+Assert-True ($ast.Extent.Text -match 'class=.attention-list') 'The report should render one prioritized attention sequence.'
+Assert-True ($ast.Extent.Text -match 'Inventory KEV') 'The attention sequence should include inventory KEV evidence.'
+Assert-True ($ast.Extent.Text -match 'inventoryKevReviewGroups') 'Inventory KEV attention should group raw CVE rows into operator verification tasks.'
+Assert-True ($ast.Extent.Text -match "notmatch '\^\\s\*\(\?:SLA\\s\+\)\?BREACH:'") 'Structured SLA breaches should not be presented again as runtime errors.'
+Assert-True ($ast.Extent.Text -match 'Dry run found \$plannedCount planned update') 'Dry-run verdict should lead with the planned update count.'
+Assert-True ($ast.Extent.Text -match 'Dry run only - no package action was attempted') 'Planned rows should explain why no execution evidence exists.'
+Assert-True ($ast.Extent.Text -match '\$inventoryKevUnknownCount verify') 'The security summary should distinguish confirmed KEV exposure from verification work.'
+Assert-True ($ast.Extent.Text -match '\$slaEvidence\s*=\s*@\(\)\s*if \(\$slaEnabled(?:\s+-and[^)]*)?\)') 'SLA-disabled report evidence must initialize as a real empty array under strict mode.'
+Assert-True (([regex]::Matches($ast.Extent.Text, '\$slaBreaches\s*=\s*@\(\)\s*if \(\$script:CFG\.SLA\.Enabled\)')).Count -eq 3) 'Early-run and both main-run SLA breach collections must initialize as real empty arrays under strict mode.'
+Assert-True ($html -match '\.nav-brand\{display:none\}') 'Mobile report should remove the duplicate navigation brand to keep the verdict in the first viewport.'
+Assert-True ($html -match '\.hero-panel\{max-width:none;padding:12px;gap:8px\}') 'Mobile run evidence should remain visible in a compact first-viewport layout.'
+Assert-True ($ast.Extent.Text -match 'SLA exposure') 'The attention sequence should include SLA evidence.'
+Assert-True ($ast.Extent.Text -match 'Runtime error') 'The attention sequence should include runtime error evidence.'
 Assert-True ($html -notmatch 'class="report-lanes') 'The duplicate report-lanes navigation row should be removed.'
 Assert-True ($html -match 'expandAuditForFilter') 'An active search/filter must expand the audit appendix so matched rows are actually visible.'
 Assert-True ($html -match 'https://github.com/ciaranwhiteside/PatchManager') 'HTML report footer should link to the PatchManager repository.'
@@ -130,13 +220,22 @@ Assert-True ($html -match '--paper:#f6f2e8') 'HTML report should use the Ivory P
 Assert-True ($html -match '--blue:#18324a') 'HTML report should use the Audit Blue brand token.'
 Assert-True ($html -match '--green:#24744f') 'HTML report should use the Verified Green brand token.'
 Assert-True ($html -match '--red:#a53b35') 'HTML report should use the Exposure Red brand token.'
+Assert-True ($html -match '--amber:#955d20') 'HTML report should use the accessible Caution Amber ink token.'
 Assert-True ($html -match '--amber-curve:#c49a3d') 'HTML report should use the Caution Amber ledger token.'
+Assert-True ((Get-ContrastRatio '#955d20' '#faf0d8') -ge 4.5) 'Caution Amber text on its soft background must meet WCAG AA contrast.'
 Assert-True ($html -match 'Segoe UI Variable') 'HTML report should use the Windows-safe brand font stack.'
 Assert-True ($html -match 'Cascadia Mono') 'HTML report should use Cascadia/Consolas for evidence values.'
 Assert-True ($html -match 'Skip to update table') 'HTML report should include keyboard skip navigation.'
 Assert-True ($html -match "querySelectorAll\('tr\.data-row'\)") 'HTML report filters should discover options from all report rows.'
 Assert-True ($html -match 'report row\(s\) visible') 'HTML report filter count should describe all report rows.'
-Assert-True ($html -match 'margin:44px 0 52px') 'HTML report content should leave breathing room below the hero.'
+Assert-True ($html -match 'main\{max-width:1440px') 'HTML report content should use the bounded responsive canvas.'
+Assert-True ($html -match 'viewport-fit=cover') 'HTML reports should account for mobile safe areas.'
+Assert-True ($html -match 'height:44px') 'HTML report inputs should meet the 44px touch-target floor.'
+Assert-True ($html -match 'min-height:44px') 'HTML report buttons should meet the 44px touch-target floor.'
+Assert-True ($html -match 'input,select,button\{font-size:16px\}') 'Mobile form controls should avoid browser text-zoom and remain readable.'
+Assert-True ($html -match 'forced-colors:active') 'HTML report should support Windows High Contrast.'
+Assert-True ($html -match '\.meta-grid\{min-width:0;display:grid;grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)') 'Run metadata should be allowed to shrink without creating page-level mobile overflow.'
+Assert-True ($html -match '\.report-nav>\*\{min-width:0\}') 'Mobile report navigation children should not force the page wider than the viewport.'
 Assert-True ($html -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'HTML report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 Assert-True ($html -notmatch 'hero-visual|telemetry-strip|pulseBars') 'HTML report should not include decorative animated hero telemetry.'
 Assert-True ($html -notmatch '\.hero:before') 'HTML report hero should not include decorative pseudo-art.'
@@ -151,6 +250,29 @@ $actionHtml = New-HTMLReport -Results $updatedRows -KEVMatches @() -SLABreaches 
     Pending = 0
 })
 Assert-True ($actionHtml -match "id=['""]updatesTable['""]") 'HTML report should preserve the interactive updates table when action rows exist.'
+
+# Pending evidence remains amber; confirmed failures/exposure use red.
+$reviewOnlyRows = @(
+    New-PatchResult -Name 'Verification pending' -PackageId 'Test.Verifying' -Source 'winget' -Provider 'winget' -Status 'Verifying' -Success $false -Evidence 'Provider completed but installed version is not yet observable.'
+    New-PatchResult -Name 'Restart pending' -PackageId 'Test.Reboot' -Source 'windows-update' -Provider 'windows-update' -Status 'Succeeded' -Success $true -RebootRequired $true -Evidence 'Restart is required to finish verification.'
+)
+$script:Stats.Errors.Clear()
+Update-StatsFromResults -Results $reviewOnlyRows
+$reviewOnlyHtml = New-HTMLReport -Results $reviewOnlyRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @()
+Assert-True ($reviewOnlyHtml -match 'verdict-rail attention') 'Verifying/reboot-only evidence should use the amber verdict tone.'
+Assert-True ($reviewOnlyHtml -match "panel review-panel needs-attention") 'Verifying/reboot-only evidence should use an amber review panel.'
+Assert-True ($reviewOnlyHtml -match "<li class='review'>") 'Pending package evidence should use the amber review sequence marker.'
+Assert-True ($reviewOnlyHtml -notmatch "panel danger-panel needs-attention") 'Pending-only evidence must not be presented as confirmed failure/exposure.'
+
+$failedOnlyRows = @(
+    New-PatchResult -Name 'Install failed' -PackageId 'Test.Failed' -Source 'winget' -Provider 'winget' -Status 'Failed' -Success $false -Evidence 'Installer returned a confirmed failure.'
+)
+$script:Stats.Errors.Clear()
+Update-StatsFromResults -Results $failedOnlyRows
+$failedOnlyHtml = New-HTMLReport -Results $failedOnlyRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @()
+Assert-True ($failedOnlyHtml -match 'verdict-rail danger') 'Confirmed failure should use the red verdict tone.'
+Assert-True ($failedOnlyHtml -match "panel danger-panel needs-attention") 'Confirmed failure should use the red attention panel.'
+Update-StatsFromResults -Results $updatedRows
 
 $commercialRow = New-PatchResult -Name 'Google Chrome' -PackageId 'Google.Chrome' -Source 'winget' -Provider 'winget' -Status 'Descoped' -Evidence 'Commercial provider-managed browser.'
 Update-StatsFromResults -Results @($commercialRow)
@@ -228,7 +350,7 @@ function New-TestDefaultCfg {
         VendorUpdaters = [ordered]@{ Enabled = $true; ExtraCatalogue = @() }
         MicrosoftStore = [ordered]@{ Provider = 'Auto' }
         SelfUpdate = [ordered]@{ Enabled = $null; Ref = 'latest'; ExpectedSha256 = '' }
-        SLA = [ordered]@{ Critical = 14 }
+        SLA = [ordered]@{ Enabled = $null; Critical = 14 }
         Logging = [ordered]@{ RetentionDays = 90 }
         PreFlight = [ordered]@{ MinFreeSpaceGB = 5; MinBatteryPercent = 20 }
         NVD = [ordered]@{ DataSource = 'PublicApi'; MirrorBaseUrl = '' }
@@ -254,6 +376,7 @@ try {
     Assert-True (-not $mergedCfg.Network.Contains('_comment')) 'Config merge: section-level _comment keys should be skipped.'
     Assert-True ($mergedCfg.Network.BITSThrottleEnabled -eq $false) 'Personal profile should resolve BITSThrottleEnabled to false.'
     Assert-True ($mergedCfg.MaintenanceWindow.JitterMaxMinutes -eq 0) 'Personal profile should resolve JitterMaxMinutes to 0 - a single device should not delay itself.'
+    Assert-True ($mergedCfg.SLA.Enabled -eq $false) 'Personal profile should resolve SLA tracking to off.'
 
     # Commercial = FULL coverage + fleet behaviours. It must never silently
     # disable protection - that assumption belongs to CommercialManaged only.
@@ -271,6 +394,7 @@ try {
     Assert-True ($commercialCfg.PackageManagers.PythonManagerEnabled -eq $true) 'Commercial profile must keep the Python Install Manager enabled - only CommercialManaged assumes a platform owns it.'
     Assert-True ($commercialCfg.PackageManagers.ChocolateyEnabled -eq $false) 'Commercial profile must leave Chocolatey off by default - enabling it is an explicit licence decision.'
     Assert-True ($commercialCfg.SelfUpdate.Enabled -eq $true) 'Commercial profile should resolve self-update to on (no management platform owns the tool).'
+    Assert-True ($commercialCfg.SLA.Enabled -eq $true) 'Commercial profile should resolve SLA tracking to on.'
 
     # CommercialManaged = the explicit "our platform owns OS/Office/browsers" posture.
     $script:DefaultCfg = New-TestDefaultCfg
@@ -288,12 +412,20 @@ try {
     Assert-True ($managedCfg.PackageManagers.PythonManagerEnabled -eq $false) 'CommercialManaged profile should disable the Python Install Manager.'
     Assert-True ($managedCfg.PackageManagers.ChocolateyEnabled -eq $false) 'CommercialManaged profile should leave Chocolatey off.'
     Assert-True ($managedCfg.SelfUpdate.Enabled -eq $false) 'CommercialManaged profile should resolve self-update to off (the platform owns deployment).'
+    Assert-True ($managedCfg.SLA.Enabled -eq $true) 'CommercialManaged profile should resolve SLA tracking to on.'
 
     # Personal resolves the licensing-gated Chocolatey default to on (free use).
     $script:DefaultCfg = New-TestDefaultCfg
     $personalCfg = Import-Configuration -Path 'nonexistent-config.json'
     Assert-True ($personalCfg.PackageManagers.ChocolateyEnabled -eq $true) 'Personal profile should resolve Chocolatey to on (the CLI is free for personal use).'
     Assert-True ($personalCfg.SelfUpdate.Enabled -eq $true) 'Personal profile should resolve self-update to on by default.'
+    Assert-True ($personalCfg.SLA.Enabled -eq $false) 'Personal profile should keep SLA tracking off by default.'
+
+    # An explicit SLA.Enabled value must override the profile default.
+    $script:DefaultCfg = New-TestDefaultCfg
+    $script:DefaultCfg.SLA.Enabled = $true
+    $explicitSla = Import-Configuration -Path 'nonexistent-config.json'
+    Assert-True ($explicitSla.SLA.Enabled -eq $true) 'An explicit SLA.Enabled=true must override the Personal profile default.'
 
     # An explicit SelfUpdate.Enabled value must override the profile default.
     $script:DefaultCfg = New-TestDefaultCfg
@@ -402,6 +534,37 @@ Assert-True (($chromeMachineArgs -join ' ') -eq '--update-apps --system') 'Machi
 Assert-True (($chromeUserArgs -join ' ') -eq '--update-apps') 'Per-user Chrome installs must use --update-apps without --system.'
 Assert-True (($edgeArgs -join ' ') -eq '/ua /installsource scheduler') 'Edge must retain its Omaha-compatible update arguments.'
 
+#-- WinGet update execution correctness ----------------------------------------------
+$packageUpdateText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-PackageUpdate'
+$allUpdatesText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-AllUpdates'
+$newPatchResultText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchResult'
+Assert-True ($packageUpdateText -match 'Resolve-WinGetInstalledScope') 'WinGet upgrades must resolve the installed package scope instead of blindly forcing the configured default.'
+Assert-True ($packageUpdateText -match 'Get-WinGetPackageVerification') 'WinGet success/no-update outcomes must attempt structured post-update verification.'
+Assert-True ($packageUpdateText -notmatch "@\('--custom',\s*'/norestart'\)") 'WinGet must not append an installer-specific /norestart argument to every package.'
+Assert-True ($packageUpdateText -match '(?s)install technology is different.*LastUpdateStatus = ''Blocked''') 'Installer-technology conflicts must be non-retryable Blocked outcomes with remediation evidence.'
+Assert-True ($allUpdatesText -match 'deferredByCap') 'Packages beyond MaxUpdatesPerRun must remain visible as deferred rows.'
+Assert-True ($allUpdatesText -match 'ConfirmedVersion\s*=\s*\$script:LastUpdateConfirmedVersion') 'WinGet results must carry only the version observed during verification.'
+Assert-True ($newPatchResultText -notmatch 'ConfirmedVersion\s*=\s*\$AvailableVersion') 'The shared result model must not infer confirmation from a provider-reported target.'
+$unverifiedSuccess = New-PatchResult -Name 'Unverified' -PackageId 'Test.Unverified' -Provider 'test' -Source 'test' -AvailableVersion '2.0' -Status 'Succeeded' -Success $true
+Assert-True ([string]::IsNullOrWhiteSpace($unverifiedSuccess.ConfirmedVersion)) 'A successful command without observed version proof must leave ConfirmedVersion empty.'
+
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-WinGetInstalledScope')
+$script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ PackageTimeoutSeconds=300 } }
+$script:WINGET = 'fake-winget.exe'
+$script:ScopeProbeCalls = [System.Collections.Generic.List[string]]::new()
+function Invoke-CapturedProcess {
+    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds, [string[]]$StandardInputLines = @())
+    $joined = $Arguments -join ' '
+    $script:ScopeProbeCalls.Add($joined)
+    $found = $joined -match '--scope user'
+    [pscustomobject]@{ ExitCode=$(if ($found) { 0 } else { -1978335212 }); TimedOut=$false; Output='' }
+}
+$resolvedScope = Resolve-WinGetInstalledScope -PackageId 'Google.PlatformTools' -Source 'winget' -PreferredScope 'machine'
+Assert-True ($resolvedScope -eq 'user') 'Scope resolution must fall back from machine to the user scope that owns the package.'
+Assert-True ($script:ScopeProbeCalls.Count -eq 2 -and $script:ScopeProbeCalls[0] -match '--scope machine' -and $script:ScopeProbeCalls[1] -match '--scope user') 'Scope resolution must probe the configured scope first and alternate scope second.'
+Remove-Item Function:\Invoke-CapturedProcess
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+
 $browserProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-BrowserProvider'
 $vendorProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider'
 $m365ProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Microsoft365Provider'
@@ -452,10 +615,16 @@ $stalenessFindings = @(
     (New-StalenessFinding -Category 'Antivirus definitions' -Item 'Microsoft Defender' -Detail 'Signatures 12 days old.' -Severity 'review' -Recommendation 'Run Update-MpSignature.')
     (New-StalenessFinding -Category 'Developer runtime' -Item 'Node.js' -Detail 'Installed: v20.10.0.' -Severity 'info')
 )
+$savedDryRunForVerdict = $DryRun
+$DryRun = [System.Management.Automation.SwitchParameter]::new($false)
 $stalenessHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings $stalenessFindings
+$DryRun = $savedDryRunForVerdict
 Assert-True ($stalenessHtml -match 'Environment staleness') 'HTML report should render the Environment staleness panel when findings exist.'
 Assert-True ($stalenessHtml -match 'Report-only exposure checks') 'Staleness panel should state it is report-only.'
 Assert-True ($stalenessHtml -match 'Microsoft Defender') 'Staleness panel should list the Defender finding.'
+Assert-True ($stalenessHtml -match 'verdict-rail attention') 'A staleness-only report must use the amber verdict instead of false-green completion.'
+Assert-True ($stalenessHtml -match 'Review before close\.') 'A staleness-only report should direct the operator to review evidence.'
+Assert-True ($stalenessHtml -match 'panel review-panel') 'Advisory staleness evidence should use the amber review panel, not red danger.'
 
 #-- Report row classification (one predicate for JSON, HTML classes, and the count) ---
 function New-KindRow {
@@ -498,9 +667,51 @@ $driftAttention = @($driftRows | Where-Object { (Get-PatchRowKind $_) -eq 'atten
 Assert-True ($driftAttention.Count -eq 1) 'Attention rows: exactly the reboot-required row, not the descoped one.'
 $script:Stats.KEVMatches = 0
 $driftHtml = New-HTMLReport -Results $driftRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @()
-Assert-True ($driftHtml -match '1 item\(s\) need review') 'HTML headline must count the reboot-required row.'
-Assert-True ($driftHtml -match 'Skipped and descoped rows are deliberate outcomes and are not counted here') 'Attention panel must say descoped rows are excluded.'
-Assert-True ($driftHtml -notmatch '2 item\(s\) need review') 'HTML headline must not count the descoped row.'
+Assert-True ($driftHtml -match '1 operator task\(s\) need review') 'HTML headline must count the reboot-required row.'
+Assert-True ($driftHtml -match 'Skipped and descoped rows remain in the audit appendix') 'Attention panel must say descoped rows remain available as audit evidence.'
+Assert-True ($driftHtml -notmatch '2 operator task\(s\) need review') 'HTML headline must not count the descoped row.'
+# Regression from a real dry-run report: SLA breaches were duplicated as script errors,
+# and two unknown CVEs for one installed product appeared as two separate operator tasks.
+$script:Stats.UpdatesPlanned = 12
+$script:Stats.Errors = [System.Collections.Generic.List[string]]::new()
+$script:Stats.Errors.Add('SLA BREACH: 4 update(s) available for over 14 days.')
+$script:Stats.Errors.Add('  BREACH: Android SDK Platform-Tools v37.0.1 available since 2026-07-09 (due: 2026-07-23)')
+$script:Stats.Errors.Add('  BREACH: Affinity v3.2.3.4646 available since 2026-07-17 (due: 2026-07-31)')
+$script:Stats.Errors.Add('  BREACH: Microsoft GameInput v3.4.218 available since 2026-07-17 (due: 2026-07-31)')
+$script:Stats.Errors.Add('  BREACH: Rockstar Games Launcher v1.0.108.2970 available since 2026-07-18 (due: 2026-08-01)')
+$actualLikeInventoryKev = @(
+    [pscustomobject]@{ InstalledApp='Microsoft.Edge.GameAssist'; ExposureState='Unknown'; CVE='CVE-2016-7201'; InstalledVer='1.0'; FixedVersion=''; ExposureDetail='NVD range unavailable'; Description=''; CISADueDate='' }
+    [pscustomobject]@{ InstalledApp='Microsoft.Edge.GameAssist'; ExposureState='Unknown'; CVE='CVE-2016-7200'; InstalledVer='1.0'; FixedVersion=''; ExposureDetail='NVD range unavailable'; Description=''; CISADueDate='' }
+)
+$actualLikeSla = @(
+    [pscustomobject]@{ PackageName='Android SDK Platform-Tools'; PackageId='Google.PlatformTools'; VersionAvailable='37.0.1'; FirstSeenAvailable='2026-07-09'; SLADue='2026-07-23'; Ring='Pilot' }
+    [pscustomobject]@{ PackageName='Affinity'; PackageId='Canva.Affinity'; VersionAvailable='3.2.3.4646'; FirstSeenAvailable='2026-07-17'; SLADue='2026-07-31'; Ring='Pilot' }
+    [pscustomobject]@{ PackageName='Microsoft GameInput'; PackageId='Microsoft.GameInput'; VersionAvailable='3.4.218'; FirstSeenAvailable='2026-07-17'; SLADue='2026-07-31'; Ring='Pilot' }
+    [pscustomobject]@{ PackageName='Rockstar Games Launcher'; PackageId='RockstarGames.Launcher'; VersionAvailable='1.0.108.2970'; FirstSeenAvailable='2026-07-18'; SLADue='2026-08-01'; Ring='Pilot' }
+)
+$script:CFG = [pscustomobject]@{ SLA = [pscustomobject]@{ Enabled = $true; Critical = 14 } }
+$actualLikeHtml = New-HTMLReport -Results @() -KEVMatches @() -SLABreaches $actualLikeSla -Elapsed 0.4 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=12 }) -InventoryKEVMatches $actualLikeInventoryKev
+Assert-True ($actualLikeHtml -match 'Dry run found 12 planned update\(s\)') 'Real-report regression: dry-run verdict should lead with planned updates.'
+Assert-True ($actualLikeHtml -match '5 operator task\(s\) need review') 'Real-report regression: one grouped KEV verification plus four SLA tasks should total five.'
+Assert-True ($actualLikeHtml -match '0 package / 1 KEV review / 4 SLA / 0 runtime') 'Real-report regression: summary categories should be complete and de-duplicated.'
+Assert-True (([regex]::Matches($actualLikeHtml, 'Verify inventory KEV - Microsoft\.Edge\.GameAssist')).Count -eq 1) 'Real-report regression: unknown CVEs for one product should form one verification task.'
+Assert-True ($actualLikeHtml -match '2 catalogue CVE\(s\) need version verification') 'Real-report regression: grouped verification should retain the raw CVE count.'
+Assert-True ($actualLikeHtml -notmatch '<strong>Runtime error</strong>') 'Real-report regression: structured SLA messages must not reappear as runtime errors.'
+Assert-True ($actualLikeHtml -match 'Runtime: No errors') 'Real-report regression: runtime evidence should remain clean when only SLA messages were logged.'
+$script:CFG.SLA.Enabled = $false
+$personalSlaOffHtml = New-HTMLReport -Results @() -KEVMatches @() -SLABreaches $actualLikeSla -Elapsed 0.4 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=12 }) -InventoryKEVMatches $actualLikeInventoryKev
+Assert-True ($personalSlaOffHtml -notmatch 'SLA: Updates past deadline') 'Personal SLA-off report must omit the SLA evidence panel.'
+Assert-True ($personalSlaOffHtml -notmatch 'SLA exposure -') 'Personal SLA-off report must not create SLA operator tasks.'
+Assert-True ($personalSlaOffHtml -notmatch '\bSLA\b') 'Personal SLA-off report should omit SLA terminology entirely.'
+Assert-True ($personalSlaOffHtml -match 'Run metrics: Coverage summary') 'Personal SLA-off audit metrics should show coverage without patch-state SLA framing.'
+Assert-True ($personalSlaOffHtml -notmatch 'Patch state summary') 'Personal SLA-off audit metrics must not surface stale tracked-update state.'
+Assert-True ($personalSlaOffHtml -match 'class="two-col single reveal"') 'Security evidence should use the full width when the SLA panel is omitted.'
+$script:CFG.SLA = [ordered]@{ Enabled = $false; Critical = 14 }
+$earlySlaOffHtml = New-HTMLReport -Results @() -KEVMatches @() -SLABreaches $null -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @()
+$earlySlaFragments = @([regex]::Matches($earlySlaOffHtml, '.{0,80}\bSLA\b.{0,80}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) | ForEach-Object { $_.Value })
+Assert-True ($earlySlaOffHtml -notmatch '\bSLA\b') "An SLA-off early report must render without SLA terminology when the collection is null. Found: $($earlySlaFragments -join ' | ')"
+Assert-True ($earlySlaOffHtml -notmatch 'SLA: Updates past deadline') 'An SLA-off dictionary config must not be replaced by the report helper default.'
+$script:CFG.SLA.Enabled = $true
 
 #-- KEV exposure resolution (CISA KEV names products; NVD supplies versions) ---------
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-VersionParts')
@@ -739,18 +950,27 @@ $mainSrc = Get-Content -Path $scriptPath -Raw
 Assert-True ($mainSrc -match '(?s)EmergencyPatch\s*-and\s+-not\s+\$ReportOnly.*?NVD inventory scan: deferred') 'NVD scan must be deferred on an emergency run, never delay a KEV patch.'
 Assert-True ($mainSrc -notmatch '(?s)NVDVulnFindings[^\r\n]*EmergencyPatch\s*=\s*\$true') 'NVD findings must never set the emergency flag.'
 Assert-True ($mainSrc -match '-NVDFindings \$script:NVDVulnFindings') 'NVD findings must feed the patch-queue prioritiser.'
-
+Assert-True ($mainSrc -match 'coveredWinGetCandidates') 'Browser/vendor overlap suppression must depend on successful WinGet coverage, not discovery alone.'
+Assert-True ($mainSrc -match 'Invoke-BrowserProvider -Browser Chrome -WinGetCandidates \$coveredWinGetCandidates') 'Chrome native fallback must remain available after a failed or deferred WinGet row.'
 # HTML report renders the NVD panel with the danger tone only when a Critical exists.
 $script:Stats.KEVMatches = 0
+$savedDryRunForVerdict = $DryRun
+$DryRun = [System.Management.Automation.SwitchParameter]::new($false)
 $nvdHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings @() -NVDVulnFindings @($nvdFinding)
 Assert-True ($nvdHtml -match 'Known vulnerabilities \(NVD\)') 'HTML report should render the NVD panel when findings exist.'
 Assert-True ($nvdHtml -match 'not necessarily <em>actively exploited</em>') 'NVD panel must distinguish itself from KEV (known vs actively exploited).'
 Assert-True ($nvdHtml -match 'nvd\.nist\.gov/vuln/detail/CVE-2024-1283') 'NVD panel should link CVEs to nvd.nist.gov.'
+Assert-True ($nvdHtml -match 'verdict-rail danger') 'An NVD-critical-only report must use the red verdict instead of false-green completion.'
+Assert-True ($nvdHtml -match 'Exposure needs action\.') 'An NVD-critical-only report should expose the action verdict.'
+Assert-True ($nvdHtml -match "status fail'>Critical") 'Critical NVD evidence must use the implemented red failure badge class.'
 $highOnly = New-NVDVulnFinding -Item '7-Zip' -InstalledVersion '22.00' -Cpe 'cpe:2.3:a:7-zip:7-zip:*:*:*:*:*:*:*:*' -Cves @(
     [pscustomobject]@{ CVE='CVE-2024-11477'; CvssScore=7.8; CvssSeverity='HIGH'; Description='zstd'; Published='2024-11-22' }
 )
 $nvdHighHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings @() -NVDVulnFindings @($highOnly)
+$DryRun = $savedDryRunForVerdict
 Assert-True ($nvdHighHtml -notmatch "danger-panel'><div class='section-head'><div><p class='eyebrow'>Known vulnerabilities") 'An NVD panel with no Critical must not take the danger tone.'
+Assert-True ($nvdHighHtml -match 'verdict-rail attention') 'An NVD-high-only report should use the amber review verdict.'
+Assert-True ($nvdHighHtml -match 'panel review-panel') 'An NVD-high-only panel should use amber review styling.'
 
 # Example config exposes both new blocks.
 Assert-True ($null -ne $exampleCfg.PSObject.Properties['NVDInventoryScan']) 'Example config should expose the NVDInventoryScan block.'
@@ -787,7 +1007,7 @@ Assert-True ($w23Pro.name -eq '11-23h2-w') 'Windows build 22631 on Pro should ma
 Assert-True ((Test-EolStatus -Release $w23Pro).Status -eq 'EOL') 'Windows 23H2 (W) is out of support -> EOL.'
 $w23Ent = Resolve-WindowsEolRelease -Releases $winReleases -Build '22631' -Edition 'Enterprise'
 Assert-True ($w23Ent.name -eq '11-23h2-e') 'Windows build 22631 on Enterprise should map to the 23H2 (E) cycle.'
-Assert-True ((Test-EolStatus -Release $w23Ent).Status -eq 'Supported') 'Windows 23H2 (E) is still supported.'
+Assert-True ((Test-EolStatus -Release $w23Ent).Status -in @('Supported','NearEOL')) 'Windows 23H2 (E) remains in support, including the warning window.'
 $w25Pro = Resolve-WindowsEolRelease -Releases $winReleases -Build '26200' -Edition 'Professional'
 Assert-True ($w25Pro.name -eq '11-25h2-w') 'Windows build 26200 on Pro should map to the supported 25H2 (W) cycle.'
 Assert-True ($null -eq (Resolve-WindowsEolRelease -Releases $winReleases -Build '99999' -Edition 'Professional')) 'An unknown build resolves to $null (no crash under StrictMode).'
@@ -839,11 +1059,16 @@ $eolFindings = @(
     $okFinding
     $behindFinding
 )
+$savedDryRunForVerdict = $DryRun
+$DryRun = [System.Management.Automation.SwitchParameter]::new($false)
 $eolHtml = New-HTMLReport -Results $sourceRows -KEVMatches @() -SLABreaches @() -Elapsed 0.1 -Metrics ([pscustomobject]@{ AvgDaysToApply='N/A'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches @() -StalenessFindings @() -EndOfLifeFindings $eolFindings
+$DryRun = $savedDryRunForVerdict
 Assert-True ($eolHtml -match 'End-of-life') 'HTML report should render the End-of-life panel when findings exist.'
 Assert-True ($eolHtml -match 'endoflife\.date') 'EOL panel should credit its data source.'
 Assert-True ($eolHtml -match 'End of life') 'EOL panel should show the End of life status badge for an EOL row.'
 Assert-True ($eolHtml -match 'Behind latest') 'EOL panel should show the Behind latest badge for a PatchBehind row.'
+Assert-True ($eolHtml -match 'verdict-rail danger') 'An EOL-only report must use the red verdict instead of false-green completion.'
+Assert-True ($eolHtml -match "status fail'>End of life") 'Confirmed EOL evidence must use the implemented red failure badge class.'
 
 #-- KEV report rendering: exposure state must be visible, and tone must follow it ----
 $kevNotAffected = [pscustomobject]@{
@@ -965,6 +1190,7 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ContentAto
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchState')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Save-PatchState')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-SLABreaches')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchMetrics')
 
 $tempStateDir = Join-Path ([System.IO.Path]::GetTempPath()) "pm-test-state-$([guid]::NewGuid())"
 $script:CFG = [pscustomobject]@{
@@ -988,6 +1214,8 @@ try {
     # Force a breach by back-dating the SLA due date
     $state.TrackedUpdates[0].SLADue = (Get-Date).AddDays(-1).ToString('yyyy-MM-dd')
     Assert-True (@(Get-SLABreaches -State $state).Count -eq 1) 'SLA state: past-due unapplied update should breach.'
+    $disabledMetrics = Get-PatchMetrics -State $state -Enabled $false
+    Assert-True ($disabledMetrics.TotalTracked -eq 0 -and $disabledMetrics.Pending -eq 0 -and $disabledMetrics.SLABreaches -eq 0) 'SLA-disabled metrics must not surface stale tracked state.'
 
     # Applying the update clears the breach
     $appliedRow = [pscustomobject]@{ PackageId = 'Vendor.App'; Success = $true; Status = 'Succeeded'; ConfirmedVersion = '2.0'; AvailableVersion = '2.0'; NewVer = '2.0' }
@@ -1088,6 +1316,7 @@ Assert-True ($taskInstallText -match '-WindowStyle Hidden') 'The startup task mu
 
 $mainText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Main'
 $earlyRunText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun'
+Assert-True ($earlyRunText -match 'CFG\.SLA\.Enabled') 'Early-run reports must respect profile-resolved SLA tracking.'
 $liveScriptText = Get-Content -Path $scriptPath -Raw
 Assert-True ($liveScriptText -notmatch '#Requires\s+-RunAsAdministrator') '-ValidateConfig must remain usable from a non-elevated session.'
 Assert-True ($mainText -match 'Test-IsAdministrator') 'Live patch and task operations must retain an explicit administrator gate.'
@@ -1110,9 +1339,87 @@ try {
     Assert-True ($fleetRow.Note -eq 'Maintenance-window deferral') 'Fleet integration: terminal disposition should appear in Notes.'
     $fleetHtmlText = Get-Content $fleetHtmlPath.FullName -Raw
     Assert-True ($fleetHtmlText -match "data-posture='attention'") 'Fleet integration: a terminal deferral must be classified as attention.'
-    Assert-True ($fleetHtmlText -match 'Failures / deferred') 'Fleet integration: dashboard should expose deferred provider runs.'
+    Assert-True ($fleetHtmlText -match 'Failed / deferred') 'Fleet integration: dashboard should expose deferred provider runs.'
+    Assert-True ($fleetHtmlText -match 'Security hosts') 'Fleet integration: an all-Personal estate should use neutral security wording without SLA labels.'
+    Assert-True ($fleetHtmlText -notmatch 'SLA pressure|KEV / SLA') 'Fleet integration: an all-Personal estate with no breaches should not advertise SLA pressure.'
+    Assert-True ($fleetHtmlText -match 'class="lane danger" data-risk-filter="failure"') 'Fleet integration: a deferred host should mark only its execution path as action-required.'
+    Assert-True ($fleetHtmlText -match 'class="lane good" data-risk-filter="security"') 'Fleet integration: a zero-count security path should render verified.'
+    Assert-True ($fleetHtmlText -match 'class="lane good" data-risk-filter="stale"') 'Fleet integration: a zero-count currency path should render verified.'
+    Assert-True ($fleetHtmlText -match 'class="lane good" data-risk-filter="eol"') 'Fleet integration: a zero-count lifecycle path should render verified.'
+    Assert-True ($fleetHtmlText -match 'class="lane good" data-risk-filter="reboot"') 'Fleet integration: a zero-count completion path should render verified.'
 } finally {
     Remove-Item $fleetOutputDir -Recurse -Force -EA SilentlyContinue
+}
+
+#-- Fleet clear-estate health-map semantics -----------------------------------------
+$fleetClearRoot = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-clear-$([guid]::NewGuid())"
+$fleetClearOutput = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-clear-output-$([guid]::NewGuid())"
+try {
+    $clearHostDir = New-Item -ItemType Directory -Path (Join-Path $fleetClearRoot 'CLEAR-HOST') -Force
+    $clearReport = [ordered]@{
+        Metadata = [ordered]@{ Hostname='CLEAR-HOST'; ScriptVer='test'; Ring='Pilot'; ScopeProfile='Personal'; DryRun=$false; ProvidersExecuted=$true; RunDisposition='' }
+        Statistics = [ordered]@{ UpdatesApplied=3; UpdatesFailed=0; UpdatesSkipped=0; KEVMatches=0; NvdCritical=0; NvdHigh=0; SLABreaches=0; Errors=@() }
+        AttentionItems = @()
+        RebootRequiredItems = @()
+        InventoryKEVMatches = @()
+        EndOfLifeFindings = @()
+        StalenessFindings = @()
+    }
+    $clearJson = Join-Path $clearHostDir.FullName 'PatchReport_CLEAR-HOST_20991231_235959_000.json'
+    $clearReport | ConvertTo-Json -Depth 8 | Set-Content -Path $clearJson -Encoding UTF8
+    & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $fleetClearRoot -OutputPath $fleetClearOutput -StaleDays 9999
+    $clearHtmlPath = Get-ChildItem $fleetClearOutput -Filter 'FleetReport_*.html' | Select-Object -First 1
+    $clearHtml = Get-Content $clearHtmlPath.FullName -Raw
+    Assert-True ($clearHtml -match 'class="fleet-verdict good"') 'Fleet clear integration: a clean estate should use the verified verdict tone.'
+    foreach ($risk in @('security','failure','stale','eol','reboot')) {
+        Assert-True ($clearHtml -match ('class="lane good" data-risk-filter="' + $risk + '"')) "Fleet clear integration: the $risk path should render verified when its predicate count is zero."
+    }
+} finally {
+    Remove-Item $fleetClearRoot -Recurse -Force -EA SilentlyContinue
+    Remove-Item $fleetClearOutput -Recurse -Force -EA SilentlyContinue
+}
+
+#-- Fleet malformed/empty-host resilience ------------------------------------------
+$fleetEdgeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-edge-$([guid]::NewGuid())"
+$fleetEdgeOutput = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-edge-output-$([guid]::NewGuid())"
+try {
+    $brokenHostDir = New-Item -ItemType Directory -Path (Join-Path $fleetEdgeRoot 'BrokenHost') -Force
+    [void](New-Item -ItemType Directory -Path (Join-Path $fleetEdgeRoot 'EmptyHost') -Force)
+    $brokenJsonPath = Join-Path $brokenHostDir.FullName 'PatchReport_BrokenHost_20260827_000000_000.json'
+    Set-Content -Path $brokenJsonPath -Value '{ malformed json' -Encoding UTF8
+    Set-Content -Path ([System.IO.Path]::ChangeExtension($brokenJsonPath, '.html')) -Value '<!DOCTYPE html><title>Broken host evidence</title>' -Encoding UTF8
+
+    & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $fleetEdgeRoot -OutputPath $fleetEdgeOutput -StaleDays 7
+    $edgeCsvPath = Get-ChildItem $fleetEdgeOutput -Filter 'FleetReport_*.csv' | Select-Object -First 1
+    $edgeHtmlPath = Get-ChildItem $fleetEdgeOutput -Filter 'FleetReport_*.html' | Select-Object -First 1
+    $edgeRows = @(Import-Csv $edgeCsvPath.FullName)
+    $brokenRow = $edgeRows | Where-Object Hostname -eq 'BrokenHost' | Select-Object -First 1
+    $emptyRow = $edgeRows | Where-Object Hostname -eq 'EmptyHost' | Select-Object -First 1
+    Assert-True ($edgeRows.Count -eq 2) 'Fleet edge integration: malformed and empty hosts should both remain visible.'
+    Assert-True ($brokenRow.Note -match '^Could not parse') 'Fleet edge integration: malformed JSON should produce a specific recovery note.'
+    Assert-True ($emptyRow.Note -eq 'Folder exists but contains no JSON reports.') 'Fleet edge integration: an empty host folder should produce the explicit no-report note.'
+    $edgeHtml = Get-Content $edgeHtmlPath.FullName -Raw
+    Assert-True ($edgeHtml -match "class='host-link' href='file:///") 'Fleet edge integration: an existing sibling HTML report should use a safe absolute file URI even when JSON is malformed.'
+    Assert-True ($edgeHtml -match "<strong>EmptyHost</strong><span class='cell-detail'>HTML report unavailable") 'Fleet edge integration: missing HTML should render plain text rather than a broken link.'
+} finally {
+    Remove-Item $fleetEdgeRoot -Recurse -Force -EA SilentlyContinue
+    Remove-Item $fleetEdgeOutput -Recurse -Force -EA SilentlyContinue
+}
+
+$emptyFleetRoot = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-empty-$([guid]::NewGuid())"
+$emptyFleetOutput = Join-Path ([System.IO.Path]::GetTempPath()) "pm-fleet-empty-output-$([guid]::NewGuid())"
+try {
+    [void](New-Item -ItemType Directory -Path $emptyFleetRoot -Force)
+    $emptyFleetThrew = $false
+    try {
+        & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $emptyFleetRoot -OutputPath $emptyFleetOutput
+    } catch {
+        $emptyFleetThrew = $_.Exception.Message -match 'No host report folders found'
+    }
+    Assert-True $emptyFleetThrew 'Fleet edge integration: an empty estate should fail with a specific configuration recovery message.'
+} finally {
+    Remove-Item $emptyFleetRoot -Recurse -Force -EA SilentlyContinue
+    Remove-Item $emptyFleetOutput -Recurse -Force -EA SilentlyContinue
 }
 
 #-- Public file hygiene ---------------------------------------------------------------
@@ -1168,11 +1475,50 @@ Assert-True ($brandMark -match '#C49A3D') 'Canonical brand mark should include t
 Assert-True ($brandWordmark -match '#C49A3D') 'Wordmark should use the canonical amber ledger curve.'
 Assert-True ($brandBoard -match 'Ledger curve = auditable proof') 'Brand board should document the ledger curve.'
 
-$fleetScript = Get-Content -Path (Join-Path $root 'Get-FleetReport.ps1') -Raw
-Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the sticky fleet command navigation.'
-Assert-True ($fleetScript -match 'class="fleet-bento') 'Fleet report should include the audit fleet summary.'
-Assert-True ($fleetScript -match 'class="fleet-lanes') 'Fleet report should include horizontal fleet risk lanes.'
-Assert-True ($fleetScript -match 'class="fleet-evidence') 'Fleet report should include the pinned fleet evidence rail.'
+$fleetPath = Join-Path $root 'Get-FleetReport.ps1'
+$fleetScript = Get-Content -Path $fleetPath -Raw
+$fleetTokens = $null
+$fleetErrors = $null
+$fleetAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $fleetPath), [ref]$fleetTokens, [ref]$fleetErrors)
+Assert-True ($fleetErrors.Count -eq 0) "Fleet report parser errors: $($fleetErrors | Out-String)"
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $fleetAst -Name 'Get-FleetRiskRank')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $fleetAst -Name 'Get-FleetPosture')
+function New-FleetRiskTestRow {
+    param([int]$Kev = 0, [int]$InventoryKev = 0, [int]$NvdCritical = 0, [int]$NvdHigh = 0, [int]$Sla = 0, [int]$Failed = 0, [int]$Errors = 0, [bool]$ProvidersExecuted = $true, [bool]$Stale = $false, [int]$Eol = 0, [int]$Staleness = 0, [int]$Reboot = 0)
+    [pscustomobject]@{ KEVMatches=$Kev; InventoryKEV=$InventoryKev; NvdCritical=$NvdCritical; NvdHigh=$NvdHigh; SLABreaches=$Sla; Failed=$Failed; Errors=$Errors; ProvidersExecuted=$ProvidersExecuted; Stale=$Stale; EolExposure=$Eol; StalenessReview=$Staleness; RebootRequired=$Reboot }
+}
+foreach ($row in @((New-FleetRiskTestRow -Kev 1),(New-FleetRiskTestRow -InventoryKev 1),(New-FleetRiskTestRow -NvdCritical 1),(New-FleetRiskTestRow -Sla 1))) {
+    Assert-True ((Get-FleetRiskRank $row) -eq 1) 'KEV, inventory KEV, NVD Critical, and SLA exposure must rank first.'
+}
+foreach ($row in @((New-FleetRiskTestRow -Failed 1),(New-FleetRiskTestRow -Errors 1),(New-FleetRiskTestRow -ProvidersExecuted $false))) {
+    Assert-True ((Get-FleetRiskRank $row) -eq 2) 'Failures, script errors, and deferred provider execution must rank second.'
+}
+foreach ($row in @((New-FleetRiskTestRow -Stale $true),(New-FleetRiskTestRow -Eol 1),(New-FleetRiskTestRow -NvdHigh 1),(New-FleetRiskTestRow -Staleness 1),(New-FleetRiskTestRow -Reboot 1))) {
+    Assert-True ((Get-FleetRiskRank $row) -eq 3) 'Stale, EOL, NVD High, staleness, and reboot signals must rank third.'
+}
+Assert-True ((Get-FleetRiskRank (New-FleetRiskTestRow)) -eq 4) 'Healthy hosts must rank last.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow -Failed 1)) -eq 'attention') 'Confirmed fleet failures should use the red attention posture.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow -Eol 1)) -eq 'attention') 'Confirmed EOL exposure should use the red attention posture.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow -Reboot 1)) -eq 'review') 'Reboot-only fleet evidence should use the amber review posture.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow -NvdHigh 1)) -eq 'review') 'NVD-high-only fleet evidence should use the amber review posture.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow -Staleness 1)) -eq 'review') 'Staleness findings should use the amber review posture.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow -Stale $true)) -eq 'stale') 'Old reports should retain the explicit stale posture.'
+Assert-True ((Get-FleetPosture (New-FleetRiskTestRow)) -eq 'healthy') 'Clear fleet rows should retain the healthy posture.'
+Assert-True ($fleetScript -match 'class="fleet-nav') 'Fleet report should include the compact fleet evidence header.'
+Assert-True ($fleetScript -match 'class="fleet-run-identity nav-run-identity"') 'Fleet run identity should sit in the compact evidence header.'
+Assert-True ($fleetScript -match 'class="fleet-toolbar ledger-toolbar"') 'Fleet search and filters should sit beside the host ledger they control.'
+Assert-True ($fleetScript -notmatch 'class="nav-links"') 'Fleet report should avoid pill-style anchor navigation in the evidence header.'
+Assert-True ($fleetScript -match 'class="fleet-verdict') 'Fleet report should include the compact estate verdict rail.'
+Assert-True ($fleetScript -match 'class="panel fleet-health-map"') 'Fleet report should include the connected estate health map.'
+Assert-True ($fleetScript -match 'class="fleet-lanes" aria-label="Filter hosts by risk"') 'Fleet report should retain functional risk lanes inside the health map.'
+Assert-True ($fleetScript -match 'class="estate-root') 'Fleet health map should expose a connected estate root node.'
+Assert-True ($fleetScript -match 'Open prioritized host queue') 'Fleet verdict should expose one clear primary action.'
+Assert-True ($fleetScript -match 'seed a79596f6') 'Fleet report should preserve the selected Impeccable direction contract in emitted HTML.'
+Assert-True ($fleetScript -like '*#fleetTable td:nth-child(8):before*') 'Fleet host rows should become labelled evidence cards on narrow screens.'
+Assert-True ($fleetScript -match '@media\(max-width:820px\).*?#fleetTable\{min-width:0\}') 'Fleet host rows should reflow at tablet width instead of hiding columns in horizontal scroll.'
+Assert-True ($fleetScript -match '@media\(max-width:820px\).*?\.primary-action\{min-height:44px\}') 'Fleet compact cascade should restore a 44px primary action at tablet width.'
+Assert-True ($fleetScript -match '@media\(pointer:coarse\)\{[^}]*min-height:44px') 'Fleet report should preserve 44px controls for coarse pointers.'
+Assert-True ($fleetScript -match 'class="fleet-evidence') 'Fleet report should preserve evidence provenance after the host queue.'
 Assert-True ($fleetScript -match 'class="brand-mark"') 'Fleet report should include the inline PatchManager brand mark.'
 Assert-True ($fleetScript -match '#c49a3d') 'Fleet report brand mark should include the amber ledger curve.'
 Assert-True ($fleetScript -match 'Patch\. Verify\. Prove it\.') 'Fleet report should include the PatchManager brand tagline.'
@@ -1181,7 +1527,9 @@ Assert-True ($fleetScript -match '--paper:#f6f2e8') 'Fleet report should use the
 Assert-True ($fleetScript -match '--blue:#18324a') 'Fleet report should use the Audit Blue brand token.'
 Assert-True ($fleetScript -match '--green:#24744f') 'Fleet report should use the Verified Green brand token.'
 Assert-True ($fleetScript -match '--red:#a53b35') 'Fleet report should use the Exposure Red brand token.'
+Assert-True ($fleetScript -match '--amber:#955d20') 'Fleet report should use the accessible Caution Amber ink token.'
 Assert-True ($fleetScript -match '--amber-curve:#c49a3d') 'Fleet report should use the Caution Amber ledger token.'
+Assert-True ((Get-ContrastRatio '#955d20' '#faf0d8') -ge 4.5) 'Fleet Caution Amber text on its soft background must meet WCAG AA contrast.'
 Assert-True ($fleetScript -match 'Segoe UI Variable') 'Fleet report should use the Windows-safe brand font stack.'
 Assert-True ($fleetScript -match 'Cascadia Mono') 'Fleet report should use Cascadia/Consolas for evidence values.'
 Assert-True ($fleetScript -match 'Skip to host table') 'Fleet report should include keyboard skip navigation.'
@@ -1194,13 +1542,101 @@ Assert-True ($fleetScript -match 'data-ring=') 'Fleet report ring filter should 
 Assert-True ($fleetScript -match 'data-profile=') 'Fleet report profile filter should be populated from row data.'
 Assert-True ($fleetScript -match 'ProvidersExecuted') 'Fleet report must distinguish terminal deferrals from completed provider runs.'
 Assert-True ($fleetScript -match 'data-sort="host"') 'Fleet report host table should keep sortable host columns.'
-Assert-True ($fleetScript -match '<th data-sort="invkev">Inv\. KEV</th>') 'Fleet report host table should keep the inventory KEV column.'
+Assert-True ($fleetScript -match 'Host / priority') 'Fleet report should use the reduced triage-oriented host table.'
+Assert-True ($fleetScript -match 'All metrics') 'Secondary fleet metrics should move into expandable per-host details.'
+Assert-True ($fleetScript -match 'data-risk-filter="security"') 'Fleet risk lanes should be functional security predicates.'
+Assert-True ($fleetScript -match 'data-risk-filter="failure"') 'Fleet risk lanes should expose execution failure predicates.'
+Assert-True ($fleetScript.Contains('class="lane $securityTone" data-risk-filter="security"')) 'Fleet security lane tone should derive from its actual predicate count.'
+Assert-True ($fleetScript.Contains('class="lane $executionTone" data-risk-filter="failure"')) 'Fleet execution lane tone should derive from failed, errored, or deferred hosts.'
+Assert-True ($fleetScript.Contains('class="lane $currencyTone" data-risk-filter="stale"')) 'Fleet currency lane tone should derive from stale evidence.'
+Assert-True ($fleetScript.Contains('class="lane $lifecycleTone" data-risk-filter="eol"')) 'Fleet lifecycle lane tone should derive from end-of-life exposure.'
+Assert-True ($fleetScript.Contains('class="lane $completionTone" data-risk-filter="reboot"')) 'Fleet completion lane tone should derive from reboot-required hosts.'
+Assert-True ($fleetScript -match '\$_.Stale -or \$_.StalenessReview -gt 0') 'The stale-evidence lane should include both old reports and staleness findings.'
+Assert-True ($fleetScript -match 'NvdHigh -gt 0 -or \$_.SLABreaches -gt 0\) \{ \$riskTokens.Add\(''security''\) \}') 'NVD High must participate in the fleet security filter predicate.'
+Assert-True ($fleetScript -match "signal attention.*NVD high") 'NVD High must be visible as an amber fleet signal.'
+Assert-True ($fleetScript -match 'aria-pressed="false"') 'Fleet risk lanes should expose toggle state.'
+Assert-True ($fleetScript -match "riskFilter=''") 'Clearing fleet filters should also clear the active risk lane.'
+Assert-True ($fleetScript -match "setAttribute\('aria-sort'") 'Sortable fleet headers should update aria-sort.'
+Assert-True ($fleetScript -match 'role="status" aria-live="polite"') 'Fleet filtering should announce visible result counts.'
+Assert-True ($fleetScript -match 'ChangeExtension\(\$latestJson.FullName, ''.html''\)') 'Fleet report links should target the matching HTML beside the selected JSON.'
+Assert-True ($fleetScript -match '\.AbsoluteUri') 'Fleet report links should use safe absolute file URIs.'
+Assert-True ($fleetScript -match 'HTML report unavailable') 'Fleet hostnames should fall back to plain text when HTML is unavailable.'
+Assert-True ($fleetScript -match 'Export-Csv -Path \$csvPath -NoTypeInformation') 'The fleet CSV export path and columns should remain sourced from the unchanged host rows.'
 Assert-True ($fleetScript -match 'https://github.com/ciaranwhiteside/PatchManager') 'Fleet report footer should link to the PatchManager repository.'
 Assert-True ($fleetScript -match '<noscript><style>\.reveal\{opacity:1') 'Fleet report must stay readable when JavaScript is disabled.'
-Assert-True ($fleetScript -match '\.reveal\{opacity:1 !important') 'Fleet report reveal sections must always print.'
+Assert-True ($fleetScript -match 'details>:not\(summary\)\{display:') 'Fleet report detail evidence must remain visible for print and no-JavaScript output.'
+Assert-True ($fleetScript -match 'forced-colors:active') 'Fleet report should support Windows High Contrast.'
 Assert-True ($fleetScript -match 'prefers-reduced-motion') 'Fleet report should respect reduced-motion preferences.'
+Assert-True ($fleetScript -match 'viewport-fit=cover') 'Fleet reports should account for mobile safe areas.'
+Assert-True ($fleetScript -match 'height:44px') 'Fleet inputs should meet the 44px touch-target floor.'
+Assert-True ($fleetScript -match 'min-height:44px') 'Fleet buttons should meet the 44px touch-target floor.'
+Assert-True ($fleetScript -match 'input,select,button\{font-size:16px\}') 'Fleet mobile form controls should remain readable without browser text zoom.'
+Assert-True ($fleetScript -match '\.hero-panel\{min-width:0;') 'Fleet hero evidence should shrink within narrow viewports.'
+Assert-True ($fleetScript -match '\.fleet-nav>\*\{min-width:0\}') 'Fleet mobile navigation children should not force page-level horizontal overflow.'
 Assert-True ($fleetScript -notmatch 'cdnjs|unpkg|fonts\.googleapis|picsum|gsap') 'Fleet report should stay offline with no CDN, remote font, image, or GSAP dependency.'
 Assert-True ($fleetScript -notmatch 'hero-visual|telemetry-strip|pulseBars') 'Fleet report should not include decorative animated hero telemetry.'
 Assert-True ($fleetScript -notmatch '\.hero:before') 'Fleet report hero should not include decorative pseudo-art.'
+
+if (-not [string]::IsNullOrWhiteSpace($VisualArtifactPath)) {
+    [void](New-Item -ItemType Directory -Path $VisualArtifactPath -Force)
+
+    $script:HOSTNAME = 'DEMO-WORKSTATION'
+    $script:RING = 'Pilot'
+    $script:VERSION = '1.7.1'
+    $script:STARTTIME = (Get-Date).AddMinutes(-7)
+    $script:EmergencyPatch = $false
+    $script:CFG = [pscustomobject]@{ SLA = [pscustomobject]@{ Enabled = $false; Critical = 14 } }
+    $DryRun = [System.Management.Automation.SwitchParameter]::new($false)
+    $script:Stats.Errors = [System.Collections.Generic.List[string]]::new()
+    $visualRows = @(
+        (New-PatchResult -Name '7-Zip' -PackageId '7zip.7zip' -Source 'winget' -Provider 'winget' -InstalledVersion '24.08' -AvailableVersion '24.09' -ConfirmedVersion '24.09' -Status 'Updated' -Success $true -Evidence 'Installed version confirmed after WinGet completed.')
+        (New-PatchResult -Name 'Affinity' -PackageId 'Canva.Affinity' -Source 'winget' -Provider 'winget' -InstalledVersion '3.2.2' -AvailableVersion '3.2.3' -Status 'Failed' -Success $false -Evidence 'Installer returned a confirmed failure. Retry from an elevated terminal.')
+        (New-PatchResult -Name 'Microsoft 365 Apps' -PackageId 'Microsoft.Office.ClickToRun' -Source 'office-c2r' -Provider 'microsoft-365' -InstalledVersion '16.0.19127.20264' -AvailableVersion '16.0.19127.20310' -Status 'Verifying' -Success $false -Evidence 'Click-to-Run is still applying; confirm on the next run.')
+        (New-PatchResult -Name 'Windows cumulative update' -PackageId 'Windows.Update.KB5070001' -Source 'windows-update' -Provider 'windows-update' -InstalledVersion 'KB5069999' -AvailableVersion 'KB5070001' -ConfirmedVersion 'KB5070001' -Status 'Succeeded' -Success $true -RebootRequired $true -Evidence 'Installation completed; restart is required to finish servicing.')
+        (New-PatchResult -Name 'WinGet source: winget' -PackageId 'WinGet.Source.winget' -Source 'winget' -Provider 'winget-discovery' -Status 'Completed' -Success $true -Evidence 'Source health and discovery completed.')
+        (New-PatchResult -Name 'Managed browser' -PackageId 'Example.ManagedBrowser' -Source 'winget' -Provider 'winget' -Status 'Descoped' -Success $false -Evidence 'Managed by the selected commercial provider profile.')
+    )
+    Update-StatsFromResults -Results $visualRows
+    $visualInventoryKev = @(
+        [pscustomobject]@{ InstalledApp='Microsoft Edge Game Assist'; ExposureState='Unknown'; CVE='CVE-2016-7201'; InstalledVer='1.0'; FixedVersion=''; ExposureDetail='NVD range unavailable; verify the installed build manually.'; Description='Product-name match requires version evidence.'; CISADueDate='2016-12-01' }
+    )
+    $visualStaleness = @(
+        [pscustomobject]@{ Category='Antivirus definitions'; Item='Microsoft Defender'; Severity='review'; Detail='Security intelligence is 9 days old.'; Recommendation='Run Update-MpSignature.' }
+    )
+    $visualEol = @(
+        [pscustomobject]@{ Item='Node.js'; InstalledVersion='18.20.4'; Cycle='18'; Status='EOL'; Severity='review'; EolDate='2025-04-30'; LatestSupported='22.18.0'; Detail='Move to a supported LTS release.' }
+    )
+    $visualHtml = New-HTMLReport -Results $visualRows -KEVMatches @() -SLABreaches @() -Elapsed 7.2 -Metrics ([pscustomobject]@{ AvgDaysToApply='2.4'; TotalTracked=0; Applied=0; Pending=0 }) -InventoryKEVMatches $visualInventoryKev -StalenessFindings $visualStaleness -EndOfLifeFindings $visualEol
+    $visualDevicePath = Join-Path $VisualArtifactPath 'DeviceReport.html'
+    Set-Content -Path $visualDevicePath -Value $visualHtml -Encoding UTF8
+
+    $visualCentral = Join-Path $VisualArtifactPath 'FleetCentral'
+    $visualFleetOutput = Join-Path $VisualArtifactPath 'FleetOutput'
+    [void](New-Item -ItemType Directory -Path $visualCentral -Force)
+    $fleetSamples = @(
+        [pscustomobject]@{ Host='SECURITY-HOST'; Applied=2; Failed=0; Providers=$true; Kev=1; InventoryKev='Affected'; NvdCritical=1; Eol=$false; Staleness=$false; Reboot=$false; Note='' },
+        [pscustomobject]@{ Host='FAILED-HOST'; Applied=0; Failed=1; Providers=$true; Kev=0; InventoryKev=''; NvdCritical=0; Eol=$false; Staleness=$false; Reboot=$false; Note='' },
+        [pscustomobject]@{ Host='REVIEW-HOST'; Applied=3; Failed=0; Providers=$true; Kev=0; InventoryKev=''; NvdCritical=0; Eol=$false; Staleness=$true; Reboot=$true; Note='' },
+        [pscustomobject]@{ Host='HEALTHY-HOST'; Applied=4; Failed=0; Providers=$true; Kev=0; InventoryKev=''; NvdCritical=0; Eol=$false; Staleness=$false; Reboot=$false; Note='' },
+        [pscustomobject]@{ Host='DEFERRED-HOST'; Applied=0; Failed=0; Providers=$false; Kev=0; InventoryKev=''; NvdCritical=0; Eol=$false; Staleness=$false; Reboot=$false; Note='Maintenance-window deferral' }
+    )
+    foreach ($sample in $fleetSamples) {
+        $sampleDir = New-Item -ItemType Directory -Path (Join-Path $visualCentral $sample.Host) -Force
+        $sampleReport = [ordered]@{
+            Metadata = [ordered]@{ Hostname=$sample.Host; Ring='Pilot'; ScopeProfile='Personal'; ScriptVer='1.7.1'; DryRun=$false; ProvidersExecuted=$sample.Providers; RunDisposition=$sample.Note }
+            Statistics = [ordered]@{ UpdatesApplied=$sample.Applied; UpdatesFailed=$sample.Failed; UpdatesSkipped=0; KEVMatches=$sample.Kev; SLABreaches=0; NvdCritical=$sample.NvdCritical; NvdHigh=0; Errors=@() }
+            RebootRequiredItems = $(if ($sample.Reboot) { @([ordered]@{ Name='Windows cumulative update' }) } else { @() })
+            AttentionItems = @()
+            InventoryKEVMatches = $(if ($sample.InventoryKev) { @([ordered]@{ ExposureState=$sample.InventoryKev }) } else { @() })
+            EndOfLifeFindings = $(if ($sample.Eol) { @([ordered]@{ Severity='review' }) } else { @() })
+            StalenessFindings = $(if ($sample.Staleness) { @([ordered]@{ Severity='review' }) } else { @() })
+        }
+        $sampleJson = Join-Path $sampleDir.FullName "PatchReport_$($sample.Host)_20260827_120000_000.json"
+        $sampleReport | ConvertTo-Json -Depth 8 | Set-Content -Path $sampleJson -Encoding UTF8
+        Set-Content -Path ([System.IO.Path]::ChangeExtension($sampleJson, '.html')) -Value "<!DOCTYPE html><title>$($sample.Host) report</title>" -Encoding UTF8
+    }
+    & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $visualCentral -OutputPath $visualFleetOutput -StaleDays 7
+    Write-Host "Visual artifacts: $VisualArtifactPath" -ForegroundColor Cyan
+}
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

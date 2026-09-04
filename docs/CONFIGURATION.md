@@ -1,4 +1,4 @@
-# Configuration guide
+﻿# Configuration guide
 
 PatchManager works without a configuration file. Built-in defaults use the
 `Personal` profile. Create `PatchManager.config.json` only for values you need
@@ -62,9 +62,14 @@ example file contains every commonly changed key.
 
 ## SLA scope
 
-SLA state tracks eligible WinGet upgrade offers because WinGet supplies a
-stable package ID and target version before patching. Report-only runs advance
-this evidence; dry runs remain non-mutating. Windows Update, Store-client,
+`SLA.Enabled` defaults by profile: Personal is **off**, while Commercial and
+CommercialManaged are **on**. An explicit `true` or `false` overrides the
+profile default. When disabled, SLA state is not advanced, no breach event is
+emitted, and SLA evidence is omitted from reports.
+
+When enabled, SLA state tracks eligible WinGet upgrade offers because WinGet
+supplies a stable package ID and target version before patching. Report-only runs
+advance this evidence; dry runs remain non-mutating. Windows Update, Store-client,
 Office, browser, Chocolatey, Scoop, Python, firmware, and vendor-summary rows
 are visible in each report but are not currently included in the availability
 SLA clock.

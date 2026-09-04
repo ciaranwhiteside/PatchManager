@@ -1,0 +1,45 @@
+{
+  "title": "Choose the new PatchManager report composition",
+  "question": "All three preserve the charcoal/ivory evidence system, full audit proof, offline use, print, and current report behavior. Choose the structure that should govern both device and fleet reports.",
+  "options": [
+    {
+      "id": "systems-health-map",
+      "label": "Systems Health Map",
+      "kicker": "THE ROLL",
+      "thesis": "Posture becomes a live topology: risk lanes resolve directly into the hosts, packages, and proof that created them.",
+      "palette": ["#111513", "#f6f2e8", "#18324a", "#955d20", "#a53b35", "#24744f"],
+      "materials": ["charcoal command field", "ivory evidence paper", "hairline status rails"],
+      "viewport": "A compact command bar sits above a decisive estate verdict; the main viewport pairs a narrow risk topology with a broad, ranked evidence ledger so the highest-risk path is visible without scrolling.",
+      "risk": "The relational view must stay disciplined or it can feel dense on a single-device report.",
+      "comp": ".impeccable/mocks/decision/systems-health-map.webp"
+    },
+    {
+      "id": "host-dossier",
+      "label": "Host Dossier",
+      "thesis": "Every run opens as a forensic case file: identity, verdict, required action, then numbered exhibits.",
+      "palette": ["#111513", "#f6f2e8", "#18324a", "#955d20", "#a53b35", "#24744f"],
+      "materials": ["case-file index", "evidence folios", "verification stamps"],
+      "viewport": "A fixed identity spine carries host, run, ring, and proof count while a large verdict and ordered action docket occupy the reading field; evidence sections continue as numbered exhibits.",
+      "risk": "The dossier metaphor can become too document-like if interaction and fleet scanning are not kept prominent.",
+      "comp": ".impeccable/mocks/decision/host-dossier.webp"
+    },
+    {
+      "id": "verification-timeline",
+      "label": "Verification Timeline",
+      "thesis": "The report is one continuous chain from discovery through action, verification, reboot, and retained proof.",
+      "palette": ["#111513", "#f6f2e8", "#18324a", "#955d20", "#a53b35", "#24744f"],
+      "materials": ["event rail", "state checkpoints", "attached proof slips"],
+      "viewport": "The verdict anchors the left edge while a horizontal run sequence shows discovery, attempted work, verified outcomes, and unresolved checkpoints; the action queue begins directly beneath the broken link.",
+      "risk": "Chronology can compete with urgency unless failed and exposed states visibly interrupt the sequence.",
+      "comp": ".impeccable/mocks/decision/verification-timeline.webp"
+    }
+  ],
+  "reroll": {
+    "registers": ["safer", "bolder"]
+  },
+  "buildPath": {
+    "value": "comp",
+    "toggle": true
+  },
+  "steer": true
+}

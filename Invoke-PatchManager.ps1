@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.7.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.8.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -117,7 +117,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.7.1'
+$script:VERSION       = '1.8.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -130,9 +130,9 @@ $script:SkippedUpgradeResults = [System.Collections.Generic.List[PSCustomObject]
 $script:SourceCheckResults = [System.Collections.Generic.List[PSCustomObject]]::new()
 $script:LastUpdateStatus = $null
 $script:LastUpdateReason = ''
+$script:LastUpdateConfirmedVersion = ''
 $script:BITSPolicyBackup = $null
 $script:BITSPolicyApplied = $false
-$script:WinGetSupportsCustom = $false
 $script:InventoryKEVMatches = @()
 $script:NVDMemo = @{}                              # CVE id -> cpeMatch array (or $null)
 $script:NVDLookupCount = 0                          # KEV-path budget
@@ -222,7 +222,7 @@ $script:DefaultCfg = [ordered]@{
         AcceptAgreements      = $true
         PackageTimeoutSeconds = 300
         MaxUpdatesPerRun      = 0
-        SuppressReboot        = $true    # Add /norestart - PatchManager flags reboots, never forces them
+        SuppressReboot        = $true    # PatchManager never passes --allow-reboot; no installer-specific custom switches
         MaxRetries            = 2        # Attempts per package (1 = no retry) for transient failures
     }
 
@@ -336,6 +336,9 @@ $script:DefaultCfg = [ordered]@{
     }
 
     SLA = [ordered]@{
+        # $null = decide by profile (Personal off, commercial profiles on).
+        # An explicit true/false always wins.
+        Enabled  = $null
         # Days from update becoming available to it being applied
         # Same window for all severities - if an update exists, apply it promptly
         Critical = 14
@@ -759,6 +762,12 @@ function Set-ScopeProfileDefaults {
     if ($null -ne $su -and $null -eq (Get-ObjectPropertyValue $su 'Enabled' $null)) {
         $Config.SelfUpdate.Enabled = ($scopeProfile -ine 'CommercialManaged')
     }
+    # Availability SLAs are an estate-management concern. Personal devices do
+    # not create breach pressure unless the operator explicitly opts in.
+    $sla = Get-ObjectPropertyValue $Config 'SLA' $null
+    if ($null -ne $sla -and $null -eq (Get-ObjectPropertyValue $sla 'Enabled' $null)) {
+        $Config.SLA.Enabled = $isFleet
+    }
 }
 
 #endregion
@@ -953,7 +962,10 @@ function Show-PatchManagerDialog {
         [string]$Message,
         [string]$PrimaryText = 'OK',
         [string]$SecondaryText = '',
-        [int]$TimeoutSeconds = 0
+        [int]$TimeoutSeconds = 0,
+        [ValidateSet('Neutral','Success','Attention','Failure')]
+        [string]$Tone = 'Neutral',
+        [string]$DetailText = ''
     )
 
     if (-not $script:CFG.UserExperience.Enabled -or -not (Test-InteractiveSession)) { return 'Unavailable' }
@@ -967,29 +979,74 @@ function Show-PatchManagerDialog {
         $brandPaperSoft = [System.Drawing.Color]::FromArgb(236, 230, 216)
         $brandBlue = [System.Drawing.Color]::FromArgb(24, 50, 74)
         $brandGreen = [System.Drawing.Color]::FromArgb(36, 116, 79)
+        $brandAmber = [System.Drawing.Color]::FromArgb(149, 93, 32)
+        $brandRed = [System.Drawing.Color]::FromArgb(165, 59, 53)
         $brandMuted = [System.Drawing.Color]::FromArgb(91, 100, 94)
         $brandLine = [System.Drawing.Color]::FromArgb(199, 190, 171)
+        $toneColor = switch ($Tone) {
+            'Success'   { $brandGreen }
+            'Attention' { $brandAmber }
+            'Failure'   { $brandRed }
+            default     { $brandBlue }
+        }
+
+        $highContrast = [System.Windows.Forms.SystemInformation]::HighContrast
+        if ($highContrast) {
+            $brandInk = [System.Drawing.SystemColors]::WindowText
+            $brandPaper = [System.Drawing.SystemColors]::Window
+            $brandPaperSoft = [System.Drawing.SystemColors]::Control
+            $brandMuted = [System.Drawing.SystemColors]::WindowText
+            $brandLine = [System.Drawing.SystemColors]::ActiveBorder
+            $toneColor = [System.Drawing.SystemColors]::Highlight
+        }
+
 
         $form = New-Object System.Windows.Forms.Form
         $form.Text = $Title
         $form.StartPosition = 'CenterScreen'
-        $form.Size = New-Object System.Drawing.Size(580, 330)
-        $form.MinimumSize = New-Object System.Drawing.Size(580, 330)
+        $form.ClientSize = New-Object System.Drawing.Size(640, 420)
+        $form.MinimumSize = New-Object System.Drawing.Size(560, 400)
+        $form.AutoScaleDimensions = New-Object System.Drawing.SizeF(96, 96)
+        $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+        $form.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
         $form.TopMost = $true
-        $form.FormBorderStyle = 'FixedDialog'
+        $form.FormBorderStyle = 'Sizable'
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
         $form.BackColor = $brandPaper
+        $form.AccessibleName = $Title
 
-        $header = New-Object System.Windows.Forms.Panel
-        $header.Dock = 'Top'
-        $header.Height = 96
-        $header.BackColor = $brandInk
-        [void]$form.Controls.Add($header)
+        $shell = New-Object System.Windows.Forms.TableLayoutPanel
+        $shell.Dock = 'Fill'
+        $shell.Margin = New-Object System.Windows.Forms.Padding(0)
+        $shell.Padding = New-Object System.Windows.Forms.Padding(0)
+        $shell.ColumnCount = 1
+        $shell.RowCount = 3
+        [void]$shell.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$shell.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        [void]$shell.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$form.Controls.Add($shell)
+
+        $header = New-Object System.Windows.Forms.TableLayoutPanel
+        $header.Dock = 'Fill'
+        $header.Margin = New-Object System.Windows.Forms.Padding(0)
+        $header.Padding = New-Object System.Windows.Forms.Padding(24, 16, 24, 12)
+        $header.AutoSize = $true
+        $header.ColumnCount = 2
+        $header.RowCount = 3
+        [void]$header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$header.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        [void]$header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$header.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 6)))
+        $header.BackColor = if ($highContrast) { [System.Drawing.SystemColors]::Highlight } else { $brandInk }
+        [void]$shell.Controls.Add($header, 0, 0)
 
         $brandIcon = New-Object System.Windows.Forms.Panel
-        $brandIcon.Location = New-Object System.Drawing.Point(24, 22)
-        $brandIcon.Size = New-Object System.Drawing.Size(52, 52)
+        $brandIcon.MinimumSize = New-Object System.Drawing.Size(52, 52)
+        $brandIcon.MaximumSize = New-Object System.Drawing.Size(52, 52)
+        $brandIcon.Anchor = 'Top, Left'
+        $brandIcon.Margin = New-Object System.Windows.Forms.Padding(0, 0, 16, 0)
         $brandIcon.BackColor = $brandPaper
         $brandIcon.Add_Paint({
             param($sender, $paintEvent)
@@ -1083,88 +1140,195 @@ function Show-PatchManagerDialog {
             $shield.Dispose()
             $inner.Dispose()
         })
-        [void]$header.Controls.Add($brandIcon)
+        [void]$header.Controls.Add($brandIcon, 0, 0)
+        $header.SetRowSpan($brandIcon, 2)
 
         $brandTitle = New-Object System.Windows.Forms.Label
         $brandTitle.Text = 'PatchManager'
         $brandTitle.Font = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
-        $brandTitle.ForeColor = $brandPaper
-        $brandTitle.Location = New-Object System.Drawing.Point(92, 22)
-        $brandTitle.Size = New-Object System.Drawing.Size(440, 25)
-        [void]$header.Controls.Add($brandTitle)
+        $brandTitle.ForeColor = if ($highContrast) { [System.Drawing.SystemColors]::HighlightText } else { $brandPaper }
+        $brandTitle.AutoSize = $true
+        $brandTitle.Dock = 'Fill'
+        $brandTitle.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 0)
+        [void]$header.Controls.Add($brandTitle, 1, 0)
 
         $taglineLabel = New-Object System.Windows.Forms.Label
         $taglineLabel.Text = 'Patch. Verify. Prove it.'
         $taglineLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-        $taglineLabel.ForeColor = $brandPaperSoft
-        $taglineLabel.Location = New-Object System.Drawing.Point(94, 52)
-        $taglineLabel.Size = New-Object System.Drawing.Size(420, 22)
-        [void]$header.Controls.Add($taglineLabel)
+        $taglineLabel.ForeColor = if ($highContrast) { [System.Drawing.SystemColors]::HighlightText } else { $brandPaperSoft }
+        $taglineLabel.AutoSize = $true
+        $taglineLabel.Dock = 'Fill'
+        $taglineLabel.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 2)
+        [void]$header.Controls.Add($taglineLabel, 1, 1)
 
         $accent = New-Object System.Windows.Forms.Panel
-        $accent.Location = New-Object System.Drawing.Point(0, 92)
-        $accent.Size = New-Object System.Drawing.Size(580, 4)
-        $accent.BackColor = $brandBlue
-        [void]$header.Controls.Add($accent)
+        $accent.Dock = 'Fill'
+        $accent.Margin = New-Object System.Windows.Forms.Padding(0)
+        $accent.BackColor = $toneColor
+        [void]$header.Controls.Add($accent, 0, 2)
+        $header.SetColumnSpan($accent, 2)
+
+        $content = New-Object System.Windows.Forms.TableLayoutPanel
+        $content.Dock = 'Fill'
+        $content.Padding = New-Object System.Windows.Forms.Padding(26, 20, 26, 8)
+        $content.AutoScroll = $true
+        $content.ColumnCount = 1
+        $content.RowCount = 4
+        [void]$content.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$content.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$content.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$content.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$shell.Controls.Add($content, 0, 1)
 
         $headingLabel = New-Object System.Windows.Forms.Label
         $headingLabel.Text = $Heading
         $headingLabel.Font = New-Object System.Drawing.Font('Segoe UI', 15, [System.Drawing.FontStyle]::Bold)
         $headingLabel.ForeColor = $brandInk
-        $headingLabel.Location = New-Object System.Drawing.Point(24, 116)
-        $headingLabel.Size = New-Object System.Drawing.Size(528, 34)
-        [void]$form.Controls.Add($headingLabel)
+        $headingLabel.AutoSize = $true
+        $headingLabel.Dock = 'Top'
+        $headingLabel.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+        $headingLabel.AccessibleRole = [System.Windows.Forms.AccessibleRole]::StaticText
+        [void]$content.Controls.Add($headingLabel, 0, 0)
 
         $messageLabel = New-Object System.Windows.Forms.Label
         $messageLabel.Text = $Message
         $messageLabel.Font = New-Object System.Drawing.Font('Segoe UI', 10)
         $messageLabel.ForeColor = $brandMuted
-        $messageLabel.Location = New-Object System.Drawing.Point(26, 154)
-        $messageLabel.Size = New-Object System.Drawing.Size(526, 84)
-        $messageLabel.AutoEllipsis = $true
-        [void]$form.Controls.Add($messageLabel)
+        $messageLabel.AutoSize = $true
+        $messageLabel.Dock = 'Top'
+        $messageLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+        $messageLabel.AccessibleName = 'Dialog message'
+        [void]$content.Controls.Add($messageLabel, 0, 1)
+        $content.Add_SizeChanged({
+            $availableWidth = [Math]::Max(240, $content.ClientSize.Width - $content.Padding.Horizontal - 24)
+            $messageLabel.MaximumSize = New-Object System.Drawing.Size($availableWidth, 0)
+        })
+
+        if (-not [string]::IsNullOrWhiteSpace($DetailText)) {
+            $detailLink = New-Object System.Windows.Forms.LinkLabel
+            $detailLink.Text = 'Show technical details'
+            $detailLink.AutoSize = $true
+            $detailLink.Margin = New-Object System.Windows.Forms.Padding(0, 12, 0, 0)
+            $detailLink.LinkColor = if ($highContrast) { [System.Drawing.SystemColors]::HotTrack } else { $brandBlue }
+            $detailLink.AccessibleName = 'Show technical details'
+            [void]$content.Controls.Add($detailLink, 0, 2)
+
+            $detailBox = New-Object System.Windows.Forms.TextBox
+            $detailBox.Text = $DetailText
+            $detailBox.Multiline = $true
+            $detailBox.ReadOnly = $true
+            $detailBox.ScrollBars = 'Vertical'
+            $detailBox.Dock = 'Top'
+            $detailBox.Height = 92
+            $detailBox.Visible = $false
+            $detailBox.BackColor = $brandPaperSoft
+            $detailBox.ForeColor = $brandInk
+            $detailBox.BorderStyle = 'FixedSingle'
+            $detailBox.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+            $detailBox.AccessibleName = 'Technical evidence'
+            [void]$content.Controls.Add($detailBox, 0, 3)
+
+            $detailLink.Add_LinkClicked({
+                $detailBox.Visible = -not $detailBox.Visible
+                $detailLink.Text = if ($detailBox.Visible) { 'Hide technical details' } else { 'Show technical details' }
+                $detailLink.AccessibleName = $detailLink.Text
+                $content.PerformLayout()
+                if ($detailBox.Visible) { $detailBox.Focus() } else { $detailLink.Focus() }
+            })
+        }
+
+        $buttonBar = New-Object System.Windows.Forms.TableLayoutPanel
+        $buttonBar.Dock = 'Fill'
+        $buttonBar.Padding = New-Object System.Windows.Forms.Padding(26, 10, 26, 14)
+        $buttonBar.ColumnCount = 2
+        $buttonBar.RowCount = 1
+        [void]$buttonBar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+        [void]$buttonBar.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize)))
+        [void]$shell.Controls.Add($buttonBar, 0, 2)
+
+        $statusArea = New-Object System.Windows.Forms.FlowLayoutPanel
+        $statusArea.Dock = 'Fill'
+        $statusArea.FlowDirection = 'TopDown'
+        $statusArea.WrapContents = $false
+        $statusArea.Margin = New-Object System.Windows.Forms.Padding(0)
+        [void]$buttonBar.Controls.Add($statusArea, 0, 0)
 
         $evidenceLabel = New-Object System.Windows.Forms.Label
         $evidenceLabel.Text = 'Evidence-led Windows patching'
+        $evidenceLabel.AutoSize = $true
         $evidenceLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
         $evidenceLabel.ForeColor = $brandMuted
-        $evidenceLabel.Location = New-Object System.Drawing.Point(26, 260)
-        $evidenceLabel.Size = New-Object System.Drawing.Size(200, 22)
-        [void]$form.Controls.Add($evidenceLabel)
+        $evidenceLabel.Margin = New-Object System.Windows.Forms.Padding(0)
+        [void]$statusArea.Controls.Add($evidenceLabel)
+
+        $timeoutLabel = New-Object System.Windows.Forms.Label
+        $timeoutLabel.AutoSize = $true
+        $timeoutLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Bold)
+        $timeoutLabel.ForeColor = $toneColor
+        $timeoutLabel.Margin = New-Object System.Windows.Forms.Padding(0, 3, 0, 0)
+        $timeoutLabel.Visible = $TimeoutSeconds -gt 0
+        if ($TimeoutSeconds -gt 0) {
+            $timeoutLabel.Tag = $TimeoutSeconds
+            $timeoutLabel.Text = 'Automatically defers in {0}:{1:00}' -f ([Math]::Floor($TimeoutSeconds / 60)), ($TimeoutSeconds % 60)
+            $timeoutLabel.AccessibleName = $timeoutLabel.Text
+        }
+        [void]$statusArea.Controls.Add($timeoutLabel)
+
+        $actions = New-Object System.Windows.Forms.FlowLayoutPanel
+        $actions.AutoSize = $true
+        $actions.FlowDirection = 'RightToLeft'
+        $actions.WrapContents = $false
+        $actions.Margin = New-Object System.Windows.Forms.Padding(0)
+        [void]$buttonBar.Controls.Add($actions, 1, 0)
 
         $result = 'Secondary'
         $primary = New-Object System.Windows.Forms.Button
         $primary.Text = $PrimaryText
-        $primary.Size = New-Object System.Drawing.Size(150, 38)
-        $primary.Location = New-Object System.Drawing.Point(402, 252)
-        $primary.BackColor = $brandGreen
-        $primary.ForeColor = [System.Drawing.Color]::White
+        $primary.AutoSize = $true
+        $primary.MinimumSize = New-Object System.Drawing.Size(120, 44)
+        $primary.Padding = New-Object System.Windows.Forms.Padding(18, 0, 18, 0)
+        $primary.Margin = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+        $primary.BackColor = if ($highContrast) { [System.Drawing.SystemColors]::Highlight } else { $brandBlue }
+        $primary.ForeColor = if ($highContrast) { [System.Drawing.SystemColors]::HighlightText } else { [System.Drawing.Color]::White }
         $primary.FlatStyle = 'Flat'
-        $primary.FlatAppearance.BorderSize = 0
+        $primary.FlatAppearance.BorderSize = if ($highContrast) { 1 } else { 0 }
+        $primary.AccessibleName = $PrimaryText
         $primary.Add_Click({ $script:DialogResultValue = 'Primary'; $form.Close() })
-        [void]$form.Controls.Add($primary)
-        $form.AcceptButton = $primary   # Enter activates the primary action
+        [void]$actions.Controls.Add($primary)
+        $form.AcceptButton = $primary
 
         if (-not [string]::IsNullOrWhiteSpace($SecondaryText)) {
             $secondary = New-Object System.Windows.Forms.Button
             $secondary.Text = $SecondaryText
-            $secondary.Size = New-Object System.Drawing.Size(150, 38)
-            $secondary.Location = New-Object System.Drawing.Point(236, 252)
+            $secondary.AutoSize = $true
+            $secondary.MinimumSize = New-Object System.Drawing.Size(120, 44)
+            $secondary.Padding = New-Object System.Windows.Forms.Padding(18, 0, 18, 0)
+            $secondary.Margin = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
             $secondary.BackColor = $brandPaper
             $secondary.ForeColor = $brandInk
             $secondary.FlatStyle = 'Flat'
             $secondary.FlatAppearance.BorderColor = $brandLine
+            $secondary.AccessibleName = $SecondaryText
             $secondary.Add_Click({ $script:DialogResultValue = 'Secondary'; $form.Close() })
-            [void]$form.Controls.Add($secondary)
-            $form.CancelButton = $secondary   # Esc defers instead of being ignored
+            [void]$actions.Controls.Add($secondary)
+            $form.CancelButton = $secondary
         }
 
         $script:DialogResultValue = $result
         $timer = $null
         if ($TimeoutSeconds -gt 0) {
             $timer = New-Object System.Windows.Forms.Timer
-            $timer.Interval = $TimeoutSeconds * 1000
-            $timer.Add_Tick({ $script:DialogResultValue = 'Timeout'; $form.Close() })
+            $timer.Interval = 1000
+            $timer.Add_Tick({
+                $remaining = [Math]::Max(0, ([int]$timeoutLabel.Tag) - 1)
+                $timeoutLabel.Tag = $remaining
+                $timeoutLabel.Text = 'Automatically defers in {0}:{1:00}' -f ([Math]::Floor($remaining / 60)), ($remaining % 60)
+                $timeoutLabel.AccessibleName = $timeoutLabel.Text
+                if ($remaining -le 0) {
+                    $script:DialogResultValue = 'Timeout'
+                    $form.Close()
+                }
+            })
             $timer.Start()
         }
 
@@ -1183,15 +1347,14 @@ function Show-AppInUsePrompt {
     if (-not $script:CFG.UserExperience.PromptOnAppInUse) { return 'Unavailable' }
     $timeout = [int]$script:CFG.UserExperience.PromptTimeoutSeconds
     $message = "PatchManager could not verify the update for '$AppName' because the app appears to be open or locked.`r`n`r`nClose the app, then choose Retry update. Choose Defer to leave evidence in this run and try again next time."
-    if (-not [string]::IsNullOrWhiteSpace($Evidence)) {
-        $message += "`r`n`r`nDetails: $Evidence"
-    }
     return Show-PatchManagerDialog -Title 'PatchManager needs your input' `
                                    -Heading 'Close the app to verify the update' `
                                    -Message $message `
                                    -PrimaryText 'Retry update' `
                                    -SecondaryText 'Defer' `
-                                   -TimeoutSeconds $timeout
+                                   -TimeoutSeconds $timeout `
+                                   -Tone 'Attention' `
+                                   -DetailText $Evidence
 }
 
 function Show-CompletionPopup {
@@ -1200,17 +1363,24 @@ function Show-CompletionPopup {
     if (-not $script:CFG.UserExperience.CompletionPopup) { return }
     if ($DryRun -and -not $script:CFG.UserExperience.ShowOnDryRun) { return }
 
-    # Keep to two short paragraphs: the message label has a fixed height and
-    # ellipsizes anything longer, which reads as a broken dialog.
-    $message = "PatchManager finished this run and wrote the report evidence.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: $($script:Stats.UpdatesFailed)   Skipped: $($script:Stats.UpdatesSkipped)"
+    $hasFailure = $script:Stats.UpdatesFailed -gt 0
+    $hasReview = $hasFailure -or $script:Stats.UpdatesSkipped -gt 0
+    $message = if ($hasReview) {
+        "PatchManager finished this run. Review the report for failed or skipped work and the recorded recovery evidence.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: $($script:Stats.UpdatesFailed)   Skipped: $($script:Stats.UpdatesSkipped)"
+    } else {
+        "PatchManager finished this run and verified the available patch evidence.`r`n`r`nApplied: $($script:Stats.UpdatesApplied)   Failed: 0   Skipped: 0"
+    }
     $primaryText = if ($script:CFG.UserExperience.OpenReportPrompt) { 'Open report' } else { 'OK' }
     $secondaryText = if ($script:CFG.UserExperience.OpenReportPrompt) { 'Close' } else { '' }
+    $heading = if ($hasReview) { 'Patch evidence needs review' } else { 'Patch evidence is ready' }
+    $tone = if ($hasFailure) { 'Failure' } elseif ($hasReview) { 'Attention' } else { 'Success' }
     $choice = Show-PatchManagerDialog -Title 'PatchManager complete' `
-                                      -Heading 'Patch evidence is ready' `
+                                      -Heading $heading `
                                       -Message $message `
                                       -PrimaryText $primaryText `
                                       -SecondaryText $secondaryText `
-                                      -TimeoutSeconds 0
+                                      -TimeoutSeconds 0 `
+                                      -Tone $tone
     if ($script:CFG.UserExperience.OpenReportPrompt -and $choice -eq 'Primary' -and $HtmlReportPath -and (Test-Path $HtmlReportPath)) {
         try { Start-Process -FilePath $HtmlReportPath | Out-Null } catch { Write-Log "Could not open report '$HtmlReportPath': $_" -Level WARN }
     }
@@ -1279,7 +1449,7 @@ function Get-ObjectPropertyValue {
     if ($null -eq $Object) { return $Default }
     if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) { return $Object[$Name] }
     $prop = $Object.PSObject.Properties[$Name]
-    if ($prop) { return $prop.Value }
+    if ($null -ne $prop) { return $prop.Value }
     return $Default
 }
 
@@ -1328,9 +1498,6 @@ function New-PatchResult {
     if ([string]::IsNullOrWhiteSpace($Source)) { $Source = $Provider }
     if ([string]::IsNullOrWhiteSpace($Provider)) { $Provider = $Source }
     if ([string]::IsNullOrWhiteSpace($ReportedVersion)) { $ReportedVersion = $AvailableVersion }
-    if ([string]::IsNullOrWhiteSpace($ConfirmedVersion) -and $Status -in @('Succeeded','Updated','Detected')) {
-        $ConfirmedVersion = $AvailableVersion
-    }
 
     [PSCustomObject]@{
         Name             = $Name
@@ -1447,6 +1614,14 @@ function Update-StatsFromResults {
     $script:Stats.UpdatesApplied = @($Results | Where-Object { $_.Status -in @('Succeeded','Updated','Detected') -and $_.Success }).Count
     $script:Stats.UpdatesFailed  = @($Results | Where-Object { $_.Status -in @('Failed','Blocked','Verifying') -or ($_.PSObject.Properties['Success'] -and -not $_.Success -and $_.Status -notin @('Skipped','Descoped','Planned')) }).Count
     $script:Stats.UpdatesSkipped = @($Results | Where-Object { $_.Status -in @('Skipped','Descoped','AlreadyCurrent') }).Count
+
+    # Result rows are the authoritative provider outcome. Most provider failures
+    # are logged at WARN so a recoverable native-tool error does not masquerade as
+    # a PatchManager exception; they must still make the process exit non-zero so
+    # Task Scheduler/RMM tooling can detect and retry the incomplete patch run.
+    if ($script:Stats.UpdatesFailed -gt 0 -and $script:ExitCode -eq 0) {
+        $script:ExitCode = 1
+    }
 }
 
 #endregion
@@ -1661,14 +1836,6 @@ function Invoke-PreFlightChecks {
     } else {
         $ver = & $script:WINGET --version 2>&1
         Write-Log "WinGet found: $($script:WINGET) (version: $ver)" -Level INFO
-
-        # '--custom' (append extra installer args) needs winget 1.4+. Older builds
-        # only have '--override', which REPLACES the silent switches - never use it.
-        $script:WinGetSupportsCustom = $false
-        if ([string]$ver -match 'v?(\d+)\.(\d+)') {
-            $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-            $script:WinGetSupportsCustom = ($major -gt 1) -or ($major -eq 1 -and $minor -ge 4)
-        }
 
         # 7. WinGet source health - a broken/missing source makes every update fail
         # with a confusing error. Catch it here with a clear message instead.
@@ -2750,7 +2917,10 @@ function Get-SLABreaches {
 }
 
 function Get-PatchMetrics {
-    param([object]$State)
+    param([object]$State, [bool]$Enabled = $true)
+    if (-not $Enabled) {
+        return [ordered]@{ TotalTracked = 0; Applied = 0; Pending = 0; Resolved = 0; SLABreaches = 0; AvgDaysToApply = 'N/A' }
+    }
     $applied  = @($State.TrackedUpdates | Where-Object { $_.Applied })
     $pending  = @($State.TrackedUpdates | Where-Object {
         $closed = $_.PSObject.Properties['Closed'] -and [bool]$_.Closed
@@ -3041,6 +3211,79 @@ function Get-FilteredUpgrades {
     return $filtered
 }
 
+function Resolve-WinGetInstalledScope {
+    # `winget upgrade --scope` is an installed-package filter, not merely an
+    # installer preference. Discovery covers both scopes, so forcing every row
+    # through the configured default can discover a user-scoped app and then
+    # reject its upgrade as "not applicable". Probe the preferred scope first,
+    # then the alternate scope, and use the scope that actually owns the package.
+    param(
+        [Parameter(Mandatory)] [string]$PackageId,
+        [Parameter(Mandatory)] [string]$Source,
+        [ValidateSet('machine','user')] [string]$PreferredScope = 'machine'
+    )
+
+    if ($Source -eq 'msstore') { return '' }
+
+    $alternateScope = if ($PreferredScope -eq 'machine') { 'user' } else { 'machine' }
+    $scopes = @($PreferredScope, $alternateScope)
+    $probeTimeout = [Math]::Min(60, [Math]::Max(15, [int]$script:CFG.WinGet.PackageTimeoutSeconds))
+    foreach ($scope in $scopes) {
+        $probe = Invoke-CapturedProcess -FilePath $script:WINGET -Arguments @(
+            'list', '--id', $PackageId, '--source', $Source, '--exact',
+            '--scope', $scope, '--accept-source-agreements', '--disable-interactivity'
+        ) -TimeoutSeconds $probeTimeout
+        if (-not $probe.TimedOut -and $null -ne $probe.ExitCode -and $probe.ExitCode -eq 0) {
+            return $scope
+        }
+    }
+
+    # Preserve configured behavior when scope cannot be established; the final
+    # result remains visible instead of silently changing authorization scope.
+    Write-Log "WinGet: could not resolve installed scope for $PackageId; using configured scope '$PreferredScope'." -Level WARN
+    return $PreferredScope
+}
+
+function Get-WinGetPackageVerification {
+    # Structured post-install proof. The optional Microsoft.WinGet.Client module
+    # avoids locale-sensitive table parsing and tells us both the installed
+    # version and whether an update is still offered. Return $null when proof is
+    # unavailable so command success is not confused with version confirmation.
+    param(
+        [Parameter(Mandatory)] [string]$PackageId,
+        [Parameter(Mandatory)] [string]$Source
+    )
+
+    if (-not (Get-Module -ListAvailable -Name 'Microsoft.WinGet.Client' -EA SilentlyContinue)) { return $null }
+    try {
+        Import-Module 'Microsoft.WinGet.Client' -EA Stop
+        $matches = @(Get-WinGetPackage -Id $PackageId -EA Stop | Where-Object {
+            $_.Id -ieq $PackageId -and ([string]::IsNullOrWhiteSpace([string]$_.Source) -or $_.Source -ieq $Source)
+        })
+        if ($matches.Count -eq 0) {
+            return [PSCustomObject]@{ Found=$false; InstalledVersion=''; IsUpdateAvailable=$false; AvailableVersion='' }
+        }
+        $pkg = $matches | Select-Object -First 1
+        return [PSCustomObject]@{
+            Found             = $true
+            InstalledVersion  = [string]$pkg.InstalledVersion
+            IsUpdateAvailable = [bool]$pkg.IsUpdateAvailable
+            AvailableVersion  = [string](@($pkg.AvailableVersions) | Select-Object -First 1)
+        }
+    } catch {
+        Write-Log "WinGet: structured verification failed for ${PackageId}: $_" -Level WARN
+        return $null
+    }
+}
+
+function Test-WinGetTargetVersionMet {
+    param([string]$InstalledVersion, [string]$TargetVersion)
+    if ([string]::IsNullOrWhiteSpace($InstalledVersion) -or [string]::IsNullOrWhiteSpace($TargetVersion)) { return $false }
+    if ($InstalledVersion -eq $TargetVersion) { return $true }
+    $comparison = Compare-SoftwareVersion -Left $InstalledVersion -Right $TargetVersion
+    return ($null -ne $comparison -and $comparison -ge 0)
+}
+
 function Invoke-PackageUpdate {
     param([PSCustomObject]$Package, [int]$PromptRetryCount = 0)
 
@@ -3052,6 +3295,7 @@ function Invoke-PackageUpdate {
         Write-Log "DRY RUN: Would update [$source][$id] $name ($($Package.Version) -> $($Package.Available))" -Level INFO
         $script:LastUpdateStatus = 'Planned'
         $script:LastUpdateReason = ''
+        $script:LastUpdateConfirmedVersion = ''
         return $true
     }
 
@@ -3066,17 +3310,15 @@ function Invoke-PackageUpdate {
         '--disable-interactivity'          # No prompts - safe for unattended/SYSTEM runs
     )
 
+    $installedScope = ''
     if ($source -ne 'msstore') {
-        $argList += @('--silent', '--scope', $script:CFG.WinGet.Scope)
+        $installedScope = Resolve-WinGetInstalledScope -PackageId $id -Source $source -PreferredScope $script:CFG.WinGet.Scope
+        $argList += @('--silent', '--scope', $installedScope)
     }
 
-    # Suppress installer-forced reboots where the installer honours it (mainly MSI).
-    # PatchManager flags reboot-required at the end; it never reboots mid-run.
-    # '--custom' APPENDS to the installer's silent switches. '--override' would
-    # REPLACE them, breaking silent installs, so it is deliberately not used.
-    if ($source -ne 'msstore' -and $script:CFG.WinGet.SuppressReboot -and $script:WinGetSupportsCustom) {
-        $argList += @('--custom', '/norestart')
-    }
+    # WinGet does not permit installer-requested reboot unless --allow-reboot is
+    # supplied. Do not append a universal `/norestart` custom argument: custom
+    # switches are installer-specific and can make an otherwise valid EXE fail.
 
     try {
         # Invoke-CapturedProcess returns the REAL exit code. The previous
@@ -3113,23 +3355,55 @@ function Invoke-PackageUpdate {
             return $true
         }
 
-        if ($exitCode -eq 0) {
-            if ($outputText -match 'No applicable|already installed|No available upgrade') {
-                Write-Log "Already current: $name" -Level DEBUG
-                $script:LastUpdateStatus = 'Skipped'
-                $script:LastUpdateReason = 'Already current or no applicable update.'
-            } else {
-                Write-Log "SUCCESS: $name updated to $($Package.Available)" -Level SUCCESS
-                $script:LastUpdateStatus = 'Succeeded'
-                $script:LastUpdateReason = ''
+        if ($exitCode -eq 0 -or $exitCode -in $noUpdateCodes) {
+            $verification = Get-WinGetPackageVerification -PackageId $id -Source $source
+            if ($null -ne $verification -and $verification.Found) {
+                $targetMet = Test-WinGetTargetVersionMet -InstalledVersion $verification.InstalledVersion -TargetVersion $Package.Available
+                if ($targetMet -or -not $verification.IsUpdateAvailable) {
+                    $script:LastUpdateConfirmedVersion = $verification.InstalledVersion
+                    if ($targetMet -and $verification.InstalledVersion -ne $Package.Version) {
+                        Write-Log "VERIFIED: $name is now $($verification.InstalledVersion) (scope: $installedScope)." -Level SUCCESS
+                        $script:LastUpdateStatus = 'Succeeded'
+                        $script:LastUpdateReason = "Verified installed version $($verification.InstalledVersion) after WinGet exit code $exitCode; scope=$installedScope."
+                    } else {
+                        Write-Log "Verified current: $name ($($verification.InstalledVersion))." -Level INFO
+                        $script:LastUpdateStatus = 'AlreadyCurrent'
+                        $script:LastUpdateReason = "WinGet no longer offers the discovered update; installed version=$($verification.InstalledVersion); scope=$installedScope."
+                    }
+                    return $true
+                }
+
+                $script:LastUpdateStatus = 'Failed'
+                $script:LastUpdateReason = "WinGet returned exit code $exitCode, but structured verification still offers $($verification.AvailableVersion) and reports installed version $($verification.InstalledVersion); scope=$installedScope."
+                Write-Log "FAILED VERIFICATION: $name remains outdated ($($verification.InstalledVersion) -> $($verification.AvailableVersion))." -Level WARN
+                return $false
             }
-            return $true
-        } elseif ($exitCode -in $noUpdateCodes) {
-            Write-Log "No applicable update: $name" -Level DEBUG
-            $script:LastUpdateStatus = 'Skipped'
-            $script:LastUpdateReason = 'WinGet reported no applicable update.'
-            return $true
+
+            if ($null -ne $verification -and -not $verification.Found) {
+                $script:LastUpdateStatus = 'Verifying'
+                $script:LastUpdateReason = "WinGet returned exit code $exitCode, but the package was not found during structured post-update verification; scope=$installedScope."
+                return $false
+            }
+
+            # Keep compatibility on hosts without the optional structured module,
+            # but do not claim a confirmed version that was not observed.
+            if ($exitCode -eq 0 -and $outputText -notmatch 'No applicable|already installed|No available upgrade') {
+                Write-Log "SUCCESS (command evidence only): $name; structured verification unavailable." -Level SUCCESS
+                $script:LastUpdateStatus = 'Succeeded'
+                $script:LastUpdateReason = "WinGet exit code 0; structured version verification unavailable; scope=$installedScope."
+                return $true
+            }
+            Write-Log "No applicable update could be verified for $name." -Level WARN
+            $script:LastUpdateStatus = 'Verifying'
+            $script:LastUpdateReason = "WinGet reported no applicable update, but structured verification was unavailable; scope=$installedScope."
+            return $false
         } else {
+            if ($outputText -match 'install technology is different from the current version installed') {
+                Write-Log "BLOCKED: $name uses a different installer technology for the available release." -Level WARN
+                $script:LastUpdateStatus = 'Blocked'
+                $script:LastUpdateReason = "WinGet cannot upgrade across installer technologies (exit code $exitCode). Uninstall and reinstall $name from its current WinGet manifest, then rerun PatchManager. Output: $outputText"
+                return $false
+            }
             if ((Test-IsAppInUseUpdateFailure -Output $outputText) -and $PromptRetryCount -lt 1) {
                 $choice = Show-AppInUsePrompt -AppName $name -Evidence $outputText
                 if ($choice -eq 'Primary') {
@@ -3194,7 +3468,11 @@ function Invoke-AllUpdates {
     )
 
     $max = $script:CFG.WinGet.MaxUpdatesPerRun
-    if ($max -gt 0) { $prioritised = $prioritised | Select-Object -First $max }
+    $deferredByCap = @()
+    if ($max -gt 0) {
+        $deferredByCap = @($prioritised | Select-Object -Skip $max)
+        $prioritised = @($prioritised | Select-Object -First $max)
+    }
 
     $nvdBumped = @($Upgrades | Where-Object { $_.Name -notin $candidateNames -and (& $isNvdMatch $_) }).Count
     Write-Log "Applying $($prioritised.Count) update(s). $($confirmedNames.Count) confirmed KEV, $nvdBumped NVD-flagged prioritised." -Level INFO
@@ -3209,9 +3487,10 @@ function Invoke-AllUpdates {
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             $script:LastUpdateStatus = $null
             $script:LastUpdateReason = ''
+            $script:LastUpdateConfirmedVersion = ''
             $success = Invoke-PackageUpdate -Package $pkg
             if ($success) { break }
-            if ($script:LastUpdateStatus -in @('Blocked','Skipped','Descoped','AlreadyCurrent')) { break }
+            if ($script:LastUpdateStatus -in @('Blocked','Skipped','Descoped','AlreadyCurrent','Verifying')) { break }
             if ($attempt -lt $maxAttempts) {
                 Write-Log "Attempt $attempt of $maxAttempts failed for $($pkg.Name). Retrying..." -Level DEBUG
                 Start-Sleep -Seconds (5 * $attempt)   # Simple linear backoff
@@ -3224,9 +3503,27 @@ function Invoke-AllUpdates {
             Provider  = if ($pkg.PSObject.Properties['Provider']) { $pkg.Provider } elseif ($pkg.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
             OldVer    = $pkg.Version
             NewVer    = $pkg.Available
+            ConfirmedVersion = $script:LastUpdateConfirmedVersion
             Success   = $success
             Status    = if ($script:LastUpdateStatus) { $script:LastUpdateStatus } elseif ($DryRun) { 'Planned' } elseif ($success) { 'Succeeded' } else { 'Failed' }
             Reason    = $script:LastUpdateReason
+            IsKEV     = ($pkg.Name -in $confirmedNames)
+            Timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        })
+    }
+
+    foreach ($pkg in $deferredByCap) {
+        $results.Add([PSCustomObject]@{
+            Name      = $pkg.Name
+            PackageId = $pkg.PackageId
+            Source    = $pkg.Source
+            Provider  = if ($pkg.PSObject.Properties['Provider']) { $pkg.Provider } elseif ($pkg.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
+            OldVer    = $pkg.Version
+            NewVer    = $pkg.Available
+            ConfirmedVersion = ''
+            Success   = $false
+            Status    = 'Skipped'
+            Reason    = "Per-run WinGet update cap ($max) reached; deferred to next run."
             IsKEV     = ($pkg.Name -in $confirmedNames)
             Timestamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         })
@@ -5584,8 +5881,10 @@ function Complete-EarlyRun {
     $reportInfo = $null
     try {
         $patchState = Get-PatchState
-        $metrics = Get-PatchMetrics -State $patchState
-        $reportInfo = New-ComplianceReport -Results $results -KEVMatches @() -SLABreaches @(Get-SLABreaches -State $patchState) `
+        $metrics = Get-PatchMetrics -State $patchState -Enabled ([bool]$script:CFG.SLA.Enabled)
+        $slaBreaches = @()
+        if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
+        $reportInfo = New-ComplianceReport -Results $results -KEVMatches @() -SLABreaches $slaBreaches `
                                            -PatchState $patchState -Metrics $metrics
         Copy-LogsToCentral
     } catch {
@@ -5619,8 +5918,9 @@ function New-HTMLReport {
     function Get-ReportProperty {
         param($Object, [string]$Name, $Default = '')
         if ($null -eq $Object) { return $Default }
+        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) { return $Object[$Name] }
         $prop = $Object.PSObject.Properties[$Name]
-        if ($prop) { return $prop.Value }
+        if ($null -ne $prop) { return $prop.Value }
         return $Default
     }
 
@@ -5632,11 +5932,21 @@ function New-HTMLReport {
 
     $plannedCount   = Get-ReportStat 'UpdatesPlanned' 0
     $appliedCount   = Get-ReportStat 'UpdatesApplied' 0
-    $failCount      = Get-ReportStat 'UpdatesFailed' 0
     $inventoryCount = Get-ReportStat 'InventoryCount' 0
     $kevCount       = Get-ReportStat 'KEVMatches' 0
-    $errorCount     = $script:Stats.Errors.Count
-    $slaCount       = $SLABreaches.Count
+    # SLA breaches are retained in Statistics.Errors for backward-compatible JSON
+    # evidence, but they are already represented as structured SLA findings. Do not
+    # present those same messages again as runtime/script failures in the HTML.
+    $runtimeErrors  = @($script:Stats.Errors | Where-Object {
+        ([string]$_) -notmatch '^\s*(?:SLA\s+)?BREACH:'
+    })
+    $errorCount     = $runtimeErrors.Count
+    $slaEnabled     = [bool](Get-ReportProperty $script:CFG.SLA 'Enabled' $true)
+    $slaEvidence    = @()
+    if ($slaEnabled -and $null -ne $SLABreaches) {
+        $slaEvidence = @($SLABreaches | Where-Object { $null -ne $_ })
+    }
+    $slaCount       = $slaEvidence.Count
     $avgDays        = ConvertTo-ReportHtml $Metrics.AvgDaysToApply
     $hostname       = ConvertTo-ReportHtml $script:HOSTNAME
     $ring           = ConvertTo-ReportHtml $script:RING
@@ -5662,7 +5972,6 @@ function New-HTMLReport {
         if ([string]::IsNullOrWhiteSpace([string]$provider)) { 'unknown' } else { [string]$provider }
     } | Sort-Object Name)
     $blockedCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Blocked' }).Count
-    $verifyingCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Verifying' }).Count
     $failedRowCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Failed' }).Count
     $rebootCount = @($Results | Where-Object { [bool](Get-ReportProperty $_ 'RebootRequired' $false) }).Count
     # Count the rows the copy actually promises: blocked, failed, verifying,
@@ -5673,15 +5982,43 @@ function New-HTMLReport {
     # Get-PatchRowKind, not the nested Get-ReportRowKind: nested functions only exist
     # once execution reaches their definition, which is below this block.
     $attentionRowCount = @($Results | Where-Object { (Get-PatchRowKind $_) -eq 'attention' }).Count
-    $attentionCount = $attentionRowCount + $errorCount
-    $attentionTone = if ($attentionCount -gt 0) { 'danger' } else { 'good' }
-
-    $kevTone    = if ($kevCount -gt 0) { 'danger' } else { 'good' }
-    $rebootTone = if ($rebootCount -gt 0) { 'danger' } else { 'good' }
-    $runTone    = if ($isEmergency -or $kevCount -gt 0 -or $slaCount -gt 0 -or $failCount -gt 0 -or $errorCount -gt 0) { 'attention' } else { 'clean' }
-    $runSummary = if ($attentionCount -gt 0) { "$attentionCount item(s) need review before closing this run." } elseif ($runTone -eq 'clean') { 'No actionable KEV, SLA, failure, or script error conditions were recorded.' } else { 'Review the highlighted sections below before closing this run.' }
-    $verdictTitle = if ($runTone -eq 'clean') { 'Patch state holds.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Exposure needs action.' } else { 'Review before close.' }
-    $verdictCopy  = if ($runTone -eq 'clean') { 'The run completed with no actionable KEV, SLA, failure, or script-error signals. Provider evidence remains below for audit review.' } elseif ($isEmergency -or $kevCount -gt 0) { 'Security signals are present. Prioritise KEV and failed rows before treating this device as current.' } else { 'The report found items that need operator review. Follow the evidence trail, then use the table filters to isolate each row.' }
+    $inventoryKevAffectedCount = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Affected' }).Count
+    $inventoryKevUnknownCount = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Unknown' }).Count
+    # Count operator decisions rather than raw CVE rows. Multiple catalogue matches
+    # for the same installed product and exposure state become one verification task.
+    $inventoryKevReviewGroups = @($InventoryKEVMatches |
+        Where-Object { $_.ExposureState -in @('Affected', 'Unknown') } |
+        Group-Object { "$(Get-ReportProperty $_ 'InstalledApp' 'Installed application')|$(Get-ReportProperty $_ 'ExposureState' 'Unknown')" })
+    $inventoryKevAttentionCount = $inventoryKevReviewGroups.Count
+    $stalenessReviewCount = @($StalenessFindings | Where-Object {
+        [string](Get-ReportProperty $_ 'Severity' '') -eq 'review'
+    }).Count
+    $eolReviewFindings = @($EndOfLifeFindings | Where-Object {
+        [string](Get-ReportProperty $_ 'Severity' '') -eq 'review'
+    })
+    $eolReviewCount = $eolReviewFindings.Count
+    $eolConfirmedCount = @($eolReviewFindings | Where-Object {
+        [string](Get-ReportProperty $_ 'Status' '') -eq 'EOL'
+    }).Count
+    $nvdCriticalCount = @($NVDVulnFindings | Where-Object {
+        [int](Get-ReportProperty $_ 'CriticalCount' 0) -gt 0
+    }).Count
+    $nvdHighCount = @($NVDVulnFindings | Where-Object {
+        [int](Get-ReportProperty $_ 'CriticalCount' 0) -eq 0 -and
+        [int](Get-ReportProperty $_ 'HighCount' 0) -gt 0
+    }).Count
+    $attentionCount = $attentionRowCount + $slaCount + $inventoryKevAttentionCount + $errorCount +
+        $stalenessReviewCount + $eolReviewCount + $nvdCriticalCount + $nvdHighCount
+    $confirmedAttention = ($blockedCount -gt 0 -or $failedRowCount -gt 0 -or $kevCount -gt 0 -or
+        $inventoryKevAffectedCount -gt 0 -or $slaCount -gt 0 -or $errorCount -gt 0 -or
+        $eolConfirmedCount -gt 0 -or $nvdCriticalCount -gt 0)
+    $attentionTone = if ($confirmedAttention) { 'danger' } elseif ($attentionCount -gt 0) { 'attention' } else { 'good' }
+    $runTone    = if ($confirmedAttention -or $isEmergency) { 'danger' } elseif ($attentionCount -gt 0) { 'attention' } else { 'clean' }
+    $cleanRunSummary = if ($slaEnabled) { 'No actionable KEV, SLA, failure, or runtime-error conditions were recorded.' } else { 'No actionable KEV, failure, or runtime-error conditions were recorded.' }
+    $runSummary = if ($attentionCount -gt 0) { "$attentionCount operator task(s) need review." } elseif ($runTone -eq 'clean') { $cleanRunSummary } else { 'Review the highlighted evidence before closing this run.' }
+    $verdictTitle = if ($isDryRun) { "Dry run found $plannedCount planned update(s)." } elseif ($runTone -eq 'clean') { 'Patch state holds.' } elseif ($runTone -eq 'danger') { 'Exposure needs action.' } else { 'Review before close.' }
+    $cleanVerdictCopy = if ($slaEnabled) { 'The run completed with no actionable KEV, SLA, failure, or runtime-error signals. Provider evidence remains below for audit review.' } else { 'The run completed with no actionable KEV, failure, or runtime-error signals. Provider evidence remains below for audit review.' }
+    $verdictCopy  = if ($isDryRun) { 'No updates were installed. Review overdue items and unresolved security evidence, then run PatchManager live when ready.' } elseif ($runTone -eq 'clean') { $cleanVerdictCopy } elseif ($runTone -eq 'danger') { 'Confirmed exposure or execution failure is present. Prioritise the red evidence before treating this device as current.' } else { 'The report found items that need operator review. Follow the amber evidence trail, then use the table filters to isolate each row.' }
 
     # The KEV catalogue names products, never versions. Say so in the report, once.
     $kevMethodNote = "A KEV entry names an affected product, not an affected version - the catalogue carries no version data. Each candidate below is resolved against NVD's CPE version ranges: <strong>Affected</strong> means the installed version falls inside the vulnerable range, <strong>Not affected</strong> means it is past the fix, and <strong>Unknown</strong> means NVD had no comparable range and the version needs a manual check."
@@ -5698,7 +6035,7 @@ function New-HTMLReport {
             $fixed = [string](Get-ReportProperty $_ 'FixedVersion' '')
             $why   = [string](Get-ReportProperty $_ 'ExposureDetail' '')
             $badge = switch ($state) {
-                'Affected'    { "<span class='status failed'>Affected</span>" }
+                'Affected'    { "<span class='status fail'>Affected</span>" }
                 'NotAffected' { "<span class='status ok'>Not affected</span>" }
                 default       { "<span class='status skipped'>Unknown</span>" }
             }
@@ -5744,21 +6081,29 @@ function New-HTMLReport {
                 '^AlreadyCurrent$' { 'ok'; break }
                 '^(Skipped|Descoped)$' { 'skipped'; break }
                 '^Blocked$'   { 'fail'; break }
-                '^Verifying$' { 'planned'; break }
+                '^Verifying$' { 'skipped'; break }
                 default       { if ($success) { 'ok' } else { 'fail' } }
             }
             $kev = if ($isKev) { '<span class="flag danger">KEV</span>' } else { '' }
             $evidence = Get-ReportProperty $_ 'Evidence' (Get-ReportProperty $_ 'Reason' '')
             $remediation = Get-ReportProperty $_ 'Remediation' ''
             $details = (($evidence, $remediation | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
-            if ([string]::IsNullOrWhiteSpace([string]$details)) { $details = '-' }
+            $detailsFallback = if ($isDryRun -and $status -eq 'Planned') { 'Dry run only - no package action was attempted.' } else { 'No additional evidence was recorded.' }
             $rebootText = if ($rebootRequired) { 'Yes' } else { 'No' }
-            $search = ConvertTo-ReportHtml "$name $packageId $engineSource $provider $status $details $installedVer $targetText $confirmedVer $rebootText"
-            "<tr class='data-row $rowClass' data-status='$(ConvertTo-ReportHtml $status)' data-source='$(ConvertTo-ReportHtml $engineSource)' data-provider='$(ConvertTo-ReportHtml $provider)' data-search='$search'><td><strong>$(ConvertTo-ReportHtml $name)</strong>$kev</td><td class='mono'>$(ConvertTo-ReportHtml $packageId)</td><td><span class='source-pill'>$(ConvertTo-ReportHtml $engineSource)</span></td><td><span class='source-pill'>$(ConvertTo-ReportHtml $provider)</span></td><td class='mono'>$(ConvertTo-ReportHtml $installedVer)</td><td class='mono'>$(ConvertTo-ReportHtml $targetText)</td><td class='mono'>$(ConvertTo-ReportHtml $confirmedVer)</td><td><span class='status $rowClass'>$(ConvertTo-ReportHtml $status)</span></td><td>$(ConvertTo-ReportHtml $rebootText)</td><td class='nowrap'>$(ConvertTo-ReportHtml $timestamp)</td><td class='details'><details><summary>Evidence</summary><div>$(ConvertTo-ReportHtml $details)</div></details></td></tr>"
+            $search = ConvertTo-ReportHtml "$name $packageId $engineSource $provider $status $details $detailsFallback $installedVer $targetText $confirmedVer $rebootText"
+            $evidenceHtml = if ([string]::IsNullOrWhiteSpace([string]$details)) { "<span class='cell-detail'>$(ConvertTo-ReportHtml $detailsFallback)</span>" } else { "<details><summary>Evidence and recovery</summary><div>$(ConvertTo-ReportHtml $details)</div></details>" }
+            "<tr class='data-row $rowClass' data-status='$(ConvertTo-ReportHtml $status)' data-source='$(ConvertTo-ReportHtml $engineSource)' data-provider='$(ConvertTo-ReportHtml $provider)' data-search='$search'><td><strong>$(ConvertTo-ReportHtml $name)</strong>$kev<span class='cell-detail mono'>$(ConvertTo-ReportHtml $packageId)</span></td><td class='mono'><span class='version-flow'>$(ConvertTo-ReportHtml $installedVer) <span aria-hidden='true'>→</span> $(ConvertTo-ReportHtml $targetText)</span>$(if ($confirmedVer) { "<span class='cell-detail'>Confirmed $(ConvertTo-ReportHtml $confirmedVer)</span>" })</td><td><span class='source-pill'>$(ConvertTo-ReportHtml $engineSource)</span><span class='cell-detail'>$(ConvertTo-ReportHtml $provider)</span></td><td><span class='status $rowClass'>$(ConvertTo-ReportHtml $status)</span>$(if ($rebootRequired) { "<span class='flag attention'>Reboot</span>" })</td><td class='nowrap'>$(ConvertTo-ReportHtml $timestamp)</td><td class='details'>$evidenceHtml</td></tr>"
         }) -join "`n")
     }
 
-    $actionableRows = @($Results | Where-Object { (Get-ReportRowKind $_) -in @('attention', 'action', 'updated') })
+    $actionableRows = @($Results | Where-Object { (Get-ReportRowKind $_) -in @('attention', 'action', 'updated') } |
+        Sort-Object @{ Expression = {
+            switch (Get-ReportRowKind $_) {
+                'attention' { 0 }
+                'action'    { 1 }
+                default     { 2 }
+            }
+        } }, @{ Expression = { [string](Get-ReportProperty $_ 'Name' '') } })
     $providerCheckRows = @($Results | Where-Object { (Get-ReportRowKind $_) -eq 'provider' })
     $skippedRows = @($Results | Where-Object { (Get-ReportRowKind $_) -eq 'skipped' })
     $actionableUpdateRows = New-ReportRowsHtml -Rows $actionableRows
@@ -5769,11 +6114,11 @@ function New-HTMLReport {
 
     $kevRows = New-KEVRowsHtml -Candidates $KEVMatches
 
-    $slaRows = ($SLABreaches | ForEach-Object {
-        "<tr class='breach'><td>$(ConvertTo-ReportHtml $_.PackageName)</td><td class='mono'>$(ConvertTo-ReportHtml $_.PackageId)</td><td class='mono'>$(ConvertTo-ReportHtml $_.VersionAvailable)</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.FirstSeenAvailable)</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.SLADue)</td><td>$(ConvertTo-ReportHtml $_.Ring)</td></tr>"
+    $slaRows = ($slaEvidence | ForEach-Object {
+        "<tr class='breach'><td>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'PackageName' 'Unknown package'))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'PackageId' ''))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'VersionAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'FirstSeenAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'SLADue' ''))</td><td>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'Ring' ''))</td></tr>"
     }) -join "`n"
 
-    $errorItems = ($script:Stats.Errors | ForEach-Object {
+    $errorItems = ($runtimeErrors | ForEach-Object {
         "<li>$(ConvertTo-ReportHtml $_)</li>"
     }) -join "`n"
 
@@ -5797,33 +6142,90 @@ function New-HTMLReport {
         "<tr><td><span class='source-pill'>$(ConvertTo-ReportHtml $_.Name)</span></td><td class='mono'>$(ConvertTo-ReportHtml $_.Count)</td></tr>"
     }) -join "`n"
 
-    $attentionSection = if ($attentionCount -gt 0) {
-        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>Attention</p><h2>$attentionCount item(s) need review</h2></div><span class='count danger'>$attentionCount</span></div><p class='note danger-text'>$attentionRowCount package row(s) in a blocked, failed, verifying, reboot-required, or KEV-affected state, plus $errorCount script error(s). Skipped and descoped rows are deliberate outcomes and are not counted here. The actionable updates section below shows the package rows that matter first.</p></section>"
+    $attentionSequence = [System.Collections.Generic.List[string]]::new()
+    foreach ($row in @($actionableRows | Where-Object { (Get-ReportRowKind $_) -eq 'attention' })) {
+        $status = [string](Get-ReportProperty $row 'Status' 'Review')
+        $name = [string](Get-ReportProperty $row 'Name' 'Package')
+        $evidence = [string](Get-ReportProperty $row 'Evidence' 'Review the package evidence.')
+        $confirmedPackage = ($status -in @('Blocked','Failed') -or [bool](Get-ReportProperty $row 'IsKEV' $false))
+        $itemClass = if ($confirmedPackage) { '' } else { " class='review'" }
+        $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>$(ConvertTo-ReportHtml $status) - $(ConvertTo-ReportHtml $name)</strong><p>$(ConvertTo-ReportHtml $evidence)</p></div><a href='#updates'>Package evidence</a></li>")
+    }
+    foreach ($group in $inventoryKevReviewGroups) {
+        $first = @($group.Group)[0]
+        $appName = [string](Get-ReportProperty $first 'InstalledApp' 'Installed application')
+        $state = [string](Get-ReportProperty $first 'ExposureState' 'Unknown')
+        $cves = @($group.Group | ForEach-Object { [string](Get-ReportProperty $_ 'CVE' 'CISA KEV') } | Sort-Object -Unique)
+        $cveText = $cves -join ', '
+        $itemClass = if ($state -eq 'Unknown') { " class='review'" } else { '' }
+        $title = if ($state -eq 'Unknown') { "Verify inventory KEV - $appName" } else { "Confirmed inventory KEV - $appName" }
+        $message = if ($state -eq 'Unknown') { "$($cves.Count) catalogue CVE(s) need version verification: $cveText." } else { "$($cves.Count) confirmed affected CVE(s): $cveText." }
+        $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>$(ConvertTo-ReportHtml $title)</strong><p>$(ConvertTo-ReportHtml $message)</p></div><a href='#security'>Security evidence</a></li>")
+    }
+    foreach ($breach in $slaEvidence) {
+        $packageName = [string](Get-ReportProperty $breach 'PackageName' 'Package')
+        $due = [string](Get-ReportProperty $breach 'SLADue' 'due date unavailable')
+        $attentionSequence.Add("<li><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>SLA exposure - $(ConvertTo-ReportHtml $packageName)</strong><p>Remediation due $(ConvertTo-ReportHtml $due).</p></div><a href='#security'>SLA evidence</a></li>")
+    }
+    foreach ($finding in @($NVDVulnFindings | Sort-Object @{ Expression = { [int](Get-ReportProperty $_ 'CriticalCount' 0) }; Descending = $true })) {
+        $critical = [int](Get-ReportProperty $finding 'CriticalCount' 0)
+        $high = [int](Get-ReportProperty $finding 'HighCount' 0)
+        if ($critical -le 0 -and $high -le 0) { continue }
+        $item = [string](Get-ReportProperty $finding 'Item' 'Installed software')
+        $itemClass = if ($critical -gt 0) { '' } else { " class='review'" }
+        $severity = if ($critical -gt 0) { "$critical Critical" } else { "$high High" }
+        $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>NVD exposure - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $severity) version-matched vulnerability finding(s).</p></div><a href='#security'>NVD evidence</a></li>")
+    }
+    foreach ($scriptError in $runtimeErrors) {
+        $attentionSequence.Add("<li><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Runtime error</strong><p>$(ConvertTo-ReportHtml $scriptError)</p></div><a href='#auditDetail'>Runtime evidence</a></li>")
+    }
+    foreach ($finding in $eolReviewFindings) {
+        $item = [string](Get-ReportProperty $finding 'Item' 'Installed software')
+        $status = [string](Get-ReportProperty $finding 'Status' 'Lifecycle review')
+        $itemClass = if ($status -eq 'EOL') { '' } else { " class='review'" }
+        $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Lifecycle - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $status). Review the supported-version evidence.</p></div><a href='#lifecycle'>Lifecycle evidence</a></li>")
+    }
+    foreach ($finding in @($StalenessFindings | Where-Object { [string](Get-ReportProperty $_ 'Severity' '') -eq 'review' })) {
+        $item = [string](Get-ReportProperty $finding 'Item' 'Environment evidence')
+        $detail = [string](Get-ReportProperty $finding 'Detail' 'Freshness evidence needs review.')
+        $attentionSequence.Add("<li class='review'><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Staleness - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $detail)</p></div><a href='#lifecycle'>Staleness evidence</a></li>")
+    }
+    $attentionSequenceHtml = $attentionSequence -join ''
+    $hasConfirmedAttention = $confirmedAttention
+    $attentionPanelClass = if ($hasConfirmedAttention) { 'danger-panel' } else { 'review-panel' }
+    $attentionCountClass = if ($hasConfirmedAttention) { 'danger' } else { 'attention' }
+    $emptyAttentionCopy = if ($slaEnabled) {
+        'No blocked, failed, verifying, reboot-required, KEV-affected, SLA, inventory-verification, or runtime-error states were recorded.'
     } else {
-        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>Attention</p><h2>No review items</h2></div><span class='count good'>0</span></div><p class='note'>No blocked, failed, verifying, reboot-required, KEV-affected, or script-error states were recorded.</p></section>"
+        'No blocked, failed, verifying, reboot-required, KEV-affected, inventory-verification, or runtime-error states were recorded.'
+    }
+    $attentionSection = if ($attentionSequence.Count -gt 0) {
+        "<section class='panel $attentionPanelClass needs-attention' id='attentionQueue'><div class='section-head'><div><h2>Prioritized exception queue</h2><p>$($attentionSequence.Count) operator task(s), ordered by confirmed exposure and execution impact. Skipped and descoped rows remain in the audit appendix.</p></div><span class='count $attentionCountClass'>$($attentionSequence.Count)</span></div><ol class='attention-list'>$attentionSequenceHtml</ol></section>"
+    } else {
+        "<section class='panel needs-attention' id='attentionQueue'><div class='section-head'><div><h2>Prioritized exception queue</h2><p>No operator action is required from this run.</p></div><span class='count good'>0</span></div><div class='queue-clear'><span class='state-dot good' aria-hidden='true'></span><p>$emptyAttentionCopy</p></div></section>"
     }
 
-    $breakdownSection = "<div class='breakdown-grid'><section class='panel'><div class='section-head'><div><p class='eyebrow'>Result breakdown</p><h2>Status counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $Results.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Status</th><th>Rows</th></tr></thead><tbody>$statusRows</tbody></table></div></section><section class='panel'><div class='section-head'><div><p class='eyebrow'>Source breakdown</p><h2>Source counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $sourceGroups.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Source</th><th>Rows</th></tr></thead><tbody>$sourceRows</tbody></table></div></section><section class='panel'><div class='section-head'><div><p class='eyebrow'>Provider breakdown</p><h2>Provider counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $providerGroups.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Provider</th><th>Rows</th></tr></thead><tbody>$providerRows</tbody></table></div></section></div>"
+    $breakdownSection = "<div class='breakdown-grid'><section class='panel'><div class='section-head'><div><h2>Result breakdown: Status counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $Results.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Status</th><th>Rows</th></tr></thead><tbody>$statusRows</tbody></table></div></section><section class='panel'><div class='section-head'><div><h2>Source breakdown: Source counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $sourceGroups.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Source</th><th>Rows</th></tr></thead><tbody>$sourceRows</tbody></table></div></section><section class='panel'><div class='section-head'><div><h2>Provider breakdown: Provider counts</h2></div><span class='count'>$(ConvertTo-ReportHtml $providerGroups.Count)</span></div><div class='table-wrap compact'><table><thead><tr><th>Provider</th><th>Rows</th></tr></thead><tbody>$providerRows</tbody></table></div></section></div>"
 
-    $interactiveTableHeader = "<thead><tr><th data-sort='text'>Package</th><th data-sort='text'>Package ID</th><th data-sort='text'>Source</th><th data-sort='text'>Provider</th><th data-sort='text'>Installed</th><th data-sort='text'>Available / reported</th><th data-sort='text'>Confirmed</th><th data-sort='text'>Result</th><th data-sort='text'>Reboot</th><th data-sort='text'>Time</th><th data-sort='text'>Details</th></tr></thead>"
-    $plainTableHeader = "<thead><tr><th>Package</th><th>Package ID</th><th>Source</th><th>Provider</th><th>Installed</th><th>Available / reported</th><th>Confirmed</th><th>Result</th><th>Reboot</th><th>Time</th><th>Details</th></tr></thead>"
+    $interactiveTableHeader = "<thead><tr><th scope='col' data-sort='text' aria-sort='none'><button class='sort-button' type='button'>Package</button></th><th scope='col' data-sort='text' aria-sort='none'><button class='sort-button' type='button'>Version</button></th><th scope='col' data-sort='text' aria-sort='none'><button class='sort-button' type='button'>Source</button></th><th scope='col' data-sort='text' aria-sort='none'><button class='sort-button' type='button'>Result</button></th><th scope='col' data-sort='text' aria-sort='none'><button class='sort-button' type='button'>Time</button></th><th scope='col'>Evidence</th></tr></thead>"
+    $plainTableHeader = "<thead><tr><th scope='col'>Package</th><th scope='col'>Version</th><th scope='col'>Source</th><th scope='col'>Result</th><th scope='col'>Time</th><th scope='col'>Evidence</th></tr></thead>"
 
     $tableSection = if ($actionableRows.Count -gt 0) {
-        "<div class='table-wrap'><table id='updatesTable'>$interactiveTableHeader<tbody>$actionableUpdateRows</tbody></table></div>"
+        "<div class='table-wrap' tabindex='0' role='region' aria-label='Prioritized package actions'><table id='updatesTable'>$interactiveTableHeader<tbody>$actionableUpdateRows</tbody></table></div>"
     } else {
         '<div class="empty-state"><div class="empty-title">No package updates required action.</div><p>Source/provider checks, already-current items, and intentional skips are listed separately below so this section stays focused on actual update work.</p></div>'
     }
 
     $providerCheckSection = if ($providerCheckRows.Count -gt 0) {
-        "<section class='panel secondary-panel'><div class='section-head'><div><p class='eyebrow'>Source and provider checks</p><h2>$providerCheckCount audit check row(s)</h2></div><span class='count'>$providerCheckCount</span></div><p class='note'>These rows prove each source or provider was checked. They are evidence of discovery/health, not package updates.</p><div class='table-wrap'><table>$plainTableHeader<tbody>$providerCheckTableRows</tbody></table></div></section>"
+        "<section class='panel secondary-panel'><div class='section-head'><div><h2>Source and provider checks: $providerCheckCount audit check row(s)</h2></div><span class='count'>$providerCheckCount</span></div><p class='note'>These rows prove each source or provider was checked. They are evidence of discovery/health, not package updates.</p><div class='table-wrap'><table>$plainTableHeader<tbody>$providerCheckTableRows</tbody></table></div></section>"
     } else {
-        "<section class='panel secondary-panel'><div class='section-head'><div><p class='eyebrow'>Source and provider checks</p><h2>No audit check rows</h2></div><span class='count'>0</span></div><p class='note'>Every provider row in this run required action or follow-up.</p></section>"
+        "<section class='panel secondary-panel'><div class='section-head'><div><h2>Source and provider checks: No audit check rows</h2></div><span class='count'>0</span></div><p class='note'>Every provider row in this run required action or follow-up.</p></section>"
     }
 
     $skippedSection = if ($skippedRows.Count -gt 0) {
-        "<section class='panel secondary-panel'><div class='section-head'><div><p class='eyebrow'>Skipped and descoped</p><h2>$visibleSkippedCount row(s)</h2></div><span class='count'>$visibleSkippedCount</span></div><p class='note'>These items were intentionally not patched by PatchManager in this run. The evidence column records why.</p><div class='table-wrap'><table>$plainTableHeader<tbody>$skippedTableRows</tbody></table></div></section>"
+        "<section class='panel secondary-panel'><div class='section-head'><div><h2>Skipped and descoped: $visibleSkippedCount row(s)</h2></div><span class='count'>$visibleSkippedCount</span></div><p class='note'>These items were intentionally not patched by PatchManager in this run. The evidence column records why.</p><div class='table-wrap'><table>$plainTableHeader<tbody>$skippedTableRows</tbody></table></div></section>"
     } else {
-        "<section class='panel secondary-panel'><div class='section-head'><div><p class='eyebrow'>Skipped and descoped</p><h2>No skipped rows</h2></div><span class='count good'>0</span></div><p class='note'>No provider returned a skipped or descoped result.</p></section>"
+        "<section class='panel secondary-panel'><div class='section-head'><div><h2>Skipped and descoped: No skipped rows</h2></div><span class='count good'>0</span></div><p class='note'>No provider returned a skipped or descoped result.</p></section>"
     }
 
     $invKevRows      = New-KEVRowsHtml -Candidates $InventoryKEVMatches
@@ -5835,9 +6237,9 @@ function New-HTMLReport {
         $countTone = if ($invKevAffected -gt 0) { 'danger' } elseif ($invKevUnknown -gt 0) { '' } else { 'good' }
         $noteClass = if ($invKevAffected -gt 0) { 'note danger-text' } else { 'note' }
         $heading   = if ($invKevAffected -gt 0) { "$invKevAffected confirmed exposure(s) with no available update" } else { 'KEV product history, no confirmed exposure' }
-        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>CISA KEV - installed software</p><h2>$heading</h2></div><span class='count $countTone'>$invKevAffected</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
+        "<section class='panel $tone'><div class='section-head'><div><h2>CISA KEV - installed software: $heading</h2></div><span class='count $countTone'>$invKevAffected</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
     } else {
-        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV - installed software</p><h2>No inventory KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>The full software inventory was scanned against the KEV catalogue; nothing matched beyond the actionable items above.</p></section>"
+        "<section class='panel'><div class='section-head'><div><h2>CISA KEV - installed software: No inventory KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>The full software inventory was scanned against the KEV catalogue; nothing matched beyond the actionable items above.</p></section>"
     }
 
     $stalenessReview = @($StalenessFindings | Where-Object { $_.Severity -eq 'review' })
@@ -5847,15 +6249,15 @@ function New-HTMLReport {
         "<tr><td>$(ConvertTo-ReportHtml $_.Category)</td><td><strong>$(ConvertTo-ReportHtml $_.Item)</strong></td><td>$sev</td><td class='details'>$(ConvertTo-ReportHtml $detail)</td></tr>"
     }) -join "`n"
     $stalenessSection = if ($StalenessFindings.Count -gt 0) {
-        $tone = if ($stalenessReview.Count -gt 0) { 'danger-panel' } else { '' }
-        $countTone = if ($stalenessReview.Count -gt 0) { 'danger' } else { 'good' }
-        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>Environment staleness</p><h2>Report-only exposure checks</h2></div><span class='count $countTone'>$($stalenessReview.Count)</span></div><p class='note'>These checks never change the machine and are not counted as updates. $($stalenessReview.Count) of $($StalenessFindings.Count) finding(s) need review (antivirus definitions, Windows feature version, developer runtimes).</p><div class='table-wrap'><table><thead><tr><th>Category</th><th>Item</th><th>State</th><th>Detail</th></tr></thead><tbody>$stalenessRows</tbody></table></div></section>"
+        $tone = if ($stalenessReview.Count -gt 0) { 'review-panel' } else { '' }
+        $countTone = if ($stalenessReview.Count -gt 0) { 'attention' } else { 'good' }
+        "<section class='panel $tone'><div class='section-head'><div><h2>Environment staleness: Report-only exposure checks</h2></div><span class='count $countTone'>$($stalenessReview.Count)</span></div><p class='note'>These checks never change the machine and are not counted as updates. $($stalenessReview.Count) of $($StalenessFindings.Count) finding(s) need review (antivirus definitions, Windows feature version, developer runtimes).</p><div class='table-wrap'><table><thead><tr><th>Category</th><th>Item</th><th>State</th><th>Detail</th></tr></thead><tbody>$stalenessRows</tbody></table></div></section>"
     } else { '' }
 
     $eolReview = @($EndOfLifeFindings | Where-Object { $_.Severity -eq 'review' })
     $eolRows = ($EndOfLifeFindings | ForEach-Object {
         $statusHtml = switch ($_.Status) {
-            'EOL'         { "<span class='status failed'>End of life</span>" }
+            'EOL'         { "<span class='status fail'>End of life</span>" }
             'NearEOL'     { "<span class='status skipped'>Near EOL</span>" }
             'PatchBehind' { "<span class='status skipped'>Behind latest</span>" }
             'Supported'   { "<span class='status ok'>Supported</span>" }
@@ -5865,9 +6267,9 @@ function New-HTMLReport {
         "<tr><td>$(ConvertTo-ReportHtml $_.Item)</td><td class='mono'>$(ConvertTo-ReportHtml $_.InstalledVersion)</td><td class='mono'>$(ConvertTo-ReportHtml $_.Cycle)</td><td>$statusHtml</td><td class='nowrap'>$(ConvertTo-ReportHtml $_.EolDate)</td><td class='mono'>$(ConvertTo-ReportHtml $_.LatestSupported)</td><td class='details'>$(ConvertTo-ReportHtml $detail)</td></tr>"
     }) -join "`n"
     $eolSection = if ($EndOfLifeFindings.Count -gt 0) {
-        $tone = if ($eolReview.Count -gt 0) { 'danger-panel' } else { '' }
-        $countTone = if ($eolReview.Count -gt 0) { 'danger' } else { 'good' }
-        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>End-of-life</p><h2>Support-lifecycle exposure</h2></div><span class='count $countTone'>$($eolReview.Count)</span></div><p class='note'>Authoritative end-of-support data from endoflife.date. Report-only - out-of-support software is fully patchable yet no longer receives fixes, so plan a major-version upgrade. <strong>Behind latest</strong> means the release line is still supported but the installed build is behind its newest patch release. $($eolReview.Count) of $($EndOfLifeFindings.Count) finding(s) need review.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Cycle</th><th>Status</th><th>EOL date</th><th>Latest supported</th><th>Detail</th></tr></thead><tbody>$eolRows</tbody></table></div></section>"
+        $tone = if ($eolConfirmedCount -gt 0) { 'danger-panel' } elseif ($eolReview.Count -gt 0) { 'review-panel' } else { '' }
+        $countTone = if ($eolConfirmedCount -gt 0) { 'danger' } elseif ($eolReview.Count -gt 0) { 'attention' } else { 'good' }
+        "<section class='panel $tone'><div class='section-head'><div><h2>End-of-life: Support-lifecycle exposure</h2></div><span class='count $countTone'>$($eolReview.Count)</span></div><p class='note'>Authoritative end-of-support data from endoflife.date. Report-only - out-of-support software is fully patchable yet no longer receives fixes, so plan a major-version upgrade. <strong>Behind latest</strong> means the release line is still supported but the installed build is behind its newest patch release. $($eolReview.Count) of $($EndOfLifeFindings.Count) finding(s) need review.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Cycle</th><th>Status</th><th>EOL date</th><th>Latest supported</th><th>Detail</th></tr></thead><tbody>$eolRows</tbody></table></div></section>"
     } else { '' }
 
     $nvdCriticalProducts = @($NVDVulnFindings | Where-Object { $_.CriticalCount -gt 0 }).Count
@@ -5875,7 +6277,7 @@ function New-HTMLReport {
         Sort-Object @{ Expression = { Get-CvssSeverityRank $_.Severity }; Descending = $true }, `
                     @{ Expression = { [double]$_.MaxCvss }; Descending = $true } | ForEach-Object {
         $f = $_
-        $sevHtml = if ((Get-CvssSeverityRank $f.Severity) -ge 4) { "<span class='status failed'>Critical</span>" } else { "<span class='status skipped'>High</span>" }
+        $sevHtml = if ((Get-CvssSeverityRank $f.Severity) -ge 4) { "<span class='status fail'>Critical</span>" } else { "<span class='status skipped'>High</span>" }
         $cveList = (@($f.Cves | Select-Object -First 15 | ForEach-Object {
             $id = ConvertTo-ReportHtml $_.CVE
             "<div><a href='https://nvd.nist.gov/vuln/detail/$id' target='_blank' rel='noopener' class='mono'>$id</a> <span class='mono'>$(ConvertTo-ReportHtml $_.CvssSeverity) $(ConvertTo-ReportHtml $_.CvssScore)</span> - $(ConvertTo-ReportHtml $_.Description)</div>"
@@ -5885,10 +6287,10 @@ function New-HTMLReport {
         "<tr class='$rowCls'><td><strong>$(ConvertTo-ReportHtml $f.Item)</strong></td><td class='mono'>$(ConvertTo-ReportHtml $f.InstalledVersion)</td><td>$sevHtml</td><td class='mono'>$($f.CveCount)</td><td class='details'><details><summary>$($f.CriticalCount) Critical / $($f.HighCount) High</summary><div>$cveList$more</div></details></td></tr>"
     }) -join "`n"
     $nvdSection = if ($NVDVulnFindings.Count -gt 0) {
-        $tone = if ($nvdCriticalProducts -gt 0) { 'danger-panel' } else { '' }
-        $countTone = if ($nvdCriticalProducts -gt 0) { 'danger' } else { '' }
-        $noteClass = if ($nvdCriticalProducts -gt 0) { 'note danger-text' } else { 'note' }
-        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>Known vulnerabilities (NVD)</p><h2>Installed software with High/Critical CVEs</h2></div><span class='count $countTone'>$($NVDVulnFindings.Count)</span></div><p class='$noteClass'>$($NVDVulnFindings.Count) installed product(s) match a High/Critical CVE in the NVD database at their installed version ($nvdCriticalProducts with a Critical). Report-only, and broader than the CISA KEV catalogue - a listed CVE is known and version-matched, but not necessarily <em>actively exploited</em> (that is what the KEV sections above flag). Plan an update; expand a row for the CVE list.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Top severity</th><th>CVEs</th><th>Detail</th></tr></thead><tbody>$nvdRows</tbody></table></div></section>"
+        $tone = if ($nvdCriticalProducts -gt 0) { 'danger-panel' } else { 'review-panel' }
+        $countTone = if ($nvdCriticalProducts -gt 0) { 'danger' } else { 'attention' }
+        $noteClass = if ($nvdCriticalProducts -gt 0) { 'note danger-text' } else { 'note attention-text' }
+        "<section class='panel $tone'><div class='section-head'><div><h2>Known vulnerabilities (NVD): Installed software with High/Critical CVEs</h2></div><span class='count $countTone'>$($NVDVulnFindings.Count)</span></div><p class='$noteClass'>$($NVDVulnFindings.Count) installed product(s) match a High/Critical CVE in the NVD database at their installed version ($nvdCriticalProducts with a Critical). Report-only, and broader than the CISA KEV catalogue - a listed CVE is known and version-matched, but not necessarily <em>actively exploited</em> (that is what the KEV sections above flag). Plan an update; expand a row for the CVE list.</p><div class='table-wrap'><table><thead><tr><th>Item</th><th>Installed</th><th>Top severity</th><th>CVEs</th><th>Detail</th></tr></thead><tbody>$nvdRows</tbody></table></div></section>"
     } else { '' }
 
     $kevSection = if ($KEVMatches.Count -gt 0) {
@@ -5896,55 +6298,83 @@ function New-HTMLReport {
         $countTone = if ($kevCount -gt 0) { 'danger' } else { 'good' }
         $noteClass = if ($kevCount -gt 0) { 'note danger-text' } else { 'note' }
         $heading   = if ($kevCount -gt 0) { "$kevCount confirmed KEV exposure(s)" } else { 'KEV product history, no confirmed exposure' }
-        "<section class='panel $tone'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>$heading</h2></div><span class='count $countTone'>$kevCount</span></div><p class='$noteClass'>$($KEVMatches.Count) upgrade candidate(s) match a product named in the CISA KEV catalogue. $kevMethodNote$(if ($kevCount -gt 0) { ' Confirmed exposures bypassed the maintenance window and were patched first.' } else { ' No confirmed exposure, so no maintenance-window bypass was triggered.' })</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$kevRows</tbody></table></div></section>"
+        "<section class='panel $tone'><div class='section-head'><div><h2>CISA KEV: $heading</h2></div><span class='count $countTone'>$kevCount</span></div><p class='$noteClass'>$($KEVMatches.Count) upgrade candidate(s) match a product named in the CISA KEV catalogue. $kevMethodNote$(if ($kevCount -gt 0) { ' Confirmed exposures bypassed the maintenance window and were patched first.' } else { ' No confirmed exposure, so no maintenance-window bypass was triggered.' })</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Package</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$kevRows</tbody></table></div></section>"
     } else {
-        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>CISA KEV</p><h2>No actionable KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>KEV matching ran only against packages PatchManager can action from upgrade discovery.</p></section>"
+        "<section class='panel'><div class='section-head'><div><h2>CISA KEV: No actionable KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>KEV matching ran only against packages PatchManager can action from upgrade discovery.</p></section>"
     }
 
-    $slaSection = if ($SLABreaches.Count -gt 0) {
-        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>SLA</p><h2>Updates past deadline</h2></div><span class='count danger'>$slaCount</span></div><p class='note danger-text'>These updates have exceeded the configured $($script:CFG.SLA.Critical)-day application window.</p><div class='table-wrap'><table><thead><tr><th>Package</th><th>Package ID</th><th>Available</th><th>First seen</th><th>SLA due</th><th>Ring</th></tr></thead><tbody>$slaRows</tbody></table></div></section>"
+    $slaSection = if (-not $slaEnabled) {
+        ''
+    } elseif ($slaEvidence.Count -gt 0) {
+        "<section class='panel danger-panel'><div class='section-head'><div><h2>SLA: Updates past deadline</h2></div><span class='count danger'>$slaCount</span></div><p class='note danger-text'>These updates have exceeded the configured $($script:CFG.SLA.Critical)-day application window.</p><div class='table-wrap'><table><thead><tr><th>Package</th><th>Package ID</th><th>Available</th><th>First seen</th><th>SLA due</th><th>Ring</th></tr></thead><tbody>$slaRows</tbody></table></div></section>"
     } else {
-        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>SLA</p><h2>No SLA breaches</h2></div><span class='count good'>0</span></div><p class='note'>No tracked update has exceeded the configured application window.</p></section>"
+        "<section class='panel'><div class='section-head'><div><h2>SLA: No SLA breaches</h2></div><span class='count good'>0</span></div><p class='note'>No tracked update has exceeded the configured application window.</p></section>"
     }
 
     $errSection = if ($errorCount -gt 0) {
-        "<section class='panel danger-panel'><div class='section-head'><div><p class='eyebrow'>Runtime</p><h2>Script errors</h2></div><span class='count danger'>$errorCount</span></div><ul class='error-list'>$errorItems</ul></section>"
+        "<section class='panel danger-panel'><div class='section-head'><div><h2>Runtime: Errors</h2></div><span class='count danger'>$errorCount</span></div><ul class='error-list'>$errorItems</ul></section>"
     } else {
-        "<section class='panel'><div class='section-head'><div><p class='eyebrow'>Runtime</p><h2>No script errors</h2></div><span class='count good'>0</span></div><p class='note'>The run completed without logging script-level errors.</p></section>"
+        "<section class='panel'><div class='section-head'><div><h2>Runtime: No errors</h2></div><span class='count good'>0</span></div><p class='note'>The run completed without logging runtime errors.</p></section>"
     }
 
     $emergencyBanner = if ($isEmergency) {
         "<div class='callout danger-callout'><strong>Emergency patch run.</strong><span>$kevCount installed version(s) were confirmed against NVD to fall inside a CISA KEV vulnerable range, triggering a maintenance-window bypass.</span></div>"
     } else { '' }
-
-    $kevCandidateCount = $KEVMatches.Count + $InventoryKEVMatches.Count
-    $kevBentoNote = if ($kevCount -gt 0) {
-        "$kevCount of $kevCandidateCount KEV candidate(s) confirmed affected by installed version. $slaCount SLA breach(es) recorded."
-    } elseif ($kevCandidateCount -gt 0) {
-        "$kevCandidateCount KEV product match(es), none confirmed affected by installed version. $slaCount SLA breach(es) recorded."
+    $operatorTaskParts = [System.Collections.Generic.List[string]]::new()
+    $operatorTaskParts.Add("$attentionRowCount package")
+    $operatorTaskParts.Add("$inventoryKevAttentionCount KEV review")
+    if ($slaEnabled) { $operatorTaskParts.Add("$slaCount SLA") }
+    $operatorTaskParts.Add("$errorCount runtime")
+    $operatorTaskSummary = $operatorTaskParts -join ' / '
+    $securityDetailParts = [System.Collections.Generic.List[string]]::new()
+    if ($slaEnabled) { $securityDetailParts.Add("$slaCount SLA overdue") }
+    $securityDetailParts.Add("$rebootCount reboot-required")
+    $securityDetailSummary = $securityDetailParts -join ' / '
+    $securityGridClass = if ($slaEnabled) { 'two-col' } else { 'two-col single' }
+    $coverageNote = "Coverage: $inventoryCount inventory item(s) across $($sourceGroups.Count) source group(s) and $($providerGroups.Count) provider group(s); $providerCheckCount provider check(s). $visibleSkippedCount skipped or descoped row(s). Generated in ${elapsed2dp}m by PatchManager v$ver."
+    $metricsSection = if ($slaEnabled) {
+        $metricsStateNote = "Tracked updates: $($Metrics.TotalTracked). Applied in state: $($Metrics.Applied). Pending in state: $($Metrics.Pending)."
+        "<section class='panel reveal'><div class='section-head'><div><h2>Run metrics: Patch state summary</h2></div><span class='count'>$avgDays avg days</span></div><p class='note'>$(ConvertTo-ReportHtml $metricsStateNote)</p><p class='note'>$(ConvertTo-ReportHtml $coverageNote)</p></section>"
     } else {
-        "No KEV product matches. $slaCount SLA breach(es) recorded."
+        "<section class='panel reveal'><div class='section-head'><div><h2>Run metrics: Coverage summary</h2></div><span class='count'>$inventoryCount inventory</span></div><p class='note'>$(ConvertTo-ReportHtml $coverageNote)</p></section>"
     }
 
-    $bentoSection = @"
-  <section class="bento-board reveal" id="summary" aria-label="Run summary">
-    <article class="bento-card bento-primary good"><span class="bento-kicker">$primaryLabel</span><strong>$primaryCount</strong><p>$verdictCopy</p></article>
-    <article class="bento-card bento-review $attentionTone"><span class="bento-kicker">Needs review</span><strong>$attentionCount</strong><p>$attentionRowCount row(s) blocked, failed, verifying, reboot-required, or KEV-affected, plus $errorCount script error(s). See the actions below.</p></article>
-    <article class="bento-card bento-security $kevTone"><span class="bento-kicker">Security</span><strong>$kevCount KEV</strong><p>$kevBentoNote KEV and SLA exposure is detailed in the security section.</p></article>
-    <article class="bento-card bento-reboot $rebootTone"><span class="bento-kicker">Reboot required</span><strong>$rebootCount</strong><p>Update(s) needing a restart to finish - PatchManager never reboots on its own.</p></article>
-  </section>
+    $providerMapItems = [System.Collections.Generic.List[string]]::new()
+    $providerMapGroups = @($providerGroups | Sort-Object @{ Expression = {
+        @($_.Group | Where-Object { (Get-ReportRowKind $_) -eq 'attention' }).Count
+    }; Descending = $true }, @{ Expression = { [string]$_.Name } } | Select-Object -First 8)
+    foreach ($providerGroup in $providerMapGroups) {
+        $groupRows = @($providerGroup.Group)
+        $providerIssues = @($groupRows | Where-Object { (Get-ReportRowKind $_) -eq 'attention' }).Count
+        $providerChanges = @($groupRows | Where-Object { (Get-ReportRowKind $_) -in @('action','updated') }).Count
+        $providerTone = if ($providerIssues -gt 0) { 'danger' } elseif ($providerChanges -gt 0) { 'review' } else { 'good' }
+        $providerState = if ($providerIssues -gt 0) { "$providerIssues need action" } elseif ($providerChanges -gt 0) { "$providerChanges changed or planned" } else { 'Checks verified' }
+        $providerMapItems.Add("<a class='health-node $providerTone' href='#providers'><span class='state-dot $providerTone' aria-hidden='true'></span><span><strong>$(ConvertTo-ReportHtml $providerGroup.Name)</strong><small>$(ConvertTo-ReportHtml $providerState)</small></span><b>$($groupRows.Count)</b></a>")
+    }
+    if ($providerGroups.Count -gt $providerMapGroups.Count) {
+        $providerMapItems.Add("<a class='health-node neutral' href='#providers'><span class='state-dot neutral' aria-hidden='true'></span><span><strong>Other providers</strong><small>Full evidence below</small></span><b>$($providerGroups.Count - $providerMapGroups.Count)</b></a>")
+    }
+    $providerHealthMap = @"
+      <section class="panel health-map" aria-labelledby="healthMapTitle">
+        <div class="map-head"><div><h2 id="healthMapTitle">Systems health map</h2><p>Provider paths from this device to verified package evidence.</p></div><div class="map-legend" aria-label="State legend"><span><i class="state-dot good"></i>Verified</span><span><i class="state-dot review"></i>Review</span><span><i class="state-dot danger"></i>Action</span></div></div>
+        <div class="health-topology">
+          <div class="health-root $attentionTone"><span class="state-dot $attentionTone" aria-hidden="true"></span><div><strong>$hostname</strong><small>$($Results.Count) evidence rows across $($providerGroups.Count) provider(s)</small></div><b>$attentionCount</b></div>
+          <div class="health-branches">$($providerMapItems -join '')</div>
+        </div>
+      </section>
 "@
 
-    $evidenceRail = @"
-    <aside class="evidence-rail" aria-label="Report navigation">
-      <p class="rail-kicker">On this page</p>
-      <nav class="rail-links" aria-label="Report sections">
-        <a href="#updates">Actionable updates</a>
-        <a href="#security">Security &amp; lifecycle</a>
-        <a href="#auditDetail">Audit detail</a>
-      </nav>
-      <p class="scrub-copy"><span>Start with the actions above.</span> <span>Security, staleness, and end-of-life follow.</span> <span>Full provider evidence and counts are under Audit detail.</span></p>
-    </aside>
+    $primaryActionTarget = if ($attentionCount -gt 0) { '#attentionQueue' } else { '#updates' }
+    $primaryActionLabel = if ($attentionCount -gt 0) { 'Review highest-priority evidence' } else { 'Review verification ledger' }
+
+    $bentoSection = @"
+  <section class="verdict-rail $attentionTone" id="summary" aria-label="Run verdict">
+    <div class="verdict-state"><span class="verdict-symbol" aria-hidden="true"><i class="state-dot $attentionTone"></i></span><div><span>Device verdict</span><strong>$verdictTitle</strong><small>$verdictCopy</small></div></div>
+    <div class="verdict-fact"><span>Host</span><strong>$hostname</strong><small>$ring ring · $runMode</small></div>
+    <div class="verdict-fact"><span>Outcome</span><strong>$primaryCount $primaryLabel</strong><small>$operatorTaskSummary</small></div>
+    <div class="verdict-fact"><span>Security</span><strong>$kevCount confirmed / $inventoryKevUnknownCount verify</strong><small>$securityDetailSummary</small></div>
+    <a class="primary-action" href="$primaryActionTarget">$primaryActionLabel<span aria-hidden="true">→</span></a>
+  </section>
 "@
 
     $brandMark = @'
@@ -5956,83 +6386,125 @@ function New-HTMLReport {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="PatchManager compliance report for $hostname">
 <title>PatchManager report - $hostname</title>
 <style>
   /* PatchManager evidence ledger - charcoal command band over ivory paper.
      Content is NEVER visibility-gated: no scroll reveals, no opacity scrubs.
      A compliance artifact must capture, print, and read completely, always. */
-  :root{--charcoal:#111513;--charcoal-2:#1a201c;--paper:#f6f2e8;--paper-soft:#efe8d9;--card:#fcfaf3;--ink:#111513;--muted:#5f6a62;--line:#ddd5c2;--line-strong:#c8bfa6;--blue:#18324a;--blue-soft:#e8edf2;--green:#24744f;--green-bg:#e9f2ea;--red:#a53b35;--red-bg:#f7e6e1;--amber:#9b6324;--amber-curve:#c49a3d;--amber-bg:#faf0d8;--steel:#365f72;--steel-bg:#e6eef1;--card-shadow:0 1px 2px rgba(17,21,19,.05),0 10px 32px rgba(17,21,19,.07)}
+  :root{--charcoal:#111513;--charcoal-2:#1a201c;--paper:#f6f2e8;--paper-soft:#efe8d9;--card:#fcfaf3;--ink:#111513;--muted:#5f6a62;--line:#ddd5c2;--line-strong:#c8bfa6;--blue:#18324a;--blue-soft:#e8edf2;--green:#24744f;--green-bg:#e9f2ea;--red:#a53b35;--red-bg:#f7e6e1;--amber:#955d20;--amber-curve:#c49a3d;--amber-bg:#faf0d8;--steel:#365f72;--steel-bg:#e6eef1;--card-shadow:0 1px 2px rgba(17,21,19,.05),0 10px 32px rgba(17,21,19,.07)}
   *{box-sizing:border-box}
   html{scroll-behavior:smooth;background:var(--paper)}
-  body{margin:0;overflow-x:hidden;background:var(--paper);color:var(--ink);font:14px/1.55 "Segoe UI Variable Text","Aptos","Segoe UI",system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums}
+  body{margin:0;overflow-x:hidden;background:var(--paper);color:var(--ink);font:14px/1.55 "Segoe UI Variable Text","Aptos","Segoe UI",system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums}[hidden]{display:none !important}
   .skip-link{position:absolute;left:-999px;top:8px;background:#fff;color:#000;padding:8px 10px;border-radius:6px;z-index:20}.skip-link:focus{left:8px}
   .brand-lockup{display:inline-flex;align-items:center;gap:10px}.brand-mark{width:30px;height:30px;flex:0 0 auto}.brand-word{font-weight:820}.hero-brand{margin-bottom:16px;color:#f6f2e8;font-weight:760}.hero-brand .brand-mark{width:34px;height:34px}.footer-brand .brand-mark{width:24px;height:24px}
-  .report-nav{position:sticky;top:0;z-index:12;display:grid;grid-template-columns:auto minmax(260px,1fr);gap:18px;align-items:start;padding:12px 32px;background:rgba(17,21,19,.96);backdrop-filter:blur(14px);border-bottom:1px solid rgba(246,242,232,.12);color:#fff}.nav-inner{display:contents}.nav-brand{font-weight:820}.nav-links{display:flex;gap:8px;flex-wrap:wrap}.nav-links a{color:#cfd8d1;text-decoration:none;border:1px solid rgba(246,242,232,.16);border-radius:999px;padding:7px 11px;font-size:.82rem;transition:color .18s ease,border-color .18s ease,background .18s ease}.nav-links a:hover{color:#fff;border-color:rgba(246,242,232,.4);background:rgba(246,242,232,.07)}.toolbar{display:grid;grid-template-columns:minmax(220px,1fr) 135px 135px 155px auto auto;gap:8px;align-items:end;grid-column:1/-1}
-  label{display:block;color:#a9b4ab;font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px}input,select,button{font:inherit}input,select{width:100%;height:38px;border:1px solid rgba(246,242,232,.22);border-radius:7px;background:rgba(246,242,232,.08);color:#fff;padding:0 10px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}select option{color:#111513;background:#fff}input::placeholder{color:#96a29a}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(196,154,61,.35);border-color:var(--amber-curve)}button{height:38px;border:1px solid rgba(246,242,232,.25);border-radius:7px;background:var(--paper);color:var(--ink);padding:0 13px;cursor:pointer;font-weight:760;transition:transform .18s ease,background .18s ease,box-shadow .18s ease}button:hover{background:#fff;box-shadow:0 8px 22px rgba(0,0,0,.28)}button:active{transform:translateY(1px)}
-  .hero{position:relative;color:#fff;padding:56px 32px 60px;background:linear-gradient(180deg,var(--charcoal-2),var(--charcoal)),linear-gradient(90deg,rgba(246,242,232,.045) 1px,transparent 1px);background-blend-mode:normal;border-bottom:3px solid var(--amber-curve)}.hero-inner{position:relative;max-width:1440px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,420px);gap:42px;align-items:end}.hero-copy{max-width:72rem}.eyebrow{margin:0 0 8px;color:var(--muted);font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.08em}.hero .eyebrow{color:#a9b4ab}h1,h2,p{margin-top:0}h1{font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(2.1rem,3.8vw,3.4rem);line-height:1.04;margin:0 0 14px;font-weight:800;text-wrap:balance}h2{font-size:1.12rem;line-height:1.2;margin:0 0 4px;font-weight:760;text-wrap:balance}.hero-host{display:inline-flex;align-items:center;gap:8px;margin:0 0 18px;padding:7px 12px;border:1px solid rgba(246,242,232,.2);border-radius:7px;background:rgba(246,242,232,.06);font-family:"Cascadia Mono","Consolas",monospace;font-size:1rem;color:#f6f2e8}.hero-host:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--amber-curve)}.hero-summary{max-width:62rem;color:#c8d2ca;font-size:1.05rem;margin:0;text-wrap:pretty}.run-pill{display:inline-flex;align-items:center;gap:9px;border:1px solid rgba(246,242,232,.2);background:rgba(246,242,232,.07);padding:9px 12px;border-radius:7px;font-weight:780;white-space:nowrap}.run-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:#69c592;box-shadow:0 0 0 4px rgba(105,197,146,.14)}.run-pill.attention:before{background:#e6a557;box-shadow:0 0 0 4px rgba(230,165,87,.16)}
-  .hero-panel{align-self:stretch;display:grid;align-content:end;gap:12px;padding:16px;border:1px solid rgba(246,242,232,.16);border-radius:8px;background:rgba(246,242,232,.05)}.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.meta-item,.hero-proof{border:1px solid rgba(246,242,232,.13);background:rgba(7,9,8,.35);border-radius:7px;padding:12px}.meta-item span,.hero-proof span{display:block;color:#a9b4ab;font-size:.72rem;font-weight:720;text-transform:uppercase;letter-spacing:.06em}.meta-item strong,.hero-proof strong{display:block;margin-top:3px;font-size:1rem;color:#fff}.hero-proof strong{line-height:1.3}
+  .report-nav{position:sticky;top:0;z-index:12;display:grid;grid-template-columns:auto minmax(260px,1fr);gap:14px;align-items:start;padding:10px 32px;background:rgba(17,21,19,.98);border-bottom:1px solid rgba(246,242,232,.12);color:#fff}.nav-inner{display:contents}.nav-brand{font-weight:820}.nav-links{display:flex;gap:8px;flex-wrap:wrap}.nav-links a{color:#cfd8d1;text-decoration:none;border:1px solid rgba(246,242,232,.16);border-radius:999px;padding:7px 11px;font-size:.82rem;transition:color .18s ease,border-color .18s ease,background .18s ease}.nav-links a:hover{color:#fff;border-color:rgba(246,242,232,.4);background:rgba(246,242,232,.07)}.toolbar{display:grid;grid-template-columns:minmax(240px,1fr) auto auto;gap:8px;align-items:end;grid-column:1/-1}.filter-fields{display:grid;grid-template-columns:135px 135px 155px auto;gap:8px;align-items:end}.filter-toggle{display:none}
+  label{display:block;color:#a9b4ab;font-size:.72rem;font-weight:740;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px}input,select,button{font:inherit}input,select{width:100%;height:44px;border:1px solid rgba(246,242,232,.22);border-radius:7px;background:rgba(246,242,232,.08);color:#fff;padding:0 10px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}select option{color:#111513;background:#fff}input::placeholder{color:#96a29a}input:focus,select:focus,button:focus-visible{outline:3px solid rgba(196,154,61,.35);border-color:var(--amber-curve)}button{min-height:44px;height:auto;border:1px solid rgba(246,242,232,.25);border-radius:7px;background:var(--paper);color:var(--ink);padding:8px 13px;cursor:pointer;font-weight:760;transition:transform .18s ease,background .18s ease,box-shadow .18s ease}button:hover{background:#fff;box-shadow:0 8px 22px rgba(0,0,0,.28)}button:active{transform:translateY(1px)}
+  .hero{position:relative;color:#fff;padding:32px;background:var(--charcoal);border-bottom:2px solid var(--amber-curve)}.hero-inner{position:relative;max-width:1440px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,420px);gap:32px;align-items:center}.hero-copy{max-width:72rem}h1,h2,p{margin-top:0}h1{font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(2rem,3.4vw,3.2rem);line-height:1.02;margin:0 0 12px;font-weight:800;text-wrap:balance;overflow-wrap:anywhere}h2{font-size:1.12rem;line-height:1.2;margin:0 0 4px;font-weight:760;text-wrap:balance}.hero-summary{max-width:68ch;color:#d5ddd7;font-size:1.02rem;margin:0;text-wrap:pretty}.run-pill{display:inline-flex;align-items:center;gap:9px;border:1px solid rgba(246,242,232,.2);background:rgba(246,242,232,.07);padding:9px 12px;border-radius:999px;font-weight:780;white-space:nowrap}.run-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:#69c592}.run-pill.attention:before{background:#e6a557}
+  .hero-panel{min-width:0;align-self:stretch;display:grid;align-content:end;gap:12px;padding:16px;border:1px solid rgba(246,242,232,.16);border-radius:8px;background:rgba(246,242,232,.05)}.meta-grid{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.meta-item,.hero-proof{min-width:0;border:1px solid rgba(246,242,232,.13);background:rgba(7,9,8,.35);border-radius:7px;padding:12px}.meta-item span,.hero-proof span{display:block;color:#a9b4ab;font-size:.72rem;font-weight:720;text-transform:uppercase;letter-spacing:.06em}.meta-item strong,.hero-proof strong{display:block;margin-top:3px;font-size:1rem;color:#fff;overflow-wrap:anywhere}.hero-proof strong{line-height:1.3}
   main{max-width:1440px;margin:0 auto;padding:0 32px 56px;overflow-x:hidden}.callout{display:flex;gap:10px;align-items:center;border-radius:8px;padding:13px 14px;margin:26px 0 0;border:1px solid var(--line)}.danger-callout{background:var(--red-bg);border-color:#e0b0a8;color:#77221e}
-  .bento-board{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-flow:dense;gap:14px;margin:44px 0 52px}.bento-card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:8px;padding:20px 20px 22px;box-shadow:var(--card-shadow);transition:box-shadow .25s ease,transform .25s ease}.bento-card:hover{box-shadow:0 2px 4px rgba(17,21,19,.06),0 18px 44px rgba(17,21,19,.12);transform:translateY(-2px)}.bento-card strong{display:block;font-family:"Segoe UI Variable Display","Aptos Display","Segoe UI",system-ui,sans-serif;font-size:clamp(1.9rem,2.8vw,3rem);line-height:1;margin:10px 0 8px;color:var(--ink)}.bento-card p{margin:0;color:var(--muted);max-width:38rem;text-wrap:pretty}.bento-kicker{font-size:.72rem;font-weight:780;text-transform:uppercase;letter-spacing:.08em;color:var(--blue)}.bento-primary,.bento-review,.bento-security,.bento-reboot{grid-column:span 3}.bento-card.danger{border-left-color:var(--red)}.bento-card.danger .bento-kicker{color:var(--red)}.bento-card.good{border-left-color:var(--green)}.bento-card.good .bento-kicker{color:var(--green)}
-  .evidence-layout{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:22px;align-items:start}.evidence-rail{position:sticky;top:126px;background:var(--charcoal);color:#fff;border:1px solid rgba(246,242,232,.12);border-radius:8px;padding:22px;border-bottom:3px solid var(--amber-curve)}.rail-kicker{color:#a9b4ab;font-size:.72rem;font-weight:760;text-transform:uppercase;letter-spacing:.08em;margin:0 0 10px}.scrub-copy{margin:0}.scrub-copy span{display:block;color:#dce5df;margin:10px 0}.rail-links{display:grid;gap:8px;margin-top:18px}.rail-links a{color:#fff;text-decoration:none;border:1px solid rgba(246,242,232,.15);border-radius:7px;padding:9px 11px;transition:border-color .18s ease,background .18s ease}.rail-links a:hover{border-color:rgba(246,242,232,.4);background:rgba(246,242,232,.07)}.evidence-stack{min-width:0}
+  .status-strip{display:grid;grid-template-columns:repeat(3,1fr);margin:26px 0 34px;border:1px solid var(--line-strong);border-radius:14px;background:var(--card);overflow:hidden;box-shadow:var(--card-shadow)}.status-cell{display:grid;grid-template-columns:1fr auto;gap:2px 18px;align-items:center;padding:16px 18px;border-right:1px solid var(--line)}.status-cell:last-child{border-right:0}.status-cell span{color:var(--muted);font-weight:740}.status-cell strong{font-size:1.28rem;color:var(--ink)}.status-cell small{grid-column:1/-1;color:var(--muted)}.status-cell.good strong{color:var(--green)}.status-cell.attention strong{color:var(--amber)}.status-cell.danger strong{color:var(--red)}
+  .evidence-layout{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:22px;align-items:start}.evidence-rail{position:sticky;top:126px;background:var(--charcoal);color:#fff;border:1px solid rgba(246,242,232,.12);border-radius:8px;padding:22px;box-shadow:inset 0 -3px var(--amber-curve)}.rail-kicker{color:#a9b4ab;font-size:.72rem;font-weight:760;text-transform:uppercase;letter-spacing:.08em;margin:0 0 10px}.scrub-copy{margin:0}.scrub-copy span{display:block;color:#dce5df;margin:10px 0}.rail-links{display:grid;gap:8px;margin-top:18px}.rail-links a{color:#fff;text-decoration:none;border:1px solid rgba(246,242,232,.15);border-radius:7px;padding:9px 11px;transition:border-color .18s ease,background .18s ease}.rail-links a:hover{border-color:rgba(246,242,232,.4);background:rgba(246,242,232,.07)}.evidence-stack{min-width:0}
   /* Audit-detail appendix. Rendered expanded by default so no-JS and print keep
      the full compliance record; JS collapses it on screen for a lighter view. */
   .audit-divider{display:flex;align-items:center;gap:14px;margin:34px 0 18px}.audit-divider span{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);white-space:nowrap}.audit-divider:before,.audit-divider:after{content:"";height:1px;background:var(--line-strong);flex:1}.audit-divider:before{flex:0 0 8px}.audit-toggle{white-space:nowrap}.audit-note{margin:0 0 16px;color:var(--muted);font-size:.86rem}.audit-detail.is-collapsed{display:none}
-  .panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:22px;margin-bottom:18px;box-shadow:var(--card-shadow)}.panel.danger-panel{border-left:3px solid var(--red)}.secondary-panel{background:var(--paper-soft)}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}.count{display:inline-flex;min-width:36px;justify-content:center;border-radius:7px;padding:4px 9px;font-weight:820;background:#e7dfcc;color:#332f29}.count.good{background:var(--green-bg);color:var(--green)}.count.danger{background:var(--red-bg);color:var(--red)}
-  .note{color:var(--muted);margin:0 0 14px;max-width:68ch;text-wrap:pretty}.danger-text{color:#842a25}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fffdf6}.table-wrap.compact th,.table-wrap.compact td{padding:9px 10px}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.89rem}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#efe8d7;color:#4a453c;font-size:.71rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;user-select:none;box-shadow:0 1px 0 var(--line)}th[data-sort]{cursor:pointer}th[data-sort]:hover{color:var(--ink)}th[data-sort]:after{content:" sort";color:#9a9081;font-weight:700;text-transform:none;letter-spacing:0;margin-left:4px}tbody tr:last-child td{border-bottom:none}tbody tr:hover td{background:#fdf9ee}
-  tr.ok td{box-shadow:inset 3px 0 0 var(--green)}tr.fail td{box-shadow:inset 3px 0 0 var(--red)}tr.planned td{box-shadow:inset 3px 0 0 var(--steel)}tr.skipped td,tr.breach td{box-shadow:inset 3px 0 0 var(--amber-curve)}tr.ok td:not(:first-child),tr.fail td:not(:first-child),tr.planned td:not(:first-child),tr.skipped td:not(:first-child),tr.breach td:not(:first-child){box-shadow:none}.status,.source-pill,.flag{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-size:.75rem;font-weight:820;white-space:nowrap}.status.ok{background:var(--green-bg);color:var(--green)}.status.fail{background:var(--red-bg);color:var(--red)}.status.planned{background:var(--steel-bg);color:var(--steel)}.status.skipped{background:var(--amber-bg);color:var(--amber)}.source-pill{background:#eae2d0;color:#4f493f}.flag{margin-left:8px}.flag.danger{background:var(--red);color:#fff}.details{min-width:260px;max-width:620px;color:var(--muted);font-size:.82rem;line-height:1.35;white-space:normal}.details summary{cursor:pointer;font-weight:800;color:#4f493f}.details div{margin-top:6px}
-  .mono{font-family:"Cascadia Mono","Consolas",monospace;font-size:.84rem}.nowrap{white-space:nowrap}.empty-state{border:1px dashed var(--line-strong);background:#fffdf6;border-radius:8px;padding:24px;max-width:780px}.empty-title{font-weight:820;margin-bottom:4px}.empty-state p{color:var(--muted);margin:0}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}.breakdown-grid{display:grid;grid-template-columns:1.12fr .94fr .94fr;gap:18px}.error-list{margin:0;padding-left:18px;color:#77221e}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.footer{margin-top:34px;padding:26px 28px;border-radius:8px;background:var(--charcoal);color:#c8d2ca;display:flex;justify-content:space-between;gap:18px;align-items:center;border-bottom:3px solid var(--amber-curve)}.footer a{color:#fff;text-decoration-color:rgba(196,154,61,.7);text-underline-offset:3px}.footer a:hover{text-decoration-color:var(--amber-curve)}
+  .panel{min-width:0;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:22px;margin-bottom:18px;box-shadow:var(--card-shadow)}.panel.danger-panel{border-color:#e0b0a8}.panel.review-panel{border-color:var(--amber-curve)}.secondary-panel{background:var(--paper-soft)}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:14px}.count{display:inline-flex;min-width:36px;justify-content:center;border-radius:7px;padding:4px 9px;font-weight:820;background:#e7dfcc;color:#332f29}.count.good{background:var(--green-bg);color:var(--green)}.count.attention{background:var(--amber-bg);color:var(--amber)}.count.danger{background:var(--red-bg);color:var(--red)}
+  .note{color:var(--muted);margin:0 0 14px;max-width:68ch;text-wrap:pretty}.danger-text{color:#842a25}.attention-text{color:var(--amber)}.attention-list{list-style:none;margin:16px 0 0;padding:0;border-top:1px solid #e0b0a8}.attention-list li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:12px;align-items:start;padding:13px 0;border-bottom:1px solid #e8c9c4}.attention-list p{margin:3px 0 0;color:#6f332f}.attention-list a{color:var(--blue);font-weight:760}.attention-order{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--red);color:#fff;font-weight:820;font-size:.78rem}.attention-list li.review .attention-order{background:var(--amber)}.attention-list li.review p{color:var(--amber)}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:#fffdf6}.table-wrap:focus-visible{outline:3px solid rgba(24,50,74,.3);outline-offset:2px}.table-wrap.compact th,.table-wrap.compact td{padding:9px 10px}table{width:100%;border-collapse:separate;border-spacing:0;font-size:.89rem}#updatesTable{min-width:760px}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}th{position:sticky;top:0;background:#efe8d7;color:#4a453c;font-size:.71rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;user-select:none;box-shadow:0 1px 0 var(--line)}.sort-button{height:auto;border:0;border-radius:4px;background:transparent;color:inherit;padding:2px 18px 2px 0;box-shadow:none;text-transform:inherit;letter-spacing:inherit;position:relative}.sort-button:hover{background:transparent;box-shadow:none;color:var(--ink)}.sort-button:after{content:"↕";position:absolute;right:0;color:#817767}.sort-button[aria-label$="ascending"]:after{content:"↑"}.sort-button[aria-label$="descending"]:after{content:"↓"}tbody tr:last-child td{border-bottom:none}tbody tr:hover td{background:#fdf9ee}
+  tr.ok td{box-shadow:inset 1px 0 0 var(--green)}tr.fail td{box-shadow:inset 1px 0 0 var(--red)}tr.planned td{box-shadow:inset 1px 0 0 var(--steel)}tr.skipped td,tr.breach td{box-shadow:inset 1px 0 0 var(--amber-curve)}tr.ok td:not(:first-child),tr.fail td:not(:first-child),tr.planned td:not(:first-child),tr.skipped td:not(:first-child),tr.breach td:not(:first-child){box-shadow:none}.status,.source-pill,.flag{display:inline-flex;align-items:center;border-radius:6px;padding:3px 7px;font-size:.75rem;font-weight:820;white-space:nowrap}.status.ok{background:var(--green-bg);color:var(--green)}.status.fail{background:var(--red-bg);color:var(--red)}.status.planned{background:var(--steel-bg);color:var(--steel)}.status.skipped{background:var(--amber-bg);color:var(--amber)}.source-pill{background:#eae2d0;color:#4f493f}.flag{margin-left:8px}.flag.danger{background:var(--red);color:#fff}.flag.attention{background:var(--amber-bg);color:var(--amber)}.cell-detail{display:block;margin-top:5px;color:var(--muted);font-size:.76rem;font-weight:500;white-space:normal}.version-flow{white-space:nowrap}.details{min-width:220px;max-width:620px;color:var(--muted);font-size:.82rem;line-height:1.35;white-space:normal}.details summary{cursor:pointer;font-weight:800;color:#4f493f}.details div{margin-top:6px}
+  .mono{font-family:"Cascadia Mono","Consolas",monospace;font-size:.84rem}.nowrap{white-space:nowrap}.empty-state{border:1px dashed var(--line-strong);background:#fffdf6;border-radius:8px;padding:24px;max-width:780px}.empty-title{font-weight:820;margin-bottom:4px}.empty-state p{color:var(--muted);margin:0}.two-col{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}.two-col.single{grid-template-columns:minmax(0,1fr)}.two-col>*{min-width:0}.breakdown-grid{display:grid;grid-template-columns:1.12fr .94fr .94fr;gap:18px}.error-list{margin:0;padding-left:18px;color:#77221e}.result-count{color:var(--muted);font-size:.86rem;margin-top:10px}.footer{margin-top:34px;padding:26px 28px;border-radius:8px;background:var(--charcoal);color:#c8d2ca;display:flex;justify-content:space-between;gap:18px;align-items:center;box-shadow:inset 0 -3px var(--amber-curve)}.footer a{color:#fff;text-decoration-color:rgba(196,154,61,.7);text-underline-offset:3px}.footer a:hover{text-decoration-color:var(--amber-curve)}
   .reveal{opacity:1;transform:none}
-  @media (max-width:1180px){.bento-board{grid-template-columns:repeat(6,1fr)}.bento-primary,.bento-review,.bento-security,.bento-reboot{grid-column:span 3}.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.report-nav{grid-template-columns:1fr}.toolbar{grid-template-columns:1fr 1fr}.toolbar .search-field{grid-column:1/-1}.hero-inner,.two-col{grid-template-columns:1fr}.hero-panel{max-width:620px}}@media (max-width:620px){.report-nav,.hero,main{padding-left:18px;padding-right:18px}.toolbar,.meta-grid{grid-template-columns:1fr}.bento-board{grid-template-columns:1fr;margin-top:28px}.bento-primary,.bento-review,.bento-security,.bento-reboot{grid-column:span 1}h1{font-size:clamp(1.9rem,9vw,2.6rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block}.table-wrap{border-radius:7px}}@media print{body{background:#fff;color:#000}.report-nav,button,.skip-link{display:none}.hero{background:#fff;color:#000;padding:18px 0;border-bottom:2px solid #000}.hero-host{color:#000;border-color:#999}.hero-summary,.meta-item span,.hero-proof span{color:#333}.bento-card,.hero-panel,.meta-item,.hero-proof,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.bento-board,.evidence-layout,.two-col,.breakdown-grid{display:block}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
+  @media (max-width:1180px){.evidence-layout{grid-template-columns:1fr}.evidence-rail{position:static}.breakdown-grid{grid-template-columns:1fr}}@media (max-width:980px){.report-nav{grid-template-columns:minmax(0,1fr)}.toolbar{grid-template-columns:minmax(0,1fr) auto}.toolbar .search-field{grid-column:1/-1}.filter-toggle{display:block}.filter-fields{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto;grid-column:1/-1}.two-col{grid-template-columns:1fr}}@media (max-width:620px){.report-nav,.hero,main{padding-left:max(18px,env(safe-area-inset-left));padding-right:max(18px,env(safe-area-inset-right))}.report-nav{gap:8px;padding-top:8px;padding-bottom:8px}.report-nav>*{min-width:0}.nav-brand{display:none}.nav-links{min-width:0;flex-wrap:nowrap;overflow-x:auto;max-width:100%;padding-bottom:4px}.toolbar{min-width:0;grid-template-columns:minmax(0,1fr) auto}.toolbar .search-field{min-width:0;grid-column:1/-1}.filter-fields{min-width:0;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-column:1/-1}input,select,button{font-size:16px}.hero{padding-top:24px;padding-bottom:24px}.hero-inner{min-width:0;grid-template-columns:minmax(0,1fr);gap:20px}.hero-copy{min-width:0}.hero-brand{margin-bottom:10px}.hero-panel{max-width:none;padding:12px;gap:8px}.meta-grid{gap:8px}.meta-item,.hero-proof{padding:9px 10px}.meta-item strong,.hero-proof strong{font-size:.92rem}.status-strip{grid-template-columns:1fr}.status-cell{border-right:0;border-bottom:1px solid var(--line)}.status-cell:last-child{border-bottom:0}h1{max-width:100%;font-size:clamp(1.9rem,9vw,2.6rem)}.panel{padding:16px}.section-head{display:block}.count{margin-top:8px}.footer{display:block;padding-bottom:max(26px,env(safe-area-inset-bottom))}.attention-list li{grid-template-columns:30px 1fr}.attention-list a{grid-column:2}}@media (max-width:360px){.meta-grid{grid-template-columns:1fr}}@media print{body{background:#fff;color:#000}.report-nav,button,.skip-link{display:none}.hero{background:#fff;color:#000;padding:18px 0;border-bottom:2px solid #000}.hero-summary,.meta-item span,.hero-proof span{color:#333}.status-strip,.hero-panel,.meta-item,.hero-proof,.panel,.evidence-rail{box-shadow:none;background:#fff;color:#000}.status-strip,.evidence-layout,.two-col,.breakdown-grid{display:block}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle{display:none}main{padding:18px 0}.table-wrap{overflow:visible}.panel{break-inside:avoid}.reveal{opacity:1 !important;transform:none !important;transition:none !important}}
+  @media (forced-colors:active){.status-cell,.panel,.table-wrap,.posture,.status,.source-pill,.attention-order{border:1px solid CanvasText}.attention-order{background:Canvas;color:CanvasText}.brand-mark{forced-color-adjust:auto}}
   @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}*{transition:none !important}}
+  /* Systems Health Map composition — a report instrument, not a card dashboard. */
+  ::selection{background:#18324a;color:#fff}*{scrollbar-color:var(--line-strong) #eee7d7;scrollbar-width:thin}input{caret-color:var(--amber-curve)}
+  .report-nav{grid-template-columns:auto minmax(0,1fr);align-items:center;padding-block:8px}.nav-brand>span{display:grid;line-height:1.05}.nav-brand small{margin-top:4px;color:#aeb9b1;font-size:.69rem;font-weight:560}.nav-links{justify-self:end}.toolbar{grid-template-columns:minmax(260px,1fr) auto auto;align-items:end}.filter-fields{grid-template-columns:repeat(3,minmax(120px,1fr)) auto}
+  .report-masthead{max-width:1440px;margin:0 auto;padding:18px 32px 14px;display:flex;align-items:end;justify-content:space-between;gap:32px;border-bottom:1px solid var(--line-strong)}.report-masthead h1{font-size:1.45rem;line-height:1.15;margin:0 0 4px;letter-spacing:-.02em}.report-masthead p{margin:0;color:var(--muted);max-width:70ch}.run-identity{display:grid;grid-template-columns:repeat(4,auto);gap:0;margin:0}.run-identity div{padding:0 16px;border-left:1px solid var(--line)}.run-identity dt,.verdict-fact>span,.verdict-state>div>span{color:var(--muted);font-size:.68rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase}.run-identity dd{margin:2px 0 0;font-weight:760;white-space:nowrap}
+  main{padding-top:16px}.verdict-rail{display:grid;grid-template-columns:minmax(300px,2fr) repeat(3,minmax(125px,.72fr)) minmax(220px,.9fr);align-items:stretch;margin:0 0 14px;border:1px solid var(--line-strong);border-radius:12px;background:var(--card);overflow:hidden}.verdict-rail.danger{border-color:#e0b0a8}.verdict-rail.attention{border-color:var(--amber-curve)}.verdict-state,.verdict-fact{min-width:0;padding:14px 16px;border-right:1px solid var(--line)}.verdict-state{display:grid;grid-template-columns:34px minmax(0,1fr);gap:12px;align-items:start}.verdict-state strong{display:block;font-size:1.1rem;line-height:1.18;margin:2px 0 3px}.verdict-state small,.verdict-fact small{display:block;color:var(--muted);line-height:1.35}.verdict-symbol{display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--line-strong);border-radius:50%}.verdict-fact{display:flex;flex-direction:column;justify-content:center}.verdict-fact strong{display:block;margin:3px 0;font-size:.96rem;line-height:1.2}.primary-action{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;background:var(--blue);color:#fff;text-decoration:none;font-weight:800;transition:background .18s cubic-bezier(.16,1,.3,1)}.primary-action:hover{background:var(--blue)}.primary-action:focus-visible,.health-node:focus-visible{outline:3px solid var(--amber-curve);outline-offset:-4px}
+  .state-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--steel);box-shadow:0 0 0 3px var(--steel-bg);flex:0 0 auto}.state-dot.good{background:var(--green);box-shadow:0 0 0 3px var(--green-bg)}.state-dot.review,.state-dot.attention{background:var(--amber);box-shadow:0 0 0 3px var(--amber-bg)}.state-dot.danger{background:var(--red);box-shadow:0 0 0 3px var(--red-bg)}.state-dot.neutral{background:var(--muted);box-shadow:0 0 0 3px #eee8db}
+  .command-stage{display:grid;grid-template-columns:minmax(0,1.38fr) minmax(360px,.92fr);gap:14px;align-items:stretch;margin-bottom:14px}.command-stage>.panel,.queue-column>.panel{height:100%;margin:0}.panel{border-radius:12px;padding:18px;box-shadow:none}.section-head{margin-bottom:12px;padding-bottom:11px}.section-head p,.map-head p{margin:4px 0 0;color:var(--muted);max-width:70ch}
+  .map-head{display:flex;justify-content:space-between;gap:18px;align-items:start;padding-bottom:11px;border-bottom:1px solid var(--line)}.map-legend{display:flex;gap:13px;flex-wrap:wrap;justify-content:flex-end;color:var(--muted);font-size:.75rem}.map-legend span{display:flex;align-items:center;gap:7px;white-space:nowrap}.map-legend .state-dot{width:8px;height:8px}
+  .health-topology{display:grid;grid-template-columns:minmax(185px,.72fr) minmax(0,1.8fr);gap:42px;align-items:center;padding:18px 0 2px}.health-root,.health-node{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;min-width:0;border:1px solid var(--line-strong);border-radius:8px;background:#fffdf6;color:var(--ink);padding:11px 12px;text-decoration:none}.health-root:after{content:"";position:absolute;left:100%;top:50%;width:43px;border-top:1px solid var(--line-strong)}.health-root strong,.health-node strong{display:block;overflow-wrap:anywhere}.health-root small,.health-node small{display:block;color:var(--muted);font-size:.72rem;margin-top:2px}.health-root>b,.health-node>b{display:grid;place-items:center;min-width:26px;height:26px;border-radius:6px;background:var(--paper-soft);font-size:.78rem}.health-branches{position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.health-branches:before{content:"";position:absolute;right:calc(100% + 21px);top:9%;bottom:9%;border-left:1px solid var(--line-strong)}.health-node:before{content:"";position:absolute;right:100%;top:50%;width:22px;border-top:1px solid var(--line-strong)}.health-node:hover{border-color:var(--line-strong);background:#fff}.health-node.danger{border-color:#e0b0a8}.health-node.review{border-color:var(--amber-curve)}
+  .needs-attention .section-head p{margin:4px 0 0;color:var(--muted)}.attention-list{margin-top:0}.attention-list li{grid-template-columns:26px minmax(0,1fr) auto;gap:10px;padding:11px 0}.attention-order{width:24px;height:24px;border-radius:6px}.attention-list p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.queue-clear{display:flex;align-items:flex-start;gap:12px;padding:20px 2px}.queue-clear p{margin:0;color:var(--muted)}.ledger-panel{margin-bottom:18px}.ledger-panel .section-head p{margin:4px 0 0;color:var(--muted)}
+  .audit-divider{margin-top:28px}.footer{border-radius:12px}
+  @media(max-width:1180px){.verdict-rail{grid-template-columns:minmax(280px,1.7fr) repeat(3,minmax(120px,1fr));}.primary-action{grid-column:1/-1;min-height:48px}.command-stage{grid-template-columns:1fr}.health-map,.queue-column>.panel{height:auto}.run-identity{grid-template-columns:repeat(2,auto)}.run-identity div:nth-child(3){border-left:0}.report-masthead{align-items:start}}
+  @media(max-width:820px){.report-nav{grid-template-columns:minmax(0,1fr)}.nav-links{justify-self:start;max-width:100%;overflow-x:auto;flex-wrap:nowrap}.toolbar{grid-template-columns:minmax(0,1fr) auto}.toolbar .search-field{grid-column:1/-1}.report-masthead{padding-inline:20px;display:block}.run-identity{margin-top:14px;grid-template-columns:repeat(4,minmax(0,1fr))}.run-identity div{padding:0 10px}.run-identity div:first-child{padding-left:0;border-left:0}.run-identity div:nth-child(3){border-left:1px solid var(--line)}.verdict-rail{grid-template-columns:1fr 1fr}.verdict-state{grid-column:1/-1}.verdict-fact:nth-of-type(3){border-right:0}.primary-action{grid-column:1/-1}.health-topology{grid-template-columns:1fr;gap:16px}.health-root:after,.health-branches:before,.health-node:before{display:none}}
+  @media(max-width:620px){.report-nav,main{padding-inline:max(16px,env(safe-area-inset-left))}.report-masthead{padding-inline:max(16px,env(safe-area-inset-left))}.nav-brand{display:flex}.toolbar{grid-template-columns:minmax(0,1fr) auto}.filter-fields{grid-template-columns:1fr 1fr}.verdict-rail{grid-template-columns:1fr}.verdict-state,.verdict-fact{border-right:0;border-bottom:1px solid var(--line)}.primary-action{grid-column:auto}.run-identity{grid-template-columns:1fr 1fr;gap:10px}.run-identity div,.run-identity div:nth-child(3){padding:0;border-left:0}.health-branches{grid-template-columns:1fr}.map-head{display:block}.map-legend{justify-content:flex-start;margin-top:10px}.command-stage{display:block}.queue-column{margin-top:14px}.panel{padding:15px}.attention-list li{grid-template-columns:26px minmax(0,1fr)}.attention-list a{grid-column:2}.attention-list p{-webkit-line-clamp:3}#updatesTable{min-width:0}#updatesTable thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}#updatesTable,#updatesTable tbody,#updatesTable tr,#updatesTable td{display:block;width:100%}#updatesTable tr{padding:8px 0;border-bottom:1px solid var(--line)}#updatesTable td{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:7px 5px;border:0;box-shadow:none}#updatesTable td:before{color:var(--muted);font-size:.67rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}#updatesTable td:nth-child(1):before{content:"Package"}#updatesTable td:nth-child(2):before{content:"Transition"}#updatesTable td:nth-child(3):before{content:"Source"}#updatesTable td:nth-child(4):before{content:"Result"}#updatesTable td:nth-child(5):before{content:"Time"}#updatesTable td:nth-child(6):before{content:"Evidence"}#updatesTable .details{min-width:0;max-width:none}.two-col{display:block}.two-col>.panel{margin-bottom:14px}}
+  @media print{.report-masthead{padding:10px 0}.verdict-rail,.command-stage{display:block}.verdict-state,.verdict-fact,.health-root,.health-node{border:1px solid #777}.primary-action{display:none}.health-map,.queue-column>.panel{margin-bottom:12px}.health-branches{display:grid;grid-template-columns:repeat(2,1fr)}.audit-detail,.audit-detail.is-collapsed{display:block!important}}
+  @media(forced-colors:active){.verdict-rail,.health-root,.health-node,.state-dot,.primary-action{border:1px solid CanvasText}.state-dot{box-shadow:none}.primary-action{background:Canvas;color:CanvasText}}
+  @media(max-width:620px){.verdict-rail>.primary-action{grid-row:2}}
+  /* Mockup-fidelity pass — compact forensic report, September 2026. */
+  body{background:#f7f6f1;font-size:13px;line-height:1.42}
+  .report-nav{position:static;display:grid;grid-template-columns:minmax(190px,.8fr) minmax(520px,1.7fr) auto;align-items:center;gap:20px;min-height:54px;padding:7px 24px;background:#fffdf8;color:var(--ink);border-bottom:1px solid #d8d7d0}
+  .nav-brand{color:var(--ink)}.nav-brand>span{display:flex;align-items:baseline;gap:12px;white-space:nowrap}.nav-brand small{margin:0;color:var(--muted);font-size:.67rem}.nav-brand .brand-mark{width:32px;height:32px}
+  .nav-run-identity{justify-self:end;grid-template-columns:repeat(4,minmax(90px,auto));align-items:center}.nav-run-identity div{padding:0 14px;border-left:1px solid #deddd6}.nav-run-identity dt{font-size:.62rem}.nav-run-identity dd{font-size:.78rem;margin-top:1px}
+  .nav-print{min-height:34px;height:34px;padding:0 13px;border:1px solid #c9c8c1;border-radius:3px;background:#fff;color:var(--ink);font-size:.75rem}.nav-print:hover{background:#f2f1eb;box-shadow:none}
+  main{max-width:1536px;padding:10px 24px 42px}
+  .report-masthead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+  .verdict-rail{grid-template-columns:minmax(310px,1.8fr) repeat(3,minmax(130px,.78fr)) minmax(236px,1.05fr);min-height:78px;margin:0 0 10px;border-radius:5px;background:#fffdf8;box-shadow:none}
+  .verdict-state,.verdict-fact{padding:10px 14px}.verdict-state{grid-template-columns:30px minmax(0,1fr);gap:11px;align-items:center}.verdict-state strong{font-size:1.04rem;margin:1px 0 2px}.verdict-state small,.verdict-fact small{font-size:.72rem}.verdict-fact strong{font-size:.88rem;margin:2px 0}
+  .verdict-symbol{width:30px;height:30px;border:0;background:var(--paper-soft)}.verdict-symbol .state-dot{width:9px;height:9px;box-shadow:none}.verdict-rail.danger .verdict-symbol{background:var(--red)}.verdict-rail.danger .verdict-symbol .state-dot{background:#fff}.verdict-rail.attention .verdict-symbol{background:var(--amber)}.verdict-rail.attention .verdict-symbol .state-dot{background:#fff}.verdict-rail.good .verdict-symbol{background:var(--green)}.verdict-rail.good .verdict-symbol .state-dot{background:#fff}
+  .primary-action{align-self:center;min-height:38px;margin:10px 13px;padding:8px 12px;border:1px solid var(--blue);border-radius:3px;background:#fff;color:var(--blue);font-size:.76rem}.verdict-rail.danger .primary-action{border-color:var(--red);color:var(--red)}.verdict-rail.attention .primary-action{border-color:var(--amber);color:var(--amber)}.primary-action:hover{background:#f4f3ed}.primary-action:focus-visible,.health-node:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  .command-stage{grid-template-columns:minmax(0,1.44fr) minmax(350px,.96fr);gap:9px;align-items:stretch;margin-bottom:9px}.command-stage>.panel,.queue-column>.panel{height:100%}
+  .panel{border-radius:5px;padding:12px;margin-bottom:10px;background:#fffdf8;border-color:#d8d7d0}.section-head,.map-head{padding-bottom:8px;margin-bottom:8px}.section-head h2,.map-head h2{font-size:.84rem;letter-spacing:.01em}.section-head p,.map-head p{margin-top:2px;font-size:.72rem}.map-legend{gap:10px;font-size:.66rem}.map-legend .state-dot{width:6px;height:6px;box-shadow:none}
+  .health-topology{grid-template-columns:minmax(160px,.68fr) minmax(0,1.85fr);gap:34px;min-height:190px;padding:12px 0 0}.health-root,.health-node{gap:8px;padding:8px 9px;border-radius:3px;background:#fff;border-color:#d4d3cc}.health-root:after{width:35px}.health-branches{gap:6px}.health-branches:before{right:calc(100% + 17px)}.health-node:before{width:18px}.health-root strong,.health-node strong{font-size:.76rem;text-transform:uppercase;letter-spacing:.02em}.health-root small,.health-node small{font-size:.66rem}.health-root>b,.health-node>b{min-width:23px;height:23px;border-radius:3px;font-size:.68rem}
+  .attention-list{border-top-color:#dddcd5}.attention-list li{grid-template-columns:23px minmax(0,1fr) auto;gap:9px;padding:8px 0;border-bottom-color:#dddcd5}.attention-list li.danger,.attention-list li.review{padding-left:7px;border-left:1px solid currentColor}.attention-order{width:21px;height:21px;border-radius:3px;font-size:.66rem}.attention-list strong{font-size:.76rem}.attention-list p{margin-top:2px;font-size:.7rem;line-height:1.3}.attention-list a{font-size:.68rem}
+  .ledger-panel{padding:12px}.ledger-panel .section-head{margin-bottom:8px}.count{min-width:30px;padding:3px 7px;border-radius:3px;font-size:.7rem}
+  .ledger-toolbar{display:grid;grid-template-columns:minmax(250px,1.6fr) minmax(440px,2.2fr);gap:8px;align-items:end;margin:0 0 8px;padding:7px 8px;border:1px solid #deddd6;border-radius:3px;background:#f2f1eb}.ledger-toolbar .filter-toggle{display:none}.ledger-toolbar .filter-fields{grid-template-columns:repeat(3,minmax(110px,1fr)) auto;gap:6px}.ledger-toolbar label{margin-bottom:2px;color:var(--muted);font-size:.6rem}.ledger-toolbar input,.ledger-toolbar select{height:32px;border:1px solid #cbc9c0;border-radius:3px;background:#fff;color:var(--ink);font-size:.73rem}.ledger-toolbar button{min-height:32px;padding:5px 10px;border:1px solid #cbc9c0;border-radius:3px;background:#fff;font-size:.71rem}.ledger-toolbar button:hover{background:#ecebe5;box-shadow:none}
+  .table-wrap{border-radius:3px;background:#fff}.table-wrap.compact th,.table-wrap.compact td,th,td{padding:7px 9px}table{font-size:.75rem}th{background:#f0eee5;font-size:.61rem;letter-spacing:.055em}.sort-button{min-height:auto;font-size:inherit}.cell-detail{margin-top:2px;font-size:.66rem}.details{font-size:.7rem}.status,.source-pill,.flag{border-radius:2px;padding:2px 5px;font-size:.65rem}
+  .audit-divider{margin:20px 0 10px}.footer{margin-top:20px;padding:15px 18px;border-radius:4px}
+  @media(max-width:1100px){.report-nav{grid-template-columns:auto 1fr auto}.nav-run-identity div:nth-child(2),.nav-run-identity div:nth-child(3){display:none}.nav-run-identity{grid-template-columns:repeat(2,auto)}.verdict-rail{grid-template-columns:minmax(280px,1.5fr) repeat(3,minmax(115px,1fr))}.primary-action{grid-column:1/-1;margin:8px 12px}.ledger-toolbar{grid-template-columns:1fr}.command-stage{grid-template-columns:1fr}.command-stage>.panel,.queue-column>.panel{height:auto}}
+  @media(max-width:820px){.report-nav{padding-inline:16px}.nav-run-identity{grid-template-columns:auto}.nav-run-identity div{padding-right:0}.nav-run-identity div:nth-child(2),.nav-run-identity div:nth-child(3),.nav-run-identity div:nth-child(4){display:none}.verdict-rail{grid-template-columns:1fr 1fr}.verdict-state{grid-column:1/-1}.ledger-toolbar .filter-toggle{display:inline-flex}.ledger-toolbar .filter-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-action{min-height:44px}.ledger-toolbar input,.ledger-toolbar select{height:44px}.ledger-toolbar button,.filter-toggle,.sort-button{min-height:44px}}
+  @media(max-width:620px){body{font-size:13px}.report-nav{grid-template-columns:minmax(0,1fr) auto;min-height:50px;padding:6px max(12px,env(safe-area-inset-left))}.nav-brand>span{display:grid;gap:0}.nav-brand small,.nav-run-identity{display:none}.nav-brand .brand-mark{width:29px;height:29px}.nav-print{height:44px}.report-masthead{position:absolute}.verdict-rail{grid-template-columns:1fr 1fr;margin-bottom:8px}.verdict-state{grid-column:1/-1}.verdict-state,.verdict-fact{padding:9px 11px}.verdict-fact:last-of-type{grid-column:1/-1}.verdict-rail>.primary-action{grid-row:2;grid-column:1/-1;margin:8px 10px}.command-stage{gap:8px}.health-topology{min-height:0;padding-top:8px;grid-template-columns:1fr}.health-branches{grid-template-columns:1fr 1fr}.panel{padding:11px}.ledger-toolbar{padding:6px}.ledger-toolbar .filter-fields{grid-template-columns:1fr 1fr}.table-wrap{border-radius:2px}.footer{padding-bottom:max(15px,env(safe-area-inset-bottom))}}
+  @media(pointer:coarse){.primary-action,.nav-print,.ledger-toolbar input,.ledger-toolbar select,.ledger-toolbar button,.filter-toggle,.sort-button{min-height:44px}}
+  @media print{body{font-size:10pt}.report-nav{display:none}.report-masthead{position:static;width:auto;height:auto;margin:0 0 10px;padding:0;overflow:visible;clip:auto;white-space:normal;border-bottom:1px solid #777}.report-masthead h1{font-size:17pt}.ledger-toolbar{display:none}.verdict-rail,.panel,.table-wrap{border-radius:0;background:#fff}.command-stage>.panel,.queue-column>.panel{height:auto}}
 </style>
-<noscript><style>.reveal{opacity:1;transform:none}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle{display:none}</style></noscript>
+<noscript><style>.reveal{opacity:1;transform:none}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle,.filter-toggle{display:none}.ledger-toolbar .filter-fields{display:grid !important}</style></noscript>
 </head>
 <body>
+<!--
+THESIS: Patch posture is a connected system; replace the generic card dashboard with a topology that exposes broken evidence paths.
+OWN-WORLD: Warm ivory evidence paper, white ledgers, fine charcoal rules, compact squared nodes, and sage/amber/red/blue states remain recognizable without copy.
+STORY: The operator sees the verdict, locates the unhealthy provider path, acts on the ranked exception, then verifies the complete ledger.
+FIRST VIEWPORT: A 52px evidence header and compact verdict rail lead into the provider health map and exception queue; the primary action is state-aware and the package ledger enters the first desktop viewport.
+FORM: Systems Health Map, position 7 in the ordered surface set, seed a79596f6.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
 <a class="skip-link" href="#updates">Skip to update table</a>
 <nav class="report-nav" aria-label="Report command bar">
-  <div class="nav-brand brand-lockup">$brandMark<span class="brand-word">PatchManager</span></div>
-  <div class="nav-links"><a href="#summary">Summary</a><a href="#updates">Action queue</a><a href="#providers">Providers</a><a href="#security">Security</a><a href="#runtime">Runtime</a></div>
-  <div class="toolbar" aria-label="Report controls">
-    <div class="search-field"><label for="searchInput">Search packages</label><input id="searchInput" type="search" placeholder="Name, package ID, source, version"></div>
-    <div><label for="statusFilter">Result</label><select id="statusFilter"><option value="">All results</option><option value="Planned">Planned</option><option value="Completed">Completed</option><option value="Updated">Updated</option><option value="Detected">Detected</option><option value="AlreadyCurrent">Already current</option><option value="Skipped">Skipped</option><option value="Descoped">Descoped</option><option value="Succeeded">Succeeded</option><option value="Blocked">Blocked</option><option value="Verifying">Verifying</option><option value="Failed">Failed</option></select></div>
-    <div><label for="sourceFilter">Source</label><select id="sourceFilter"><option value="">All sources</option></select></div>
-    <div><label for="providerFilter">Provider</label><select id="providerFilter"><option value="">All providers</option></select></div>
-    <div><label>&nbsp;</label><button type="button" id="clearFilters">Clear</button></div>
-    <div><label>&nbsp;</label><button type="button" id="printReport">Print</button></div>
-  </div>
-</nav>
-<header class="hero">
-  <div class="hero-inner">
-    <div class="hero-copy"><div class="hero-brand brand-lockup">$brandMark<span>Patch. Verify. Prove it.</span></div><p class="eyebrow">PatchManager compliance report</p><h1>$verdictTitle<br>$hostname</h1><p class="hero-summary">$runSummary</p></div>
-    <div class="hero-panel"><div class="run-pill $runTone">$runMode</div><div class="meta-grid"><div class="meta-item"><span>Ring</span><strong>$ring</strong></div><div class="meta-item"><span>Started</span><strong>$startStr</strong></div><div class="meta-item"><span>Duration</span><strong>${elapsed2dp}m</strong></div><div class="meta-item"><span>Version</span><strong>$ver</strong></div></div><div class="hero-proof"><span>Evidence rows</span><strong>$($Results.Count) total / $($actionableRows.Count) action / $providerCheckCount provider</strong></div></div>
-  </div>
-</header>
-<main id="content">
-  $emergencyBanner
+  <div class="nav-brand brand-lockup">$brandMark<span><b class="brand-word">PatchManager</b><small>Patch. Verify. Prove it.</small></span></div>
+  <dl class="run-identity nav-run-identity"><div><dt>Run</dt><dd>$startStr</dd></div><div><dt>Duration</dt><dd>${elapsed2dp}m</dd></div><div><dt>Version</dt><dd>$ver</dd></div><div><dt>Evidence</dt><dd>$($Results.Count) rows</dd></div></dl>
+  <button type="button" class="nav-print" id="printReport">Print report</button>
+</nav><main id="content">
+  <header class="report-masthead"><h1>Device patch evidence</h1><p>$runSummary</p></header>  $emergencyBanner
   $bentoSection
-  <div class="evidence-layout">
-    $evidenceRail
-    <div class="evidence-stack">
-      <div class="reveal">$attentionSection</div>
-      <section class="panel reveal" id="updates"><div class="section-head"><div><p class="eyebrow">Actionable package updates</p><h2>$($actionableRows.Count) action row(s)</h2></div><span class="count">$(ConvertTo-ReportHtml $Results.Count) total</span></div>$tableSection<div class="result-count" id="resultCount"></div></section>
-      <div id="security" class="two-col reveal">$kevSection$slaSection</div>
-      <div class="reveal">$invKevSection</div>
-      <div class="reveal">$nvdSection</div>
-      <div class="reveal">$stalenessSection</div>
-      <div class="reveal">$eolSection</div>
-      <div class="audit-divider" id="auditDivider"><span>Audit detail</span><button type="button" class="audit-toggle" id="auditToggle" hidden aria-expanded="true" aria-controls="auditDetail">Hide audit detail</button></div>
-      <section id="auditDetail" class="audit-detail" aria-label="Audit detail">
-        <p class="audit-note">Full provider evidence, per-status counts, and run diagnostics. Included in print and PDF exports for the compliance record.</p>
-        <div class="reveal">$skippedSection</div>
-        <div id="providers" class="reveal">$providerCheckSection</div>
-        <div class="reveal">$breakdownSection</div>
-        <div id="runtime" class="reveal">$errSection</div>
-        <section class="panel reveal"><div class="section-head"><div><p class="eyebrow">Run metrics</p><h2>Patch state summary</h2></div><span class="count">$avgDays avg days</span></div><p class="note">Tracked updates: $(ConvertTo-ReportHtml $Metrics.TotalTracked). Applied in state: $(ConvertTo-ReportHtml $Metrics.Applied). Pending in state: $(ConvertTo-ReportHtml $Metrics.Pending).</p><p class="note">Coverage: $inventoryCount inventory item(s) across $($sourceGroups.Count) source group(s) and $($providerGroups.Count) provider group(s); $providerCheckCount provider check(s). $visibleSkippedCount skipped or descoped row(s). Generated in ${elapsed2dp}m by PatchManager v$ver.</p></section>
-      </section>
+  <div class="command-stage">$providerHealthMap<div class="queue-column">$attentionSection</div></div>
+  <section class="panel ledger-panel reveal" id="updates"><div class="section-head"><div><h2>Package verification ledger</h2><p>$($actionableRows.Count) prioritized package row(s); attention states remain first.</p></div><span class="count">$(ConvertTo-ReportHtml $Results.Count) total</span></div>
+  <div class="toolbar ledger-toolbar" aria-label="Report controls">
+    <div class="search-field"><label for="searchInput">Find evidence</label><input id="searchInput" type="search" placeholder="Package, ID, source, version, evidence"></div>
+    <button type="button" class="filter-toggle" id="filterToggle" aria-expanded="true" aria-controls="secondaryFilters">Filters</button>
+    <div class="filter-fields" id="secondaryFilters">
+      <div><label for="statusFilter">Result</label><select id="statusFilter"><option value="">All results</option><option value="Planned">Planned</option><option value="Completed">Completed</option><option value="Updated">Updated</option><option value="Detected">Detected</option><option value="AlreadyCurrent">Already current</option><option value="Skipped">Skipped</option><option value="Descoped">Descoped</option><option value="Succeeded">Succeeded</option><option value="Blocked">Blocked</option><option value="Verifying">Verifying</option><option value="Failed">Failed</option></select></div>
+      <div><label for="sourceFilter">Source</label><select id="sourceFilter"><option value="">All sources</option></select></div>
+      <div><label for="providerFilter">Provider</label><select id="providerFilter"><option value="">All providers</option></select></div>
+      <div><label>&nbsp;</label><button type="button" id="clearFilters">Clear filters</button></div>
     </div>
-  </div>
+  </div>$tableSection<div class="result-count" id="resultCount" role="status" aria-live="polite"></div></section>
+  <div id="security" class="$securityGridClass reveal">$kevSection$slaSection</div>
+  <div class="reveal">$invKevSection</div>
+  <div class="reveal">$nvdSection</div>
+  <div class="reveal">$stalenessSection</div>
+  <div class="reveal">$eolSection</div>
+  <div class="audit-divider" id="auditDivider"><span>Complete audit proof</span><button type="button" class="audit-toggle" id="auditToggle" hidden aria-expanded="true" aria-controls="auditDetail">Hide audit detail</button></div>
+  <section id="auditDetail" class="audit-detail" aria-label="Audit detail">
+    <p class="audit-note">Full provider evidence, status counts, and runtime diagnostics. Always included in print and no-JavaScript output.</p>
+    <div class="reveal">$skippedSection</div>
+    <div id="providers" class="reveal">$providerCheckSection</div>
+    <div class="reveal">$breakdownSection</div>
+    <div id="runtime" class="reveal">$errSection</div>
+    $metricsSection
+  </section>
   <div class="footer"><span class="footer-brand brand-lockup">$brandMark<span>Generated by <a href="https://github.com/ciaranwhiteside/PatchManager" target="_blank" rel="noopener">PatchManager</a> v$ver on $generatedAt.</span></span><span>Self-contained HTML report</span></div>
 </main>
 <script>
@@ -6046,6 +6518,8 @@ function New-HTMLReport {
   var resultCount = document.getElementById('resultCount');
   var clearFilters = document.getElementById('clearFilters');
   var printReport = document.getElementById('printReport');
+  var filterToggle = document.getElementById('filterToggle');
+  var secondaryFilters = document.getElementById('secondaryFilters');
   var sources = [];
   var providers = [];
   rows.forEach(function(row){var source = row.getAttribute('data-source') || '';if(source && sources.indexOf(source) === -1){sources.push(source);}});
@@ -6058,7 +6532,15 @@ function New-HTMLReport {
   [search,statusFilter,sourceFilter,providerFilter].forEach(function(control){if(control){control.addEventListener('input', applyFilters);control.addEventListener('change', applyFilters);}});
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';statusFilter.value = '';sourceFilter.value = '';providerFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}
-  document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(th, index){th.addEventListener('click', function(){var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('data-direction') === 'asc' ? 'desc' : 'asc';document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(other){other.removeAttribute('data-direction');});th.setAttribute('data-direction', direction);updateRows.sort(function(a,b){var av = (a.children[index].innerText || '').trim();var bv = (b.children[index].innerText || '').trim();return direction === 'asc' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});updateRows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
+  if(filterToggle && secondaryFilters){
+    var mobileFilters = window.matchMedia('(max-width: 980px)');
+    var setFilterCollapsed = function(collapsed){secondaryFilters.hidden = collapsed;filterToggle.setAttribute('aria-expanded', String(!collapsed));filterToggle.textContent = collapsed ? 'Show filters' : 'Hide filters';};
+    var syncFilterDrawer = function(){if(mobileFilters.matches){filterToggle.hidden = false;setFilterCollapsed(true);}else{filterToggle.hidden = true;setFilterCollapsed(false);}};
+    filterToggle.addEventListener('click', function(){setFilterCollapsed(!secondaryFilters.hidden);});
+    if(mobileFilters.addEventListener){mobileFilters.addEventListener('change', syncFilterDrawer);}else{mobileFilters.addListener(syncFilterDrawer);}
+    syncFilterDrawer();
+  }
+  document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(th, index){th.addEventListener('click', function(){var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('data-direction') === 'asc' ? 'desc' : 'asc';document.querySelectorAll('#updatesTable th[data-sort]').forEach(function(other){other.removeAttribute('data-direction');other.setAttribute('aria-sort','none');var otherButton=other.querySelector('.sort-button');if(otherButton){otherButton.removeAttribute('aria-label');}});th.setAttribute('data-direction', direction);th.setAttribute('aria-sort', direction === 'asc' ? 'ascending' : 'descending');var sortButton=th.querySelector('.sort-button');if(sortButton){sortButton.setAttribute('aria-label', sortButton.textContent + ', sorted ' + (direction === 'asc' ? 'ascending' : 'descending'));}updateRows.sort(function(a,b){var av = (a.children[index].innerText || '').trim();var bv = (b.children[index].innerText || '').trim();return direction === 'asc' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});updateRows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
   // Audit-detail progressive disclosure. The appendix renders expanded (so no-JS
   // and print keep the full record); here we enable the toggle and collapse it
   // for the on-screen view only.
@@ -6498,7 +6980,8 @@ function Invoke-Main {
 
     #-- Load patch state + SLA breaches ---------------------------------------
     $patchState  = Get-PatchState
-    $slaBreaches = @(Get-SLABreaches -State $patchState)
+    $slaBreaches = @()
+    if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
 
     if ($slaBreaches.Count -gt 0) {
         Write-Log "SLA BREACH: $($slaBreaches.Count) update(s) available for over $($script:CFG.SLA.Critical) days." -Level ERROR
@@ -6530,18 +7013,29 @@ function Invoke-Main {
     if (-not $ReportOnly) {
         New-PatchRestorePoint
 
+        $windowsUpdateResults = @(Invoke-WindowsUpdateProvider)
+        $winGetResults = @(Invoke-AllUpdates -Upgrades $filteredUpgrades -KEVMatches $kevMatches -NVDFindings $script:NVDVulnFindings)
+
+        # Native updater overlap is suppressed only when WinGet actually covered
+        # the package. A discovered row that failed, was blocked, or was deferred
+        # by a cap must not prevent a vendor updater from providing a safe fallback.
+        $coveredWinGetIds = @($winGetResults | Where-Object {
+            $_.Success -and $_.Status -in @('Succeeded','Updated','AlreadyCurrent')
+        } | ForEach-Object { $_.PackageId })
+        $coveredWinGetCandidates = @($filteredUpgrades | Where-Object { $_.PackageId -in $coveredWinGetIds })
+
         $updateResults = @($script:SourceCheckResults) +
                          @($script:SkippedUpgradeResults) +
-                         @(Invoke-WindowsUpdateProvider) +
-                         @(Invoke-AllUpdates -Upgrades $filteredUpgrades -KEVMatches $kevMatches -NVDFindings $script:NVDVulnFindings) +
+                         $windowsUpdateResults +
+                         $winGetResults +
                          @(Invoke-Microsoft365Provider) +
-                         @(Invoke-BrowserProvider -Browser Chrome -WinGetCandidates $filteredUpgrades) +
-                         @(Invoke-BrowserProvider -Browser Edge -WinGetCandidates $filteredUpgrades) +
+                         @(Invoke-BrowserProvider -Browser Chrome -WinGetCandidates $coveredWinGetCandidates) +
+                         @(Invoke-BrowserProvider -Browser Edge -WinGetCandidates $coveredWinGetCandidates) +
                          @(Invoke-MicrosoftStoreClientUpdates) +
                          @(Invoke-ChocolateyProvider) +
                          @(Invoke-ScoopProvider) +
                          @(Invoke-PythonManagerProvider) +
-                         @(Invoke-VendorUpdaterProvider -WinGetCandidates $filteredUpgrades) +
+                         @(Invoke-VendorUpdaterProvider -WinGetCandidates $coveredWinGetCandidates) +
                          @(Invoke-FirmwareProvider)
 
     }
@@ -6550,8 +7044,8 @@ function Invoke-Main {
     Update-StatsFromResults -Results $updateResults
 
     # ReportOnly is an audit mode and should advance/reconcile SLA evidence.
-    # DryRun remains strictly non-mutating.
-    if (-not $DryRun) {
+    # DryRun remains strictly non-mutating. SLA-disabled profiles also leave SLA state untouched.
+    if (-not $DryRun -and $script:CFG.SLA.Enabled) {
         $winGetDiscoveryHealthy = @($script:SourceCheckResults | Where-Object {
             $_.Provider -in @('winget-discovery','winget-msstore-discovery') -and $_.Status -eq 'Failed'
         }).Count -eq 0
@@ -6560,7 +7054,8 @@ function Invoke-Main {
                                        -AppliedResults $updateResults `
                                        -DiscoveryHealthy $winGetDiscoveryHealthy
     }
-    $slaBreaches = @(Get-SLABreaches -State $patchState)
+    $slaBreaches = @()
+    if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
     $script:Stats.SLABreaches = $slaBreaches.Count
 
     #-- Report-only staleness scan (never patches; own report section) --------
@@ -6570,7 +7065,7 @@ function Invoke-Main {
     $script:EndOfLifeFindings = @(Invoke-EndOfLifeReport)
 
     #-- Metrics + reporting ---------------------------------------------------
-    $metrics = Get-PatchMetrics -State $patchState
+    $metrics = Get-PatchMetrics -State $patchState -Enabled ([bool]$script:CFG.SLA.Enabled)
     Write-Log "Metrics: Pending=$($metrics.Pending) | Breaches=$($metrics.SLABreaches) | Avg days to apply=$($metrics.AvgDaysToApply)" -Level INFO
 
     $reportInfo = New-ComplianceReport -Results $updateResults `

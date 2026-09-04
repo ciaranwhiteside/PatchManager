@@ -16,6 +16,15 @@ State/
 .idea/
 .claude/
 
+# Local design review outputs
+.impeccable/mocks/
+.impeccable/questions/
+.impeccable/review/
+.impeccable/capture-reports.mjs
+
+# Local release packages
+release/
+
 # OS noise
 Thumbs.db
 Desktop.ini

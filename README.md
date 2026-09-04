@@ -1,4 +1,4 @@
-# PatchManager
+﻿# PatchManager
 
 ![PatchManager](docs/brand/patchmanager-wordmark.svg)
 
@@ -20,7 +20,7 @@ set-and-forget updater on a personal machine or as a fleet patching agent across
 a commercial estate with rings, maintenance windows, SLA tracking, version-verified
 CISA KEV emergency handling, and SIEM-ready event logging.
 
-> **Public beta (v1.7.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.8.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -350,7 +350,7 @@ Everything descoped still appears in the report — as `Descoped`, with a reason
 | `AcceptAgreements` | `true` | Non-interactive agreement acceptance. |
 | `PackageTimeoutSeconds` | `300` | Per-package timeout. |
 | `MaxUpdatesPerRun` | `0` | Cap updates per run (`0` = unlimited); NVD-confirmed KEV exposures are patched first, then unresolved KEV candidates, then everything else. |
-| `SuppressReboot` | `true` | Appends `/norestart` via `--custom` (winget 1.4+) so installers don't reboot mid-run. |
+| `SuppressReboot` | `true` | Keeps PatchManager non-rebooting. WinGet is invoked without `--allow-reboot`; PatchManager does not inject installer-specific custom switches. |
 | `MaxRetries` | `2` | Attempts per package for transient failures (linear backoff). |
 
 ### `WindowsUpdate`
@@ -471,7 +471,8 @@ the HTML report directly.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Critical` / `High` / `Medium` / `Low` | `14` | Days from eligible *WinGet update available* to resolution before a breach is reported. Report-only runs advance this evidence; dry runs do not. Other providers remain visible in reports but are not part of the availability SLA clock. |
+| `Enabled` | `null` → profile | `null` resolves to Personal **off** and Commercial/CommercialManaged **on**. Set `true` or `false` to override the profile default. When disabled, SLA state is not advanced and SLA evidence is omitted from reports. |
+| `Critical` / `High` / `Medium` / `Low` | `14` | Days from eligible *WinGet update available* to resolution before a breach is reported. Report-only runs advance this evidence only when SLA tracking is enabled; dry runs do not. Other providers remain visible in reports but are not part of the availability SLA clock. |
 
 ### `Logging`
 
@@ -598,7 +599,7 @@ a vulnerability regardless of the size of your organisation.
 
 | Profile | Coverage | Fleet behaviours | Pick it when |
 |---|---|---|---|
-| `Personal` (default) | Everything: Windows Update, Microsoft 365, browsers, WinGet, Store | None (patch immediately, no throttling) | It's your own machine. |
+| `Personal` (default) | Everything: Windows Update, Microsoft 365, browsers, WinGet, Store | No jitter, BITS throttle, or SLA tracking by default | It's your own machine. |
 | `Commercial` | Everything — same full coverage as Personal | BITS throttling + jitter staggering (up to 120 min, scaled by ring) | Your organisation has no dedicated patch platform, or you want belt-and-braces coverage. **The safe default for orgs.** |
 | `CommercialManaged` | Third-party gap only | Same as Commercial | Intune/SCCM/WSUS/RMM genuinely already patches your OS, Office, and browsers. |
 
@@ -754,7 +755,7 @@ Copy-Item $latestJson.FullName $hostFolder -Force
   not necessarily *actively exploited*, so it never triggers the maintenance-window
   bypass; it may softly prioritise a matched product's available update. Point it
   at an internal NVD mirror for estates and air-gapped networks (`NVD.DataSource`).
-- **SLA tracking** — when an eligible WinGet update becomes available it is
+- **SLA tracking (commercial profiles by default; Personal opt-in)** — when an eligible WinGet update becomes available it is
   tracked in local state; if it remains unresolved after the configured window
   (default 14 days) the run reports a breach and raises event `1020`. Exact
   offers that disappear after a healthy discovery are closed as externally

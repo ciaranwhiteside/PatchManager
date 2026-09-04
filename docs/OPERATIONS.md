@@ -1,4 +1,4 @@
-# Operations runbook
+﻿# Operations runbook
 
 ## Normal operating loop
 
@@ -12,7 +12,7 @@
 # Run now, preserving all pre-flight safeguards
 .\Invoke-PatchManager.ps1 -Force
 
-# Audit providers and advance WinGet SLA evidence without patching
+# Audit providers; advances WinGet SLA evidence only when SLA.Enabled resolves true
 .\Invoke-PatchManager.ps1 -ReportOnly -Force
 ```
 
