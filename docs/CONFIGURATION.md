@@ -51,7 +51,7 @@ example file contains every commonly changed key.
 
 | Provider | Discovery | Success evidence |
 |---|---|---|
-| WinGet | Structured module, or CLI table fallback | Real process exit code plus result status; later runs rediscover remaining offers. |
+| WinGet | Structured module, or CLI table fallback | Process outcome plus observed installed/available versions; unconfirmed movement remains `Verifying`. |
 | Windows Update | Windows Update Agent COM | Per-update result code and reboot flag. |
 | Microsoft Store | Store CLI or MDM bridge | AppX version delta or follow-up offer disappearance; otherwise `Blocked`/`Verifying`. |
 | Microsoft 365 | Click-to-Run registry/client | Client exit code, scenario state, and version delta where available. |
@@ -78,3 +78,19 @@ If an exact WinGet offer disappears after a healthy discovery, its open record
 is closed as resolved rather than breached forever. This covers external
 installation, supersedence, removal, and later descoping. A failed source
 discovery never closes records.
+
+## Preview side effects
+
+Dry runs do not install patches or apply self-updates and do not advance SLA
+state. They still discover software, access enabled data services, and can write
+logs, reports, and caches. Report-only runs skip patch execution but advance SLA
+evidence when enabled. Neither mode is a fully offline or filesystem-read-only
+operation; use `-ValidateConfig` for read-only configuration validation.
+
+## Updating an existing configuration
+
+Keep the installed `PatchManager.config.json` when upgrading. Compare the new
+example and schema, merge only settings you intend to adopt, and validate the
+result before the next scheduled run. Do not replace an existing configuration
+with the example: it can reset profile choices, share paths, and exclusions.
+See [release and rollback guidance](RELEASING.md).

@@ -44,6 +44,7 @@ param(
     [Parameter(Mandatory)]
     [string]$CentralReportPath,
     [string]$OutputPath = '.',
+    [ValidateRange(0, 2147483647)]
     [int]$StaleDays = 7,
     [switch]$OpenReport
 )
@@ -51,10 +52,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if (-not (Test-Path $CentralReportPath)) {
+if (-not (Test-Path -LiteralPath $CentralReportPath -PathType Container)) {
     throw "Central report path not found or unreachable: $CentralReportPath"
 }
-if (-not (Test-Path $OutputPath)) {
+if (-not (Test-Path -LiteralPath $OutputPath -PathType Container)) {
     New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 }
 
@@ -75,12 +76,12 @@ function Get-JsonProperty {
 $now = Get-Date
 $hostRows = [System.Collections.Generic.List[PSCustomObject]]::new()
 $reportLinks = @{}
-$hostDirs = @(Get-ChildItem -Path $CentralReportPath -Directory -EA SilentlyContinue)
+$hostDirs = @(Get-ChildItem -LiteralPath $CentralReportPath -Directory -EA Stop)
 
 Write-Host "Scanning $($hostDirs.Count) host folder(s) under $CentralReportPath ..." -ForegroundColor Cyan
 
 foreach ($hostDir in $hostDirs) {
-    $latestJson = Get-ChildItem -Path $hostDir.FullName -Filter 'PatchReport_*.json' -File -EA SilentlyContinue |
+    $latestJson = Get-ChildItem -LiteralPath $hostDir.FullName -Filter 'PatchReport_*.json' -File -EA SilentlyContinue |
                   Sort-Object LastWriteTime -Descending |
                   Select-Object -First 1
     if (-not $latestJson) {
@@ -113,7 +114,33 @@ foreach ($hostDir in $hostDirs) {
     }
 
     try {
-        $report = Get-Content -Path $latestJson.FullName -Raw | ConvertFrom-Json
+        $report = Get-Content -LiteralPath $latestJson.FullName -Raw | ConvertFrom-Json
+        # JSON syntax alone is not evidence of a completed patch run. Reject
+        # malformed report shapes before defaults can turn missing evidence green.
+        if ($report -isnot [PSCustomObject]) { throw 'Report must be a JSON object.' }
+        foreach ($section in @('Metadata', 'Statistics')) {
+            if ((Get-JsonProperty $report $section) -isnot [PSCustomObject]) {
+                throw "Report requires a $section object."
+            }
+        }
+        $reportStats = Get-JsonProperty $report 'Statistics'
+        foreach ($counter in @('UpdatesApplied', 'UpdatesFailed', 'UpdatesSkipped', 'KEVMatches', 'NvdCritical', 'NvdHigh', 'SLABreaches')) {
+            $value = Get-JsonProperty $reportStats $counter
+            if ($null -eq $value) {
+                if ($counter -in @('UpdatesApplied', 'UpdatesFailed', 'UpdatesSkipped')) {
+                    throw "Statistics.$counter is required."
+                }
+                continue # Optional counters were absent in older reports.
+            }
+            $parsedCount = 0
+            if ($value -is [bool] -or -not [int]::TryParse([string]$value, [ref]$parsedCount) -or $parsedCount -lt 0) {
+                throw "Statistics.$counter must be a non-negative integer."
+            }
+        }
+        $providers = Get-JsonProperty (Get-JsonProperty $report 'Metadata') 'ProvidersExecuted'
+        if ($null -ne $providers -and $providers -isnot [bool]) {
+            throw 'Metadata.ProvidersExecuted must be a JSON boolean.'
+        }
     } catch {
         $candidateHtmlPath = [System.IO.Path]::ChangeExtension($latestJson.FullName, '.html')
         if (Test-Path -LiteralPath $candidateHtmlPath -PathType Leaf) {
@@ -193,7 +220,7 @@ foreach ($hostDir in $hostDirs) {
         Hostname        = $resolvedHostname
         LastRun         = $latestJson.LastWriteTime
         ReportAgeDays   = $ageDays
-        Stale           = ($ageDays -gt $StaleDays)
+        Stale           = (($now - $latestJson.LastWriteTime).TotalDays -gt $StaleDays)
         Ring            = [string](Get-JsonProperty $metadata 'Ring' '')
         ScopeProfile    = [string](Get-JsonProperty $metadata 'ScopeProfile' '')
         Version         = [string](Get-JsonProperty $metadata 'ScriptVer' '')
@@ -305,6 +332,19 @@ function Get-FleetPosture {
     return 'healthy'
 }
 
+function Get-FleetNextStep {
+    param($Row)
+    if ($null -eq $Row.Applied) { return 'Check the device task and report-share access, then collect a valid report.' }
+    if ($Row.KEVMatches -gt 0 -or $Row.InventoryKEV -gt 0 -or $Row.NvdCritical -gt 0 -or $Row.SLABreaches -gt 0) { return 'Open the device report and resolve the highest-priority security findings.' }
+    if ($Row.Failed -gt 0 -or $Row.Errors -gt 0) { return 'Review failed items and error evidence before retrying the affected updates.' }
+    if (-not $Row.ProvidersExecuted) { return 'Review the deferral reason and confirm the next eligible patch run.' }
+    if ($Row.Stale) { return 'Check the scheduled task and share access, then collect a fresh report.' }
+    if ($Row.EolExposure -gt 0) { return 'Review lifecycle findings and plan an upgrade to a supported release.' }
+    if ($Row.NvdHigh -gt 0) { return 'Review high-severity vulnerability findings in the device report.' }
+    if ($Row.RebootRequired -gt 0) { return 'Arrange a restart with the device user, then rerun verification.' }
+    if ($Row.StalenessReview -gt 0) { return 'Review the stale components and refresh their verification evidence.' }
+    return 'No follow-up indicated by this report. Continue scheduled checks.'
+}
 $tableRows = ($hostRows | Sort-Object @{ Expression = { Get-FleetRiskRank $_ } },
     @{ Expression = { if ($null -ne $_.ReportAgeDays) { [double]$_.ReportAgeDays } else { [double]::MaxValue } }; Descending = $true },
     Hostname | ForEach-Object {
@@ -315,8 +355,10 @@ $tableRows = ($hostRows | Sort-Object @{ Expression = { Get-FleetRiskRank $_ } }
     $lastRunText = if ($_.LastRun) { $_.LastRun.ToString('dd MMM yyyy HH:mm') } else { 'never' }
     $lastRunSort = if ($_.LastRun) { ([datetime]$_.LastRun).Ticks } else { 0 }
     $ageSort = if ($null -ne $_.ReportAgeDays) { $_.ReportAgeDays } else { 999999 }
-    $staleText = if ($_.Stale) { "STALE ($($_.ReportAgeDays)d)" } elseif ($null -ne $_.ReportAgeDays) { "$($_.ReportAgeDays)d ago" } else { '' }
+    $staleText = if ($null -eq $_.ReportAgeDays) { 'No report received' } elseif ($_.Stale) { "STALE ($($_.ReportAgeDays)d)" } elseif ($null -ne $_.ReportAgeDays) { "$($_.ReportAgeDays)d ago" } else { '' }
     $noteText = if ($_.Note) { $_.Note } else { '-' }
+    $evidenceUnavailable = $null -eq $_.Applied
+    $nextStep = Get-FleetNextStep $_
 
     $riskTokens = [System.Collections.Generic.List[string]]::new()
     if ($_.Stale -or $_.StalenessReview -gt 0) { $riskTokens.Add('stale') }
@@ -333,6 +375,7 @@ $tableRows = ($hostRows | Sort-Object @{ Expression = { Get-FleetRiskRank $_ } }
         "<strong>$hostNameHtml</strong><span class='cell-detail'>HTML report unavailable</span>"
     }
     $postureLabel = switch ($postureTone) { 'healthy' { 'Healthy' } 'stale' { 'Stale' } 'review' { 'Review' } default { 'Attention' } }
+    if ($evidenceUnavailable) { $postureLabel = 'Evidence unavailable' }
     $signalItems = [System.Collections.Generic.List[string]]::new()
     if ($_.KEVMatches -gt 0) { $signalItems.Add("<span class='signal danger'>$($_.KEVMatches) KEV</span>") }
     if ($_.InventoryKEV -gt 0) { $signalItems.Add("<span class='signal danger'>$($_.InventoryKEV) inventory KEV</span>") }
@@ -344,8 +387,17 @@ $tableRows = ($hostRows | Sort-Object @{ Expression = { Get-FleetRiskRank $_ } }
     $signalsMarkup = if ($signalItems.Count) { $signalItems -join '' } else { "<span class='signal clear'>No exposure signals</span>" }
     $outcomeMarkup = "<strong>$($_.Applied) applied</strong><span class='cell-detail'>$($_.Failed) failed / $($_.Errors) errors</span>"
     $rebootMarkup = if ($_.RebootRequired -gt 0) { "<span class='signal attention'>$($_.RebootRequired) pending</span>" } else { "<span class='signal clear'>Clear</span>" }
-    $searchText = "$(ConvertTo-FleetHtml $_.Hostname) $(ConvertTo-FleetHtml $_.Ring) $(ConvertTo-FleetHtml $_.ScopeProfile) $(ConvertTo-FleetHtml $_.Version) $(ConvertTo-FleetHtml $noteText)"
-    "<tr class='fleet-row $rowClass' data-search='$searchText' data-posture='$rowPosture' data-risk='$($riskTokens -join ' ')' data-riskrank='$riskRank' data-ring='$(ConvertTo-FleetHtml $_.Ring)' data-profile='$(ConvertTo-FleetHtml $_.ScopeProfile)' data-host='$hostNameHtml' data-last='$lastRunSort' data-age='$ageSort' data-applied='$(ConvertTo-FleetHtml $_.Applied)'><td>$hostMarkup<span class='posture $rowPosture'>$postureLabel</span></td><td class='nowrap'>$(ConvertTo-FleetHtml $lastRunText)<span class='cell-detail'>$(ConvertTo-FleetHtml $staleText)</span></td><td>$(ConvertTo-FleetHtml $_.Ring)<span class='cell-detail'>$(ConvertTo-FleetHtml $_.ScopeProfile) · v$(ConvertTo-FleetHtml $_.Version)</span></td><td class='signals'>$signalsMarkup</td><td>$outcomeMarkup</td><td>$rebootMarkup</td><td class='details'>$(ConvertTo-FleetHtml $noteText)</td><td class='details'><details><summary>All metrics</summary><dl class='metric-list'><dt>Skipped</dt><dd>$($_.Skipped)</dd><dt>NVD High</dt><dd>$($_.NvdHigh)</dd><dt>Attention items</dt><dd>$($_.AttentionItems)</dd><dt>Providers ran</dt><dd>$($_.ProvidersExecuted)</dd></dl></details></td></tr>"
+    if ($evidenceUnavailable) {
+        $signalsMarkup = "<span class='signal attention'>Not assessed</span>"
+        $outcomeMarkup = "<strong>Unknown</strong><span class='cell-detail'>No valid report evidence</span>"
+        $rebootMarkup = "<span class='signal attention'>Unknown</span>"
+    }
+    $nextStepMarkup = "<strong class='next-step'>$(ConvertTo-FleetHtml $nextStep)</strong>"
+    if ($_.Note) {
+        $nextStepMarkup += "<details class='report-note'><summary>Report note</summary><div>$(ConvertTo-FleetHtml $_.Note)</div></details>"
+    }
+    $searchText = "$(ConvertTo-FleetHtml $_.Hostname) $(ConvertTo-FleetHtml $_.Ring) $(ConvertTo-FleetHtml $_.ScopeProfile) $(ConvertTo-FleetHtml $_.Version) $(ConvertTo-FleetHtml $noteText) $(ConvertTo-FleetHtml $nextStep)"
+    "<tr class='fleet-row $rowClass' data-search='$searchText' data-posture='$rowPosture' data-risk='$($riskTokens -join ' ')' data-riskrank='$riskRank' data-ring='$(ConvertTo-FleetHtml $_.Ring)' data-profile='$(ConvertTo-FleetHtml $_.ScopeProfile)' data-host='$hostNameHtml' data-last='$lastRunSort' data-age='$ageSort' data-applied='$(ConvertTo-FleetHtml $_.Applied)'><td>$hostMarkup<span class='posture $rowPosture'>$postureLabel</span></td><td class='nowrap'>$(ConvertTo-FleetHtml $lastRunText)<span class='cell-detail'>$(ConvertTo-FleetHtml $staleText)</span></td><td>$(ConvertTo-FleetHtml $_.Ring)<span class='cell-detail'>$(ConvertTo-FleetHtml $_.ScopeProfile) · v$(ConvertTo-FleetHtml $_.Version)</span></td><td class='signals'>$signalsMarkup</td><td>$outcomeMarkup</td><td>$rebootMarkup</td><td class='details'>$nextStepMarkup</td><td class='details'><details><summary>All metrics</summary><dl class='metric-list'><dt>Skipped</dt><dd>$($_.Skipped)</dd><dt>NVD High</dt><dd>$($_.NvdHigh)</dd><dt>Attention items</dt><dd>$($_.AttentionItems)</dd><dt>Providers ran</dt><dd>$($_.ProvidersExecuted)</dd></dl></details></td></tr>"
 }) -join "`n"
 
 $generatedAt = ConvertTo-FleetHtml (Get-Date -Format 'dd MMM yyyy HH:mm:ss')
@@ -406,7 +458,7 @@ $html = @"
   .fleet-layout{gap:14px}.fleet-evidence{border-radius:12px}.section-head{margin-bottom:12px;padding-bottom:11px}.table-wrap{border-radius:8px}.footer{border-radius:12px}
   @media(max-width:1180px){.fleet-verdict{grid-template-columns:minmax(270px,1.5fr) repeat(3,minmax(120px,1fr))}.primary-action{grid-column:1/-1;min-height:48px}.estate-topology{grid-template-columns:1fr;gap:15px}.estate-root:after,.fleet-lanes:before,.lane:before{display:none}.fleet-lanes{grid-template-columns:repeat(5,minmax(170px,1fr));overflow-x:auto;padding-bottom:5px}.fleet-run-identity{grid-template-columns:repeat(2,auto)}.fleet-run-identity div:nth-child(3){grid-column:1/-1;border-left:0;margin-top:8px;padding-left:0}}
   @media(max-width:820px){.fleet-nav{grid-template-columns:minmax(0,1fr)}.nav-links{justify-self:start;max-width:100%;overflow-x:auto;flex-wrap:nowrap}.fleet-toolbar{grid-template-columns:minmax(0,1fr) auto}.fleet-toolbar .search-field{grid-column:1/-1}.fleet-masthead{padding-inline:20px;display:block}.fleet-run-identity{margin-top:14px;grid-template-columns:1fr 1fr}.fleet-verdict{grid-template-columns:1fr 1fr}.fleet-verdict-state{grid-column:1/-1}.fleet-verdict-fact:nth-of-type(3){border-right:0}.primary-action{grid-column:1/-1}.map-head{display:block}.map-legend{justify-content:flex-start;margin-top:10px}}
-  @media(max-width:620px){.fleet-nav,main{padding-inline:max(16px,env(safe-area-inset-left))}.fleet-masthead{padding-inline:max(16px,env(safe-area-inset-left))}.filter-fields{grid-template-columns:1fr 1fr}.fleet-verdict{grid-template-columns:1fr}.fleet-verdict-state,.fleet-verdict-fact{border-right:0;border-bottom:1px solid var(--line)}.primary-action{grid-column:auto}.fleet-run-identity{grid-template-columns:1fr}.fleet-run-identity div,.fleet-run-identity div:nth-child(3){grid-column:auto;padding:0;border-left:0;margin-top:8px}.fleet-lanes{grid-template-columns:1fr;overflow:visible}.panel{padding:15px}#fleetTable{min-width:0}#fleetTable thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}#fleetTable,#fleetTable tbody,#fleetTable tr,#fleetTable td{display:block;width:100%}#fleetTable tr{padding:9px 0;border-bottom:1px solid var(--line)}#fleetTable td{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:7px 5px;border:0;box-shadow:none;max-width:none}#fleetTable td:before{color:var(--muted);font-size:.67rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}#fleetTable td:nth-child(1):before{content:"Host"}#fleetTable td:nth-child(2):before{content:"Last report"}#fleetTable td:nth-child(3):before{content:"Scope"}#fleetTable td:nth-child(4):before{content:"Signals"}#fleetTable td:nth-child(5):before{content:"Outcome"}#fleetTable td:nth-child(6):before{content:"Reboot"}#fleetTable td:nth-child(7):before{content:"Notes"}#fleetTable td:nth-child(8):before{content:"More"}#fleetTable .signals{min-width:0}.fleet-evidence{padding:15px}.evidence-meta{grid-template-columns:1fr}}
+  @media(max-width:620px){.fleet-nav,main{padding-inline:max(16px,env(safe-area-inset-left))}.fleet-masthead{padding-inline:max(16px,env(safe-area-inset-left))}.filter-fields{grid-template-columns:1fr 1fr}.fleet-verdict{grid-template-columns:1fr}.fleet-verdict-state,.fleet-verdict-fact{border-right:0;border-bottom:1px solid var(--line)}.primary-action{grid-column:auto}.fleet-run-identity{grid-template-columns:1fr}.fleet-run-identity div,.fleet-run-identity div:nth-child(3){grid-column:auto;padding:0;border-left:0;margin-top:8px}.fleet-lanes{grid-template-columns:1fr;overflow:visible}.panel{padding:15px}#fleetTable{min-width:0}#fleetTable thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}#fleetTable,#fleetTable tbody,#fleetTable tr,#fleetTable td{display:block;width:100%}#fleetTable tr{padding:9px 0;border-bottom:1px solid var(--line)}#fleetTable td{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:7px 5px;border:0;box-shadow:none;max-width:none}#fleetTable td:before{color:var(--muted);font-size:.67rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}#fleetTable td:nth-child(1):before{content:"Host"}#fleetTable td:nth-child(2):before{content:"Last report"}#fleetTable td:nth-child(3):before{content:"Scope"}#fleetTable td:nth-child(4):before{content:"Signals"}#fleetTable td:nth-child(5):before{content:"Outcome"}#fleetTable td:nth-child(6):before{content:"Reboot"}#fleetTable td:nth-child(7):before{content:"Next step"}#fleetTable td:nth-child(8):before{content:"More"}#fleetTable .signals{min-width:0}.fleet-evidence{padding:15px}.evidence-meta{grid-template-columns:1fr}}
   @media print{.fleet-masthead{padding:10px 0}.fleet-verdict,.estate-topology{display:block}.primary-action{display:none}.fleet-health-map,.estate-root,.lane{border:1px solid #777}.fleet-lanes{display:grid;grid-template-columns:repeat(3,1fr);overflow:visible}.lane{color:#000;background:#fff}.fleet-lanes:before,.estate-root:after,.lane:before{display:none}}
   @media(forced-colors:active){.fleet-verdict,.estate-root,.lane,.state-dot,.primary-action{border:1px solid CanvasText}.state-dot{box-shadow:none}.primary-action{background:Canvas;color:CanvasText}}
   @media(max-width:620px){.fleet-verdict>.primary-action{grid-row:2}}
@@ -427,10 +479,13 @@ $html = @"
   .ledger-toolbar{display:grid;grid-template-columns:minmax(250px,1.6fr) minmax(420px,2fr);gap:8px;align-items:end;margin:0 0 8px;padding:7px 8px;border:1px solid #deddd6;border-radius:3px;background:#f2f1eb}.ledger-toolbar .filter-toggle{display:none}.ledger-toolbar .filter-fields{grid-template-columns:repeat(3,minmax(110px,1fr)) auto;gap:6px}.ledger-toolbar label{margin-bottom:2px;color:var(--muted);font-size:.6rem}.ledger-toolbar input,.ledger-toolbar select{height:32px;border:1px solid #cbc9c0;border-radius:3px;background:#fff;color:var(--ink);font-size:.73rem}.ledger-toolbar button{min-height:32px;padding:5px 10px;border:1px solid #cbc9c0;border-radius:3px;background:#fff;font-size:.71rem}.ledger-toolbar button:hover{background:#ecebe5;box-shadow:none}
   .table-wrap{border-radius:3px;background:#fff}table{font-size:.73rem}th,td{padding:7px 9px}th{background:#f0eee5;font-size:.6rem;letter-spacing:.055em}.sort-button{min-height:auto;font-size:inherit}.cell-detail{margin-top:2px;font-size:.64rem}.details{font-size:.68rem}.posture,.signal{border-radius:2px;padding:2px 5px;font-size:.62rem}.posture{margin-top:4px}.signals{min-width:170px}.fleet-evidence{border-radius:4px;padding:12px;background:#202521}.fleet-evidence h2{font-size:.82rem}.evidence-meta div{border-radius:3px}.footer{margin-top:20px;padding:15px 18px;border-radius:4px}
   @media(max-width:1180px){.fleet-nav{grid-template-columns:auto 1fr auto}.nav-run-identity div:nth-child(2){display:none}.nav-run-identity{grid-template-columns:repeat(2,auto)}.fleet-verdict{grid-template-columns:minmax(280px,1.5fr) repeat(3,minmax(115px,1fr))}.primary-action{grid-column:1/-1;margin:8px 12px}.estate-topology{grid-template-columns:1fr;gap:8px}.fleet-lanes{grid-template-columns:repeat(5,minmax(145px,1fr));overflow-x:auto}.ledger-toolbar{grid-template-columns:1fr}}
-  @media(max-width:820px){.fleet-nav{padding-inline:16px}.nav-run-identity{grid-template-columns:auto}.nav-run-identity div{padding-right:0}.nav-run-identity div:nth-child(2),.nav-run-identity div:nth-child(3){display:none}.fleet-verdict{grid-template-columns:repeat(3,minmax(0,1fr))}.fleet-verdict-state{grid-column:1/-1}.estate-topology{gap:6px;padding-top:5px}.fleet-lanes{grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible}.fleet-lanes .lane:last-child{grid-column:2/3}.ledger-toolbar .filter-toggle{display:inline-flex}.ledger-toolbar .filter-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-action{min-height:44px}.ledger-toolbar input,.ledger-toolbar select{height:44px}.ledger-toolbar button,.filter-toggle,.sort-button{min-height:44px}#fleetTable{min-width:0}#fleetTable thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}#fleetTable,#fleetTable tbody,#fleetTable tr,#fleetTable td{display:block;width:100%}#fleetTable tr{padding:8px 0;border-bottom:1px solid var(--line)}#fleetTable td{display:grid;grid-template-columns:104px minmax(0,1fr);gap:10px;padding:6px 5px;border:0;box-shadow:none;max-width:none}#fleetTable td:before{color:var(--muted);font-size:.67rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}#fleetTable td:nth-child(1):before{content:"Host"}#fleetTable td:nth-child(2):before{content:"Last report"}#fleetTable td:nth-child(3):before{content:"Scope"}#fleetTable td:nth-child(4):before{content:"Signals"}#fleetTable td:nth-child(5):before{content:"Outcome"}#fleetTable td:nth-child(6):before{content:"Reboot"}#fleetTable td:nth-child(7):before{content:"Notes"}#fleetTable td:nth-child(8):before{content:"More"}#fleetTable .signals{min-width:0}}
+  @media(max-width:820px){.fleet-nav{padding-inline:16px}.nav-run-identity{grid-template-columns:auto}.nav-run-identity div{padding-right:0}.nav-run-identity div:nth-child(2),.nav-run-identity div:nth-child(3){display:none}.fleet-verdict{grid-template-columns:repeat(3,minmax(0,1fr))}.fleet-verdict-state{grid-column:1/-1}.estate-topology{gap:6px;padding-top:5px}.fleet-lanes{grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible}.fleet-lanes .lane:last-child{grid-column:2/3}.ledger-toolbar .filter-toggle{display:inline-flex}.ledger-toolbar .filter-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-action{min-height:44px}.ledger-toolbar input,.ledger-toolbar select{height:44px}.ledger-toolbar button,.filter-toggle,.sort-button{min-height:44px}#fleetTable{min-width:0}#fleetTable thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}#fleetTable,#fleetTable tbody,#fleetTable tr,#fleetTable td{display:block;width:100%}#fleetTable tr{padding:8px 0;border-bottom:1px solid var(--line)}#fleetTable td{display:grid;grid-template-columns:104px minmax(0,1fr);gap:10px;padding:6px 5px;border:0;box-shadow:none;max-width:none}#fleetTable td:before{color:var(--muted);font-size:.67rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}#fleetTable td:nth-child(1):before{content:"Host"}#fleetTable td:nth-child(2):before{content:"Last report"}#fleetTable td:nth-child(3):before{content:"Scope"}#fleetTable td:nth-child(4):before{content:"Signals"}#fleetTable td:nth-child(5):before{content:"Outcome"}#fleetTable td:nth-child(6):before{content:"Reboot"}#fleetTable td:nth-child(7):before{content:"Next step"}#fleetTable td:nth-child(8):before{content:"More"}#fleetTable .signals{min-width:0}}
   @media(max-width:620px){body{font-size:13px}.fleet-nav{grid-template-columns:minmax(0,1fr) auto;min-height:50px;padding:6px max(12px,env(safe-area-inset-left))}.nav-brand>span{display:grid;gap:0}.nav-brand small,.nav-run-identity{display:none}.nav-brand .brand-mark{width:29px;height:29px}.nav-print{height:44px}.fleet-masthead{position:absolute}.fleet-verdict{grid-template-columns:1fr 1fr;margin-bottom:8px}.fleet-verdict-state{grid-column:1/-1}.fleet-verdict-state,.fleet-verdict-fact{padding:9px 11px}.fleet-verdict-fact:last-of-type{grid-column:1/-1}.fleet-verdict>.primary-action{grid-row:2;grid-column:1/-1;margin:8px 10px}.fleet-lanes{grid-template-columns:1fr 1fr;overflow:visible}.fleet-lanes .lane:last-child{grid-column:1/-1}.lane{grid-template-columns:auto minmax(0,1fr);min-height:50px}.lane em{grid-column:2}.panel{padding:11px}.ledger-toolbar{padding:6px}.ledger-toolbar .filter-fields{grid-template-columns:1fr 1fr}.table-wrap{border-radius:2px}#fleetTable td{grid-template-columns:92px minmax(0,1fr)}.fleet-evidence{padding:11px}.footer{padding-bottom:max(15px,env(safe-area-inset-bottom))}}
   @media(pointer:coarse){.primary-action,.nav-print,.ledger-toolbar input,.ledger-toolbar select,.ledger-toolbar button,.filter-toggle,.sort-button{min-height:44px}}
   @media print{body{font-size:10pt}.fleet-nav{display:none}.fleet-masthead{position:static;width:auto;height:auto;margin:0 0 10px;padding:0;overflow:visible;clip:auto;white-space:normal;border-bottom:1px solid #777}.fleet-masthead h1{font-size:17pt}.ledger-toolbar{display:none}.fleet-verdict,.panel,.table-wrap{border-radius:0;background:#fff}.fleet-lanes{overflow:visible}}
+  [hidden]{display:none !important}
+  .filter-empty{padding:16px;border:1px solid var(--line);background:var(--paper-soft);color:var(--ink)}.filter-empty p{margin:4px 0 12px}.filter-empty button{min-height:44px}.next-step{font-weight:600;color:var(--ink)}.report-note{margin-top:6px}.report-note div{overflow-wrap:anywhere}
+  @media print{#fleetTable tbody tr.fleet-row,#fleetTable tbody tr.fleet-row[hidden]{display:table-row !important}#fleetTable td{display:table-cell !important}#fleetTable td:before{display:none !important}.filter-empty,.result-count{display:none !important}.report-note>:not(summary){display:block !important}}
 </style>
 <noscript><style>.reveal{opacity:1;transform:none}details>:not(summary){display:block}.filter-toggle{display:none}.ledger-toolbar .filter-fields{display:grid !important}</style></noscript>
 </head>
@@ -452,7 +507,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   <header class="fleet-masthead"><h1>Estate patch evidence</h1><p>$fleetVerdictCopy</p></header>  <section class="fleet-verdict $fleetTone" id="summary" aria-label="Fleet verdict">
     <div class="fleet-verdict-state"><span class="state-dot $fleetTone" aria-hidden="true"></span><div><span>Estate verdict</span><strong>$fleetVerdictTitle</strong><small>$attentionHosts of $totalHosts host(s) need review</small></div></div>
     <div class="fleet-verdict-fact"><span>Healthy</span><strong>$healthyHosts / $totalHosts</strong><small>Latest report per host</small></div>
-    <div class="fleet-verdict-fact"><span>$securitySummaryLabel</span><strong>$securitySummaryValue</strong><small>Confirmed exposure pressure</small></div>
+    <div class="fleet-verdict-fact"><span>$securitySummaryLabel</span><strong>$securitySummaryValue</strong><small>Hosts with security findings</small></div>
     <div class="fleet-verdict-fact"><span>Failed / deferred</span><strong>$hostsWithFail failed / $deferredHosts deferred</strong><small>Provider work needing follow-up</small></div>
     <a class="primary-action" href="#hosts">Open prioritized host queue<span aria-hidden="true">→</span></a>
   </section>
@@ -462,7 +517,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <div class="estate-root $fleetTone"><span class="state-dot $fleetTone" aria-hidden="true"></span><div><strong>$totalHosts host(s)</strong><small>$attentionHosts attention · $healthyHosts healthy</small></div><b>$attentionHosts</b></div>
       <div class="fleet-lanes" aria-label="Filter hosts by risk">
         <button type="button" class="lane $securityTone" data-risk-filter="security" aria-pressed="false"><span class="state-dot $securityTone"></span><b><strong>$securitySummaryValue</strong><small>Security</small></b><em>$securityLaneDetail</em></button>
-        <button type="button" class="lane $executionTone" data-risk-filter="failure" aria-pressed="false"><span class="state-dot $executionTone"></span><b><strong>$hostsWithFail / $deferredHosts</strong><small>Execution</small></b><em>Failure · error · defer</em></button>
+        <button type="button" class="lane $executionTone" data-risk-filter="failure" aria-pressed="false"><span class="state-dot $executionTone"></span><b><strong>$(@($hostRows | Where-Object { $_.Failed -gt 0 -or $_.Errors -gt 0 -or -not $_.ProvidersExecuted }).Count)</strong><small>Execution</small></b><em>Failure · error · defer</em></button>
         <button type="button" class="lane $currencyTone" data-risk-filter="stale" aria-pressed="false"><span class="state-dot $currencyTone"></span><b><strong>$hostsWithStaleEvidence</strong><small>Currency</small></b><em>Old report · stale evidence</em></button>
         <button type="button" class="lane $lifecycleTone" data-risk-filter="eol" aria-pressed="false"><span class="state-dot $lifecycleTone"></span><b><strong>$hostsWithEol</strong><small>Lifecycle</small></b><em>End-of-life</em></button>
         <button type="button" class="lane $completionTone" data-risk-filter="reboot" aria-pressed="false"><span class="state-dot $completionTone"></span><b><strong>$hostsReboot</strong><small>Completion</small></b><em>Reboot pending</em></button>
@@ -485,15 +540,16 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       </div>
     <div class="table-wrap" tabindex="0" role="region" aria-label="Prioritized fleet hosts">
       <table id="fleetTable">
-        <thead><tr><th scope="col" data-sort="host" aria-sort="none"><button class="sort-button" type="button">Host / priority</button></th><th scope="col" data-sort="last" aria-sort="none"><button class="sort-button" type="button">Last report</button></th><th scope="col" data-sort="ring" aria-sort="none"><button class="sort-button" type="button">Scope</button></th><th scope="col">Risk signals</th><th scope="col" data-sort="applied" aria-sort="none"><button class="sort-button" type="button">Outcome</button></th><th scope="col">Reboot</th><th scope="col">Notes</th><th scope="col">Details</th></tr></thead>
+        <thead><tr><th scope="col" data-sort="host" aria-sort="none"><button class="sort-button" type="button">Host / priority</button></th><th scope="col" data-sort="last" aria-sort="none"><button class="sort-button" type="button">Last report</button></th><th scope="col" data-sort="ring" aria-sort="none"><button class="sort-button" type="button">Scope</button></th><th scope="col">Risk signals</th><th scope="col" data-sort="applied" aria-sort="none"><button class="sort-button" type="button">Outcome</button></th><th scope="col">Reboot</th><th scope="col">Next step</th><th scope="col">Details</th></tr></thead>
         <tbody>$tableRows</tbody>
       </table>
     </div>
+    <div class="filter-empty" id="fleetFilterEmpty" hidden><strong>No hosts match these filters.</strong><p>Clear the search and filters to return to the full host ledger.</p><button type="button" id="resetFleetEmpty">Show all hosts</button></div>
     <div class="result-count" id="fleetResultCount" role="status" aria-live="polite"></div>
     </section>
     <aside class="fleet-evidence" id="provenance" aria-label="Fleet evidence">
       <h2>Evidence provenance</h2>
-      <p class="scrub-copy"><span>Only each host's newest JSON report is counted.</span><span>Use the risk queue and filters to isolate the next action.</span><span>CSV columns remain unchanged for downstream ingestion.</span></p>
+      <p class="scrub-copy"><span>Only each host's newest JSON report is counted.</span><span>Use the risk queue and filters to isolate the next action.</span><span>Printed reports include all hosts, regardless of screen filters.</span></p>
       <div class="evidence-meta"><div><span>Source</span><strong>$centralEsc</strong></div><div><span>Stale threshold</span><strong>${StaleDays} day(s)</strong></div><div><span>Generated</span><strong>$generatedAt</strong></div></div>
     </aside>
   </div>
@@ -509,6 +565,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   var clearFilters = document.getElementById('clearFleetFilters');
   var printReport = document.getElementById('printFleetReport');
   var resultCount = document.getElementById('fleetResultCount');
+  var emptyState = document.getElementById('fleetFilterEmpty');
+  document.getElementById('resetFleetEmpty').addEventListener('click', function(){clearFilters.click();});
   var riskFilter = '';
   var riskLanes = Array.prototype.slice.call(document.querySelectorAll('[data-risk-filter]'));
   var filterToggle = document.getElementById('fleetFilterToggle');
@@ -518,7 +576,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   rows.forEach(function(row){appendOption(ringFilter, row.getAttribute('data-ring') || '');appendOption(profileFilter, row.getAttribute('data-profile') || '');});
   Array.prototype.slice.call(ringFilter.options).slice(1).sort(function(a,b){return a.value.localeCompare(b.value);}).forEach(function(option){ringFilter.appendChild(option);});
   Array.prototype.slice.call(profileFilter.options).slice(1).sort(function(a,b){return a.value.localeCompare(b.value);}).forEach(function(option){profileFilter.appendChild(option);});
-  function applyFilters(){var query = (search.value || '').toLowerCase();var posture = postureFilter.value;var ring = ringFilter.value;var profile = profileFilter.value;var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var risks = ' ' + (row.getAttribute('data-risk') || '') + ' ';var show = (!query || rowText.indexOf(query) !== -1) && (!posture || row.getAttribute('data-posture') === posture) && (!ring || row.getAttribute('data-ring') === ring) && (!profile || row.getAttribute('data-profile') === profile) && (!riskFilter || risks.indexOf(' ' + riskFilter + ' ') !== -1);row.hidden = !show;if(show){visible += 1;}});if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' host row(s) visible' + (riskFilter ? ' for ' + riskFilter + ' risk' : '');}}
+  function applyFilters(){var query = (search.value || '').trim().toLowerCase();var posture = postureFilter.value;var ring = ringFilter.value;var profile = profileFilter.value;var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var risks = ' ' + (row.getAttribute('data-risk') || '') + ' ';var show = (!query || rowText.indexOf(query) !== -1) && (!posture || row.getAttribute('data-posture') === posture) && (!ring || row.getAttribute('data-ring') === ring) && (!profile || row.getAttribute('data-profile') === profile) && (!riskFilter || risks.indexOf(' ' + riskFilter + ' ') !== -1);row.hidden = !show;if(show){visible += 1;}});if(emptyState){emptyState.hidden = visible !== 0;}if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' host row(s) visible' + (riskFilter ? ' for ' + riskFilter + ' risk' : '');}}
   function getSortValue(row, key){var value = row.getAttribute('data-' + key) || '';if(numericSorts.indexOf(key) !== -1){var number = parseFloat(value);return isNaN(number) ? -1 : number;}return value.toLowerCase();}
   document.querySelectorAll('#fleetTable th[data-sort]').forEach(function(th){var button = th.querySelector('button');if(!button){return;}button.addEventListener('click', function(){var key = th.getAttribute('data-sort');var tbody = th.closest('table').querySelector('tbody');var direction = th.getAttribute('aria-sort') === 'ascending' ? 'descending' : 'ascending';document.querySelectorAll('#fleetTable th[data-sort]').forEach(function(other){other.setAttribute('aria-sort','none');var otherButton=other.querySelector('button');if(otherButton){otherButton.removeAttribute('aria-label');}});th.setAttribute('aria-sort', direction);button.setAttribute('aria-label', button.textContent + ', sorted ' + direction);rows.sort(function(a,b){var av = getSortValue(a, key);var bv = getSortValue(b, key);if(typeof av === 'number' && typeof bv === 'number'){return direction === 'ascending' ? av - bv : bv - av;}return direction === 'ascending' ? av.localeCompare(bv, undefined, {numeric:true}) : bv.localeCompare(av, undefined, {numeric:true});});rows.forEach(function(row){tbody.appendChild(row);});applyFilters();});});
   [search,postureFilter,ringFilter,profileFilter].forEach(function(control){if(control){control.addEventListener('input', applyFilters);control.addEventListener('change', applyFilters);}});

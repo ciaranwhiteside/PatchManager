@@ -1,9 +1,30 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to PatchManager are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.8.1] - 2026-09-06
+
+### Added
+
+- Per-host next-step guidance and explicit unknown evidence states in fleet HTML.
+- Empty-filter recovery in device and fleet reports, plus browser regression tests.
+- A public-file release builder with verified payload hashes and ZIP checksum,
+  documentation checks, and documented upgrade/rollback and publication gates.
+
+### Fixed
+
+- Invalid fleet report shapes and counters no longer appear healthy or stop the
+  whole dashboard. Newer optional counters remain optional for older reports.
+- Stale-report classification now uses unrounded age; literal report paths work
+  with brackets, and negative stale thresholds fail parameter validation.
+- Screen filters no longer omit rows from print output. Long mobile versions wrap.
+- Fleet execution-lane totals now count the hosts matched by their filter.
+- Outdated reporting, provider-verification, preview, self-update, and outbound
+  data documentation; CI now includes runtime config and documentation checks.
 ## [1.8.0] - 2026-09-04
 
 ### Added

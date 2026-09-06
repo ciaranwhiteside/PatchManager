@@ -1339,6 +1339,7 @@ try {
     Assert-True ($fleetRow.Note -eq 'Maintenance-window deferral') 'Fleet integration: terminal disposition should appear in Notes.'
     $fleetHtmlText = Get-Content $fleetHtmlPath.FullName -Raw
     Assert-True ($fleetHtmlText -match "data-posture='attention'") 'Fleet integration: a terminal deferral must be classified as attention.'
+    Assert-True ($fleetHtmlText -match 'Review the deferral reason and confirm the next eligible patch run') 'Fleet UI: deferred hosts should have a specific next step.'
     Assert-True ($fleetHtmlText -match 'Failed / deferred') 'Fleet integration: dashboard should expose deferred provider runs.'
     Assert-True ($fleetHtmlText -match 'Security hosts') 'Fleet integration: an all-Personal estate should use neutral security wording without SLA labels.'
     Assert-True ($fleetHtmlText -notmatch 'SLA pressure|KEV / SLA') 'Fleet integration: an all-Personal estate with no breaches should not advertise SLA pressure.'
@@ -1389,16 +1390,52 @@ try {
     Set-Content -Path $brokenJsonPath -Value '{ malformed json' -Encoding UTF8
     Set-Content -Path ([System.IO.Path]::ChangeExtension($brokenJsonPath, '.html')) -Value '<!DOCTYPE html><title>Broken host evidence</title>' -Encoding UTF8
 
+    $invalidReports = [ordered]@{
+        EmptyObject = '{}'
+        NullReport = 'null'
+        ArrayReport = '[{},{}]'
+        MissingStatistics = '{"Metadata":{}}'
+        MissingCounters = '{"Metadata":{},"Statistics":{}}'
+        InvalidCounter = '{"Metadata":{},"Statistics":{"UpdatesApplied":0,"UpdatesFailed":"invalid","UpdatesSkipped":0}}'
+        NegativeCounter = '{"Metadata":{},"Statistics":{"UpdatesApplied":0,"UpdatesFailed":-1,"UpdatesSkipped":0}}'
+        OverflowCounter = '{"Metadata":{},"Statistics":{"UpdatesApplied":0,"UpdatesFailed":2147483648,"UpdatesSkipped":0}}'
+        StringBoolean = '{"Metadata":{"ProvidersExecuted":"false"},"Statistics":{"UpdatesApplied":0,"UpdatesFailed":0,"UpdatesSkipped":0}}'
+    }
+    foreach ($name in $invalidReports.Keys) {
+        $invalidDir = New-Item -ItemType Directory -Path (Join-Path $fleetEdgeRoot $name) -Force
+        Set-Content -LiteralPath (Join-Path $invalidDir.FullName 'PatchReport_invalid.json') -Value $invalidReports[$name] -Encoding UTF8
+    }
+    # Legacy reports may omit newer optional metrics and provider metadata.
+    $legacyDir = New-Item -ItemType Directory -Path (Join-Path $fleetEdgeRoot 'Legacy[1]') -Force
+    $legacyPath = Join-Path $legacyDir.FullName 'PatchReport_legacy.json'
+    Set-Content -LiteralPath $legacyPath -Value '{"Metadata":{"Hostname":"Legacy[1]"},"Statistics":{"UpdatesApplied":1,"UpdatesFailed":0,"UpdatesSkipped":0}}' -Encoding UTF8
+    [IO.File]::SetLastWriteTime($legacyPath, (Get-Date).AddDays(-7).AddMinutes(-10))
+
     & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $fleetEdgeRoot -OutputPath $fleetEdgeOutput -StaleDays 7
     $edgeCsvPath = Get-ChildItem $fleetEdgeOutput -Filter 'FleetReport_*.csv' | Select-Object -First 1
     $edgeHtmlPath = Get-ChildItem $fleetEdgeOutput -Filter 'FleetReport_*.html' | Select-Object -First 1
     $edgeRows = @(Import-Csv $edgeCsvPath.FullName)
     $brokenRow = $edgeRows | Where-Object Hostname -eq 'BrokenHost' | Select-Object -First 1
     $emptyRow = $edgeRows | Where-Object Hostname -eq 'EmptyHost' | Select-Object -First 1
-    Assert-True ($edgeRows.Count -eq 2) 'Fleet edge integration: malformed and empty hosts should both remain visible.'
+    Assert-True ($edgeRows.Count -eq (3 + $invalidReports.Count)) 'Fleet edge integration: every host must remain visible despite invalid reports.'
     Assert-True ($brokenRow.Note -match '^Could not parse') 'Fleet edge integration: malformed JSON should produce a specific recovery note.'
     Assert-True ($emptyRow.Note -eq 'Folder exists but contains no JSON reports.') 'Fleet edge integration: an empty host folder should produce the explicit no-report note.'
+    foreach ($name in $invalidReports.Keys) {
+        $invalidRow = $edgeRows | Where-Object Hostname -eq $name
+        Assert-True ($invalidRow.Note -match '^Could not parse') "Fleet edge integration: $name must report invalid evidence."
+        Assert-True ($invalidRow.ProvidersExecuted -eq 'False' -and $invalidRow.Stale -eq 'True') "Fleet edge integration: $name must never be treated as healthy."
+        Assert-True ($invalidRow.Failed -eq '') "Fleet edge integration: $name must preserve unknown counts rather than invent zero failures."
+    }
+    $legacyRow = $edgeRows | Where-Object Hostname -eq 'Legacy[1]'
+    Assert-True ($legacyRow.Applied -eq '1' -and $legacyRow.Note -eq '') 'Fleet edge integration: literal host paths and legacy reports must remain readable.'
+    Assert-True ($legacyRow.Stale -eq 'True' -and [double]$legacyRow.ReportAgeDays -eq 7) 'Fleet edge integration: stale classification must use elapsed time before display rounding.'
     $edgeHtml = Get-Content $edgeHtmlPath.FullName -Raw
+    foreach ($name in @('BrokenHost', 'EmptyHost') + @($invalidReports.Keys)) {
+        $hostRowHtml = [regex]::Match($edgeHtml, "(?s)<tr class='fleet-row [^>]*data-host='$([regex]::Escape($name))'.*?</tr>").Value
+        Assert-True ($hostRowHtml -match 'Evidence unavailable' -and $hostRowHtml -match 'Not assessed') "Fleet UI: $name should explain missing evidence."
+        Assert-True ($hostRowHtml -notmatch "signal clear") "Fleet UI: $name must not show a reassuring clear status."
+        Assert-True ($hostRowHtml -match 'collect a valid report') "Fleet UI: $name should offer a recovery step."
+    }
     Assert-True ($edgeHtml -match "class='host-link' href='file:///") 'Fleet edge integration: an existing sibling HTML report should use a safe absolute file URI even when JSON is malformed.'
     Assert-True ($edgeHtml -match "<strong>EmptyHost</strong><span class='cell-detail'>HTML report unavailable") 'Fleet edge integration: missing HTML should render plain text rather than a broken link.'
 } finally {

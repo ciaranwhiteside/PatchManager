@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.8.0 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.8.1 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -117,7 +117,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.8.0'
+$script:VERSION       = '1.8.1'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -6459,6 +6459,9 @@ function New-HTMLReport {
   @media(max-width:620px){body{font-size:13px}.report-nav{grid-template-columns:minmax(0,1fr) auto;min-height:50px;padding:6px max(12px,env(safe-area-inset-left))}.nav-brand>span{display:grid;gap:0}.nav-brand small,.nav-run-identity{display:none}.nav-brand .brand-mark{width:29px;height:29px}.nav-print{height:44px}.report-masthead{position:absolute}.verdict-rail{grid-template-columns:1fr 1fr;margin-bottom:8px}.verdict-state{grid-column:1/-1}.verdict-state,.verdict-fact{padding:9px 11px}.verdict-fact:last-of-type{grid-column:1/-1}.verdict-rail>.primary-action{grid-row:2;grid-column:1/-1;margin:8px 10px}.command-stage{gap:8px}.health-topology{min-height:0;padding-top:8px;grid-template-columns:1fr}.health-branches{grid-template-columns:1fr 1fr}.panel{padding:11px}.ledger-toolbar{padding:6px}.ledger-toolbar .filter-fields{grid-template-columns:1fr 1fr}.table-wrap{border-radius:2px}.footer{padding-bottom:max(15px,env(safe-area-inset-bottom))}}
   @media(pointer:coarse){.primary-action,.nav-print,.ledger-toolbar input,.ledger-toolbar select,.ledger-toolbar button,.filter-toggle,.sort-button{min-height:44px}}
   @media print{body{font-size:10pt}.report-nav{display:none}.report-masthead{position:static;width:auto;height:auto;margin:0 0 10px;padding:0;overflow:visible;clip:auto;white-space:normal;border-bottom:1px solid #777}.report-masthead h1{font-size:17pt}.ledger-toolbar{display:none}.verdict-rail,.panel,.table-wrap{border-radius:0;background:#fff}.command-stage>.panel,.queue-column>.panel{height:auto}}
+  @media(max-width:820px){#updatesTable .version-flow{white-space:normal;overflow-wrap:anywhere;min-width:0}}
+  .filter-empty{padding:16px;border:1px solid var(--line);background:var(--paper-soft);color:var(--ink)}.filter-empty p{margin:4px 0 12px}.filter-empty button{min-height:44px}
+  @media print{tr.data-row{display:table-row !important}#updatesTable td{display:table-cell !important}#updatesTable td:before{display:none !important}.filter-empty,.result-count,.toolbar{display:none !important}}
 </style>
 <noscript><style>.reveal{opacity:1;transform:none}.audit-detail,.audit-detail.is-collapsed{display:block !important}.audit-toggle,.filter-toggle{display:none}.ledger-toolbar .filter-fields{display:grid !important}</style></noscript>
 </head>
@@ -6490,7 +6493,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <div><label for="providerFilter">Provider</label><select id="providerFilter"><option value="">All providers</option></select></div>
       <div><label>&nbsp;</label><button type="button" id="clearFilters">Clear filters</button></div>
     </div>
-  </div>$tableSection<div class="result-count" id="resultCount" role="status" aria-live="polite"></div></section>
+  </div>$tableSection<div class="filter-empty" id="reportFilterEmpty" hidden><strong>No report rows match these filters.</strong><p>Clear the search and filters to see all package and audit rows.</p><button type="button" id="resetReportEmpty">Show all report rows</button></div><div class="result-count" id="resultCount" role="status" aria-live="polite"></div></section>
   <div id="security" class="$securityGridClass reveal">$kevSection$slaSection</div>
   <div class="reveal">$invKevSection</div>
   <div class="reveal">$nvdSection</div>
@@ -6517,6 +6520,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   var providerFilter = document.getElementById('providerFilter');
   var resultCount = document.getElementById('resultCount');
   var clearFilters = document.getElementById('clearFilters');
+  var emptyState = document.getElementById('reportFilterEmpty');
+  document.getElementById('resetReportEmpty').addEventListener('click', function(){clearFilters.click();});
   var printReport = document.getElementById('printReport');
   var filterToggle = document.getElementById('filterToggle');
   var secondaryFilters = document.getElementById('secondaryFilters');
@@ -6528,7 +6533,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
   sources.sort().forEach(function(source){appendUniqueOption(sourceFilter, source);});
   providers.sort().forEach(function(provider){appendUniqueOption(providerFilter, provider);});
   var expandAuditForFilter = function(){};
-  function applyFilters(){var query = (search.value || '').toLowerCase();var status = statusFilter.value;var source = sourceFilter.value;var provider = providerFilter.value;if(query || status || source || provider){expandAuditForFilter();}var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var rowStatus = row.getAttribute('data-status') || '';var rowSource = row.getAttribute('data-source') || '';var rowProvider = row.getAttribute('data-provider') || '';var show = (!query || rowText.indexOf(query) !== -1) && (!status || rowStatus === status) && (!source || rowSource === source) && (!provider || rowProvider === provider);row.style.display = show ? '' : 'none';if(show){visible += 1;}});if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' report row(s) visible';}}
+  function applyFilters(){var query = (search.value || '').trim().toLowerCase();var status = statusFilter.value;var source = sourceFilter.value;var provider = providerFilter.value;if(query || status || source || provider){expandAuditForFilter();}var visible = 0;rows.forEach(function(row){var rowText = (row.getAttribute('data-search') || '').toLowerCase();var rowStatus = row.getAttribute('data-status') || '';var rowSource = row.getAttribute('data-source') || '';var rowProvider = row.getAttribute('data-provider') || '';var show = (!query || rowText.indexOf(query) !== -1) && (!status || rowStatus === status) && (!source || rowSource === source) && (!provider || rowProvider === provider);row.style.display = show ? '' : 'none';if(show){visible += 1;}});if(emptyState){emptyState.hidden = visible !== 0 || rows.length === 0;}if(resultCount){resultCount.textContent = visible + ' of ' + rows.length + ' report row(s) visible';}}
   [search,statusFilter,sourceFilter,providerFilter].forEach(function(control){if(control){control.addEventListener('input', applyFilters);control.addEventListener('change', applyFilters);}});
   if(clearFilters){clearFilters.addEventListener('click', function(){search.value = '';statusFilter.value = '';sourceFilter.value = '';providerFilter.value = '';applyFilters();search.focus();});}
   if(printReport){printReport.addEventListener('click', function(){window.print();});}

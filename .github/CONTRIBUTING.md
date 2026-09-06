@@ -1,4 +1,4 @@
-# Contributing to PatchManager
+﻿# Contributing to PatchManager
 
 Thanks for your interest in improving PatchManager. This project deliberately
 stays a **single deployable script** (`Invoke-PatchManager.ps1`) plus optional
@@ -38,7 +38,7 @@ Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 .\Invoke-PatchManager.ps1 -DryRun -Force
 ```
 
-CI runs the same three steps on `windows-latest` for pushes and pull requests.
+CI validates JSON and the example configuration, runs PSScriptAnalyzer, and runs static/fixture tests on Windows PowerShell 5.1 and PowerShell 7. It also checks documentation and builds a release package. Browser checks are a separate local gate; CI never runs patch providers.
 Provider integrations still require an elevated Windows test host; fixture and
 AST tests cannot prove Windows Update, Store, Office, or vendor behavior.
 
@@ -58,3 +58,9 @@ AST tests cannot prove Windows Update, Store, Office, or vendor behavior.
 
 Use the GitHub issue templates. For anything security-sensitive, follow
 [SECURITY.md](SECURITY.md) instead of opening a public issue.
+
+## Release preparation
+
+Follow [RELEASING.md](../docs/RELEASING.md). Keep release notes in
+`docs/releases/`, run browser checks for report changes, and package only
+public files with `Build-Release.ps1`. Generated fixtures stay under `Reports/`.

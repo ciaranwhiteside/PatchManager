@@ -53,3 +53,23 @@ jobs:
       - name: Run static and fixture tests (PowerShell 7)
         shell: pwsh
         run: .\Tests\Invoke-PatchManager.Static.Tests.ps1
+
+      - name: Validate example with runtime validator
+        shell: powershell
+        run: .\Invoke-PatchManager.ps1 -ValidateConfig -ConfigPath .\PatchManager.config.example.json
+
+      - name: Check documentation and release metadata
+        shell: powershell
+        run: .\Tests\Test-Documentation.ps1
+
+      - name: Build and verify public release package
+        shell: powershell
+        run: .\Build-Release.ps1
+      - name: Test packaged files independently of the checkout
+        shell: powershell
+        run: |
+          $archive = Get-ChildItem .\release -Filter 'PatchManager-v*.zip' | Select-Object -First 1
+          $packageRoot = Join-Path $env:RUNNER_TEMP 'PatchManager-package-check'
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $packageRoot
+          & (Join-Path $packageRoot 'Tests\Invoke-PatchManager.Static.Tests.ps1')
+          & (Join-Path $packageRoot 'Tests\Test-Documentation.ps1')

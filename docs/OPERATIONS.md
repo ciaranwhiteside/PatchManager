@@ -33,14 +33,14 @@ Pilot runs and on an operator schedule.
 The fleet dashboard therefore shows the latest attempted run, not merely the
 last successful provider run. Terminal deferrals carry
 `Metadata.ProvidersExecuted=false`, appear as attention, and show their
-disposition in the fleet Notes column. For an invalid configuration, fix the local file
+disposition under Report note in the fleet Next step column. For an invalid configuration, fix the local file
 and rerun `-ValidateConfig`; configuration cannot be trusted enough to select a
 report destination.
 
 ## Investigating a host
 
 1. Open the newest `PatchReport_<HOST>_*.html`.
-2. Read the headline attention rows.
+2. Read the verdict and prioritized exception queue; in fleet view, follow the Next step column.
 3. Check provider/source rows for discovery failures.
 4. Review `Evidence` and `Remediation` before retrying.
 5. Check the daily log under `Logging.LocalLogPath` for process output.
@@ -73,3 +73,22 @@ Then run an elevated dry run on supported Windows 10 and Windows 11 test hosts,
 covering both Windows PowerShell 5.1 and PowerShell 7. CI validates parsing and
 fixture behavior; it does not replace provider integration testing against the
 real Windows servicing stack.
+
+## Report recovery and interpretation
+
+- **Evidence unavailable:** no valid JSON evidence was read. Check the device
+  task, its local report, and share permissions; collect a valid report. Unknown
+  counts are not zero, and unknown reboot state does not mean a restart is clear.
+- **Stale:** investigate the scheduled task and report-copy path. Age uses the
+  newest JSON file's modification time. Preserve timestamps when restoring
+  archived evidence; a fresh copy is not necessarily a fresh device check.
+- **No filter matches:** use Show all hosts / Show all report rows. Screen
+  filters do not remove evidence from print or CSV output.
+- **Host missing entirely:** check whether its folder exists on the central
+  share. Fleet reporting cannot count devices that have never created a folder.
+- **HTML report unavailable:** JSON can still be counted. Copy the matching HTML
+  beside its JSON to enable the device-report link.
+
+For packaging, upgrade, rollback, and publication steps, use the
+[release guide](RELEASING.md). A prepared ZIP is not evidence that live provider
+integration tests or a production rollout have completed.

@@ -1,4 +1,4 @@
----
+﻿---
 name: Bug report
 about: Something didn't work as documented
 title: ''
@@ -22,7 +22,9 @@ A clear description of the problem.
 - PowerShell version (`$PSVersionTable.PSVersion`):
 - winget version (`winget --version`):
 - PatchManager version (script header / report footer):
-- Scope profile (Personal / Commercial):
+- Scope profile (Personal / Commercial / CommercialManaged):
+
+- For report UI issues: device or fleet report, browser, viewport/zoom, and active filters:
 
 ## Evidence
 

@@ -1,4 +1,4 @@
-# PatchManager Brand
+﻿# PatchManager Brand
 
 PatchManager is evidence-led Windows patching: keep endpoints current and prove
 the result with audit-ready reports.
@@ -28,10 +28,12 @@ the result with audit-ready reports.
 | Token | Hex | Use |
 |---|---:|---|
 | Charcoal Ink | `#111513` | Primary text, dark panels, mark core |
-| Ivory Paper | `#F6F2E8` | Report surfaces and brand backgrounds |
+| Ivory Paper | `#F6F2E8` | Brand assets and native surfaces |
+| Report Paper | `#F7F6F1` | Compact HTML report background |
 | Audit Blue | `#18324A` | Trust, document outlines, UI structure |
 | Verified Green | `#24744F` | Success, verified update state |
-| Caution Amber | `#C49A3D` | Stale, waiting, review cues |
+| Ledger Amber | `#C49A3D` | Mark curve and review boundaries |
+| Review Amber ink | `#955D20` | Readable review text on light report surfaces |
 | Exposure Red | `#A53B35` | Failures, KEV, SLA pressure |
 
 ## Typography
@@ -54,7 +56,7 @@ security theatre.
 ## User Prompts
 
 Native prompts should use the same trust language as reports: a charcoal header,
-ivory surface, audit-blue boundary, verified-green primary action, and concise
+ivory surface, audit-blue structure, an outcome-aware action tone, and concise
 evidence-led copy. Use the PatchManager mark in prompt headers where the UI
 framework allows it. For native controls that cannot embed SVG directly, recreate
 the same shield/document/check/ledger geometry and palette rather than inventing
@@ -70,3 +72,6 @@ a new symbol.
 - Keep spacing generous and interface density readable.
 - Do not use the mark as decoration where it does not reinforce trust or
   provenance.
+
+Use green for verified results, amber for review or uncertainty, and red for
+confirmed failure or exposure. Missing report evidence must not appear verified.

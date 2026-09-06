@@ -20,7 +20,7 @@ set-and-forget updater on a personal machine or as a fleet patching agent across
 a commercial estate with rings, maintenance windows, SLA tracking, version-verified
 CISA KEV emergency handling, and SIEM-ready event logging.
 
-> **Public beta (v1.8.0).** PatchManager runs elevated and changes installed
+> **Public beta (v1.8.1).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -48,6 +48,7 @@ CISA KEV emergency handling, and SIEM-ready event logging.
 - [Data hygiene](#data-hygiene)
 - [Troubleshooting & FAQ](#troubleshooting--faq)
 - [Tests](#tests)
+- [Release and upgrade](#release-and-upgrade)
 - [Contributing](#contributing)
 - [Brand](#brand)
 - [License](#license)
@@ -149,7 +150,7 @@ Four commands, and your machine keeps itself patched from then on:
 git clone https://github.com/ciaranwhiteside/PatchManager.git C:\ProgramData\PatchManager
 cd C:\ProgramData\PatchManager
 
-# 2. Preview - shows exactly what would be updated, changes nothing
+# 2. Preview patch actions without installing updates (writes reports and caches)
 .\Invoke-PatchManager.ps1 -ValidateConfig
 .\Invoke-PatchManager.ps1 -DryRun -Force
 
@@ -513,7 +514,7 @@ version, validates that the download parses as PowerShell, optionally verifies
 a pinned SHA256, backs up the current script, and installs the new copy **for
 the next run** (it never executes freshly downloaded code inline). Git-clone
 installs are supported: self-update replaces only `Invoke-PatchManager.ps1`, so
-use `git pull` when you want the full repo, docs, config example, and tests
+review local changes before pulling a newer release when you want the full repo, docs, config example, and tests
 refreshed. Apply is skipped in dry-run/report-only.
 
 > Existing git-clone installs on v1.2.1 or earlier need one manual `git pull`
@@ -526,12 +527,12 @@ refreshed. Apply is skipped in dry-run/report-only.
 | `Repository` | `"ciaranwhiteside/PatchManager"` | GitHub `owner/repo` to fetch from. URL values are rejected. |
 | `Ref` | `"latest"` | `latest` = newest published release tag (recommended). Pin a specific tag to freeze, or use `"main"` to track the branch. Path traversal and URL metacharacters are rejected. |
 | `AutoApply` | `true` | `true` installs a validated newer script; `false` only reports that an update is available. |
-| `ExpectedSha256` | `""` | Optional exact SHA256 hash pin for locked-down deployments. |
+| `ExpectedSha256` | `""` | Optional SHA256 pin of `Invoke-PatchManager.ps1` (not the ZIP). Update the pin when approving a new version. |
 | `TimeoutSec` | `30` | Per-request timeout. A self-update failure never fails the patch run. |
 
 > **Supply-chain note.** Enabling self-update means trusting the configured
 > repository's release process to run code as administrator — the same trust as
-> installing PatchManager in the first place. It only ever installs published,
+> installing PatchManager in the first place. With the default `Ref: "latest"`, it only installs published,
 > version-newer, parse-valid releases. For maximum control, pin `ExpectedSha256`
 > or a specific `Ref`, set `AutoApply: false` to review first, or disable it and
 > deploy via your own tooling.
@@ -701,10 +702,28 @@ exposure** (hosts running out-of-support software or lagging the latest patch
 release, from the per-host endoflife.date findings), per-host staleness review
 counts, script errors, and pending reboots — the "is my estate actually patched,
 and is any of it abandoned?" view.
-Terminal deferrals are marked as attention with their disposition in Notes, so
+Terminal deferrals are marked as attention with their disposition under Report note in the Next step column, so
 an out-of-window, user-active, or lock-contention attempt cannot masquerade as
 a completed clean provider run.
 
+Each host has a **Next step** based on its highest-priority finding. Expand
+**Report note** for the original deferral or error, and **All metrics** for
+secondary counts. Missing or invalid report evidence is shown as **Evidence
+unavailable**, **Not assessed**, and **Unknown**, never as a clear result.
+Malformed hosts remain visible while other hosts are processed.
+
+The newest report is selected by JSON file **LastWriteTime**, not
+`Metadata.RunStart` or the filename. Copying or restoring reports can change
+that timestamp. Staleness compares the unrounded age with `-StaleDays`; the
+age shown on screen is rounded to one decimal place. The threshold accepts
+zero or a positive whole number. Hosts without a folder on the share are not
+known to this dashboard; this is not an independent device inventory.
+
+Search and filters affect the screen only. A no-match message offers a reset;
+printing includes every report row. CSV always includes every host and retains
+the existing columns. Healthy means no counted findings in the selected report,
+not proof that every possible provider or security check ran; inspect the device
+report for scope, dry-run mode, deferrals, and provider coverage.
 To preview the fleet dashboard on one machine before you have a central share,
 wrap the newest local JSON report in a host-named folder and point the
 aggregator at that test root:
@@ -719,7 +738,12 @@ $latestJson = Get-ChildItem $out -Filter 'PatchReport_*.json' |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
 
-Copy-Item $latestJson.FullName $hostFolder -Force
+if (-not $latestJson) { throw 'No local JSON report found. Run PatchManager first.' }
+Copy-Item -LiteralPath $latestJson.FullName -Destination $hostFolder -Force
+$latestHtml = [IO.Path]::ChangeExtension($latestJson.FullName, '.html')
+if (Test-Path -LiteralPath $latestHtml) {
+  Copy-Item -LiteralPath $latestHtml -Destination $hostFolder -Force
+}
 .\Get-FleetReport.ps1 -CentralReportPath $central -OutputPath $out -StaleDays 7 -OpenReport
 ```
 
@@ -889,9 +913,30 @@ provider exit-code guards, early-run reporting, SLA reconciliation, and a scan
 for personal data in public files. CI runs the same suite plus
 PSScriptAnalyzer on Windows PowerShell 5.1 **and** PowerShell 7.
 
+Optional browser checks require Node.js and Playwright with Chromium available. Install the development-only tools once from the repository root:
+
+```powershell
+npm install --no-save --package-lock=false playwright@1.62.1
+npx playwright install chromium
+.\Tests\Invoke-PatchManager.Static.Tests.ps1 -VisualArtifactPath .\Reports\UsabilityFixtures
+node .\Tests\Report.Usability.Tests.cjs .\Reports\UsabilityFixtures
+```
+
+These checks cover desktop, tablet, and mobile filtering, empty-result recovery,
+keyboard focus, complete print output, and no-JavaScript readability. Fleet rows
+include a next step and distinguish unavailable evidence from clear results.
+Screen filters do not remove rows from printed reports.
+
 These tests do not replace integration runs against Windows Update, Store,
 Office, and vendor updaters. Follow the staged validation checklist in
 [docs/OPERATIONS.md](docs/OPERATIONS.md#release-checklist).
+
+## Release and upgrade
+
+See the [release guide](docs/RELEASING.md) for package verification, upgrades,
+rollback, automated gates, and the provider checks required before publishing.
+Self-update refreshes only the main script; deploy the full release to receive
+fleet-report fixes.
 
 ## Contributing
 

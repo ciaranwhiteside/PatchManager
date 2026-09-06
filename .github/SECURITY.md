@@ -1,4 +1,4 @@
-# Security Policy
+﻿# Security Policy
 
 PatchManager is a patching tool for personal and commercial Windows 10/11
 devices. It runs elevated and can install operating system, browser, Microsoft
@@ -9,10 +9,10 @@ before live use.
 
 | Version | Supported |
 |---|---|
-| 1.x (public beta) | ✅ |
+| Latest published 1.x release (public beta) | ✅ |
 | Pre-1.0 internal builds | ❌ — upgrade to the latest release |
 
-Only the latest release on `main` receives fixes during the beta period.
+Only the latest published release receives fixes during the beta period. Older 1.x versions should be upgraded; `main` may contain unreleased work.
 
 ## Reporting a Vulnerability
 
@@ -52,13 +52,16 @@ You can expect an acknowledgement within a week during the beta period.
   for stricter control pin `ExpectedSha256` or a specific `Ref`, set
   `AutoApply: false` to review first, or disable it and deploy via your own
   tooling.
-- **Outbound data services.** PatchManager queries a few public feeds over
-  HTTPS for read-only intelligence: the CISA KEV catalogue, and — new in 1.3.0 —
-  [endoflife.date](https://endoflife.date/) for end-of-support dates. Both send
-  no device data (only product-name lookups), are cached on disk, and fall back
-  to the cache when unreachable, so a run never blocks on them. In an air-gapped
-  estate set `CISAKEV.Enabled: false` and `EndOfLife.Offline: true` (or
-  `EndOfLife.Enabled: false`).
+- **Outbound data services.** Enabled checks contact the CISA catalogue,
+  endoflife.date product endpoints, and NVD (or a configured mirror). KEV
+  resolution sends CVE IDs. The opt-in NVD inventory scan sends installed
+  software names as search terms and version-specific CPE identifiers; these
+  can reveal software inventory details to the selected endpoint. Caches reduce
+  repeat requests but do not make all runs offline. Review `NVD.DataSource`,
+  `NVD.Enabled`, `NVDInventoryScan.Enabled`, `EndOfLife.Offline`, and
+  `CISAKEV.Enabled` for your network policy. Update providers, connectivity
+  checks, and enabled self-update also make outbound requests. Configured
+  webhooks send run summaries to the chosen destination.
 - Machine-wide changes (the BITS bandwidth policy) are snapshotted and
   restored on exit, including crash paths.
 

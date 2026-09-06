@@ -1,4 +1,4 @@
-## What this PR does
+﻿## What this PR does
 
 <!-- One or two sentences. Link the issue if there is one. -->
 
@@ -16,3 +16,7 @@
 - [ ] README configuration reference updated (if config keys changed)
 - [ ] Report/docs brand treatment stays consistent with `docs/brand/BRAND.md` (if UI/docs changed)
 - [ ] No personal paths, hostnames, or generated report data included
+
+- [ ] Documentation checks pass (`Tests/Test-Documentation.ps1`)
+- [ ] Browser report tests pass if reporting changed (or limitation explained)
+- [ ] Release preparation follows `docs/RELEASING.md` if version/artifacts changed

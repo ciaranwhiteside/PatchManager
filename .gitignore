@@ -1,4 +1,4 @@
-# Local runtime configuration
+﻿# Local runtime configuration
 PatchManager.config.json
 
 # Generated runtime data
@@ -28,3 +28,6 @@ release/
 # OS noise
 Thumbs.db
 Desktop.ini
+
+# Optional browser-test dependencies
+node_modules/
