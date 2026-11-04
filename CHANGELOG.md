@@ -83,6 +83,22 @@ All notable changes to PatchManager are documented here. The format follows
   Administrators group, instead of the installing account plus a boot trigger
   that could never fire.
 
+### Fixed (reporting and configuration)
+
+- AlreadyCurrent rows are no longer counted as skipped, so a clean run is not
+  flagged "needs review".
+- Early-exit reports and notifications carry the real SLA breach count.
+- Webhook notifications under `OnlyOnProblems` fire on confirmed KEV matches
+  only, not on every name candidate.
+- Each host prunes its own folder on the central share with
+  `Logging.RetentionDays`.
+- `Logging.RetentionDays` must be at least 1, and `SLA.Enabled` must be a
+  boolean or null (a string `"false"` used to turn SLA on).
+- A pinned `SelfUpdate.ExpectedSha256` that does not match a newer release is
+  logged at WARN instead of failing every run.
+- Self-update refuses a release whose default configuration would reject the
+  current config file (checked statically; the download is never executed).
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
