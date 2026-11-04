@@ -2127,7 +2127,9 @@ function Test-WordMatch {
     param([string]$Haystack, [string]$Needle)
     if ([string]::IsNullOrWhiteSpace($Haystack) -or [string]::IsNullOrWhiteSpace($Needle)) { return $false }
     $escaped = [regex]::Escape($Needle)
-    return $Haystack -imatch "\b$escaped\b"
+    # Lookarounds instead of \b: \b never matches next to '.' or '+', so '.NET Framework'
+    # and 'Visual C++' could never match.
+    return $Haystack -imatch "(?<!\w)$escaped(?!\w)"
 }
 
 function ConvertTo-VersionParts {
@@ -2446,41 +2448,50 @@ function Find-KEVCandidates {
         # Microsoft Windows KEV entries promote Store/shell packages to emergency.
         if ($vendor -ieq 'Microsoft' -and $product -ieq 'Windows') { continue }
 
-        foreach ($app in $Packages) {
-            $name      = [string]$app.Name
-            $packageId = [string](Get-ObjectPropertyValue $app 'PackageId' '')
-            $publisher = if ($app.PSObject.Properties['Publisher']) { [string]$app.Publisher } else { '' }
+        # CISA files Chrome engine bugs as Google "Chromium <component>" (V8, Mojo, ...),
+        # which never names the installed product. Match them as Google Chrome and let
+        # NVD CPE resolution decide exposure.
+        $names = @(,@($vendor, $product))
+        if ($vendor -ieq 'Google' -and $product -like 'Chromium*') { $names += ,@('Google', 'Chrome') }
 
-            # Require BOTH vendor and product to match on whole-word boundaries.
-            # Vendor can match against app name, package id, or publisher; product must
-            # match the actionable package name or id.
-            $vendorMatch  = (Test-WordMatch $name $vendor) -or
-                            (Test-WordMatch $packageId $vendor) -or
-                            (Test-WordMatch $publisher $vendor)
-            $productMatch = (Test-WordMatch $name $product) -or
-                            (Test-WordMatch $packageId $product)
-
-            if ($vendorMatch -and $productMatch) {
-                # Dedupe: same CVE + same package shouldn't appear twice
-                $source = [string](Get-ObjectPropertyValue $app 'Source' 'inventory')
-                $key = "$($entry.cveID)|$source|$(if ($packageId) { $packageId } else { $name })"
-                if ($matchKeys.Add($key)) {
-                    $kevMatchList.Add([PSCustomObject]@{
-                        CVE            = $entry.cveID
-                        VendorProject  = $vendor
-                        Product        = $product
-                        Description    = $entry.vulnerabilityName
-                        DateAdded      = $entry.dateAdded
-                        CISADueDate    = $entry.dueDate
-                        InstalledApp   = $name
-                        InstalledVer   = $app.Version
-                        PackageId      = $packageId
-                        Source         = $source
-                        # Settled later by Add-KEVExposure. Never assume affected.
-                        ExposureState  = 'Unknown'
-                        FixedVersion   = ''
-                        ExposureDetail = 'Exposure not yet resolved.'
-                    })
+        foreach ($pair in $names) {
+            $vendor, $product = $pair
+            foreach ($app in $Packages) {
+                $name      = [string]$app.Name
+                $packageId = [string](Get-ObjectPropertyValue $app 'PackageId' '')
+                $publisher = if ($app.PSObject.Properties['Publisher']) { [string]$app.Publisher } else { '' }
+    
+                # Require BOTH vendor and product to match on whole-word boundaries.
+                # Vendor can match against app name, package id, or publisher; product must
+                # match the actionable package name or id.
+                $vendorMatch  = (Test-WordMatch $name $vendor) -or
+                                (Test-WordMatch $packageId $vendor) -or
+                                (Test-WordMatch $publisher $vendor)
+                $productMatch = (Test-WordMatch $name $product) -or
+                                (Test-WordMatch $packageId $product)
+    
+                if ($vendorMatch -and $productMatch) {
+                    # Dedupe: same CVE + same package shouldn't appear twice
+                    $source = [string](Get-ObjectPropertyValue $app 'Source' 'inventory')
+                    $key = "$($entry.cveID)|$source|$(if ($packageId) { $packageId } else { $name })"
+                    if ($matchKeys.Add($key)) {
+                        $kevMatchList.Add([PSCustomObject]@{
+                            CVE            = $entry.cveID
+                            VendorProject  = $vendor
+                            Product        = $product
+                            Description    = $entry.vulnerabilityName
+                            DateAdded      = $entry.dateAdded
+                            CISADueDate    = $entry.dueDate
+                            InstalledApp   = $name
+                            InstalledVer   = $app.Version
+                            PackageId      = $packageId
+                            Source         = $source
+                            # Settled later by Add-KEVExposure. Never assume affected.
+                            ExposureState  = 'Unknown'
+                            FixedVersion   = ''
+                            ExposureDetail = 'Exposure not yet resolved.'
+                        })
+                    }
                 }
             }
         }

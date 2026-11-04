@@ -1813,4 +1813,13 @@ Assert-True ($safeRow.Count -eq -3 -and $safeRow.Plain -eq 'Chrome') 'Numbers an
 Assert-True (($scriptContent -split 'Export-Csv').Count -eq ($scriptContent -split 'ConvertTo-SafeCsvRow \| Export-Csv').Count) 'Every device CSV export must pass through ConvertTo-SafeCsvRow.'
 Assert-True ((Get-Content (Join-Path $root 'Get-FleetReport.ps1') -Raw) -match 'ConvertTo-SafeCsvRow \| Export-Csv') 'Fleet CSV export must pass through ConvertTo-SafeCsvRow.'
 
+# T11: whole-word match works next to '.'/'+', and Chromium KEV entries reach Google Chrome.
+Assert-True (Test-WordMatch 'Microsoft .NET Framework 4.8' '.NET Framework') '.NET Framework must match.'
+Assert-True (Test-WordMatch 'Microsoft Visual C++ 2015 Redistributable' 'Visual C++') 'Visual C++ must match.'
+Assert-True (-not (Test-WordMatch 'Snapple' 'Apple')) 'Whole-word matching must still reject substrings.'
+$chromiumKev = [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID = 'CVE-2025-0001'; vendorProject = 'Google'; product = 'Chromium V8'; vulnerabilityName = 'V8 type confusion'; dateAdded = '2025-01-01'; dueDate = '2025-01-22' }) }
+$chromePkg = [pscustomobject]@{ Name = 'Google Chrome'; PackageId = 'Google.Chrome'; Version = '120.0.1'; Source = 'winget' }
+$chromiumHits = @(Find-KEVCandidates -Packages @($chromePkg) -KEVData $chromiumKev)
+Assert-True ($chromiumHits.Count -eq 1 -and $chromiumHits[0].Product -eq 'Chrome') 'A Chromium KEV entry must become a Google Chrome candidate.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
