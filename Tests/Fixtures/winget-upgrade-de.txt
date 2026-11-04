@@ -1,0 +1,4 @@
+Name                          ID                       Version       Verfügbar     Quelle
+------------------------------------------------------------------------------------------
+Google Chrome                 Google.Chrome            125.0.6422.1  126.0.6478.5  winget
+1 Aktualisierungen verfügbar.

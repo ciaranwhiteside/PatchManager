@@ -299,6 +299,9 @@ Assert-True ($chrome.Source -eq 'winget') 'Sample fixture: Chrome source should 
 $edgeLines = Get-Content -Path (Join-Path $fixtureDir 'winget-upgrade-edgecases.txt')
 $edgeParse = ConvertFrom-WinGetUpgradeOutput -Lines $edgeLines -QuerySource 'winget'
 Assert-True ($edgeParse.Upgrades.Count -eq 2) "Edge fixture: expected 2 upgrades (dedupe + short-line skip), got $($edgeParse.Upgrades.Count)."
+Assert-True (-not ($edgeParse.Upgrades.PackageId -contains 'Discord.Discord')) 'Edge fixture: the explicit-targeting table after the first table must be ignored.'
+Assert-True (@($edgeParse.Upgrades | Where-Object { $_.PackageId -like '*VisualStudio*' }).Count -eq 0) 'Edge fixture: truncated ids must be skipped.'
+Assert-True (@($edgeParse.Upgrades | Where-Object { $_.Name -like '*pins*' }).Count -eq 0) 'Edge fixture: footer lines must not become packages.'
 $noSource = $edgeParse.Upgrades | Where-Object { $_.PackageId -eq 'Vendor.SomeApp' }
 Assert-True ($null -ne $noSource -and $noSource.Source -eq 'winget') 'Edge fixture: row without source column should default to the query source.'
 
@@ -1841,6 +1844,19 @@ foreach ($fn in 'Invoke-NVDPacedRequest','Get-NVDCpeMatches') { Invoke-Expressio
     function Invoke-NVDPacedRequest { [pscustomobject]@{ Data = $null; Fetched = $true } }
     [void](Get-NVDCpeMatches -CveId 'CVE-2')
     Assert-True (-not $script:NVDMemo.ContainsKey('CVE-2')) 'A failed NVD lookup must not be memoised.'
+}
+
+# T15: localised winget output (unrecognised header) is a Failed discovery, never "0 upgrades".
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-WinGetUpgrades')
+& {
+    function Get-WinGetUpgradesViaModule { $null }
+    $script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ IncludeMSStore = $false } }
+    $script:SourceCheckResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $deLines = Get-Content -Path (Join-Path $PSScriptRoot 'Fixtures\winget-upgrade-de.txt') -Encoding UTF8
+    $script:WINGET = { $global:LASTEXITCODE = 0; $deLines }.GetNewClosure()
+    $deUpgrades = @(Get-WinGetUpgrades)
+    Assert-True ($deUpgrades.Count -eq 0) 'German output parses no rows.'
+    Assert-True ($script:SourceCheckResults[0].Status -eq 'Failed') 'Unrecognised winget table must mark discovery Failed so SLA state is kept.'
 }
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

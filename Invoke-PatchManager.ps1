@@ -3114,10 +3114,13 @@ function ConvertFrom-WinGetUpgradeOutput {
     $colName = -1; $colId = -1; $colVersion = -1; $colAvail = -1; $colSource = -1
     $inTable = $false
     $sawHeader = $false
+    $tableDone = $false
 
     foreach ($line in $Lines) {
         $line = [string]$line
-        if ($line -match '^\s*Name\s+Id\s+Version\s+Available') {
+        # Only the first table: winget prints a second "require explicit targeting"
+        # table (and pin notices) after it, and those packages must not be upgraded.
+        if (-not $tableDone -and $line -match '^\s*Name\s+Id\s+Version\s+Available') {
             $line = $line.TrimStart()
             $sawHeader  = $true
             $inTable    = $true
@@ -3130,7 +3133,11 @@ function ConvertFrom-WinGetUpgradeOutput {
         }
         if (-not $inTable) { continue }
         if ($line -match '^-{5,}') { continue }
-        if ($line -match '^\d+ upgrade' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+        # '2 upgrades available.' (or a blank line) ends the table; rows never end in '.'.
+        if ($line -match '^\d+\s.*\.\s*$' -or [string]::IsNullOrWhiteSpace($line)) {
+            $inTable = $false; $tableDone = $true
+            continue
+        }
 
         try {
             $len      = $line.Length
@@ -3144,6 +3151,12 @@ function ConvertFrom-WinGetUpgradeOutput {
             $avail  = if ($availEnd -le $len -and $colAvail -ge 0)     { $line.Substring($colAvail,  [Math]::Max(0, $availEnd - $colAvail)).Trim() } else { '' }
             $source = if ($colSource -ge 0 -and $colSource -lt $len)   { $line.Substring($colSource).Trim() } else { $QuerySource }
 
+            if ($id -match '[^\x21-\x7E]') {
+                # winget cut the id short with an ellipsis (garbled to other bytes in some code
+                # pages); package ids are plain ASCII, and --id --exact can never match it.
+                $parseErrors.Add("truncated id: $line")
+                continue
+            }
             if ($name -and $id -and $avail) {
                 $key = "$source|$id|$avail"
                 if ($seen.Add($key)) {
@@ -3221,8 +3234,15 @@ function Get-WinGetUpgrades {
 
         Write-Log "WinGet source '$querySource': $parsedForSource upgrade row(s) parsed." -Level DEBUG
         $sourceProvider = if ($querySource -eq 'msstore') { 'winget-msstore-discovery' } else { 'winget-discovery' }
-        $sourceStatus = if ($exitCode -eq 0) { 'Completed' } else { 'Failed' }
+        # A table was printed but its header was not understood (non-English winget):
+        # report Failed, never "0 upgrades", so SLA tracking is not reconciled away.
+        $unreadTable = (-not $sawHeader) -and @($raw | Where-Object { [string]$_ -match '^-{5,}' }).Count -gt 0
+        $sourceStatus = if ($exitCode -eq 0 -and -not $unreadTable) { 'Completed' } else { 'Failed' }
         $sourceEvidence = "WinGet source '$querySource' checked with exit code $exitCode; parsed $parsedForSource upgrade row(s)."
+        if ($unreadTable) {
+            $sourceEvidence = "$sourceEvidence Unrecognised table header (non-English winget output?); install Microsoft.WinGet.Client for locale-independent discovery."
+            Write-Log "WinGet source '$querySource': upgrade table header not recognised (locale?)." -Level WARN
+        }
         if ($sourceOutput) {
             $sourceEvidence = "$sourceEvidence Output: $sourceOutput"
         }
@@ -3231,7 +3251,7 @@ function Get-WinGetUpgrades {
             -Source $querySource `
             -Provider $sourceProvider `
             -Status $sourceStatus `
-            -Success ($exitCode -eq 0) `
+            -Success ($sourceStatus -eq 'Completed') `
             -Evidence $sourceEvidence))
     }
 
