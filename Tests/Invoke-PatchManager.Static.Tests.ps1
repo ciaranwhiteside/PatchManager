@@ -1859,4 +1859,16 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-WinGetUpgr
     Assert-True ($script:SourceCheckResults[0].Status -eq 'Failed') 'Unrecognised winget table must mark discovery Failed so SLA state is kept.'
 }
 
+# T16: an empty module result is @(), not $null, so winget.exe is not re-run.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-WinGetUpgradesViaModule')
+& {
+    function Get-Module { [pscustomobject]@{ Name = 'Microsoft.WinGet.Client' } }
+    function Import-Module { }
+    function Get-WinGetPackage { }
+    $script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ IncludeMSStore = $false } }
+    $script:SourceCheckResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $moduleResult = Get-WinGetUpgradesViaModule
+    Assert-True ($null -ne $moduleResult -and @($moduleResult).Count -eq 0) 'Empty module discovery must return an empty array, not $null.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

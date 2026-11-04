@@ -3093,7 +3093,9 @@ function Get-WinGetUpgradesViaModule {
         }
 
         Write-Log "WinGet (module): $($upgrades.Count) upgrade(s) available." -Level INFO
-        return $upgrades
+        # The comma keeps an empty result as @() instead of unrolling to $null, which
+        # the caller would read as "module unavailable" and re-scan with winget.exe.
+        return ,$upgrades.ToArray()
     } catch {
         Write-Log "Microsoft.WinGet.Client module discovery failed: $_. Falling back to winget.exe text parsing." -Level WARN
         return $null
