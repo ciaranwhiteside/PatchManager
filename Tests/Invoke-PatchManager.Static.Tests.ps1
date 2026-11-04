@@ -1973,4 +1973,9 @@ $equalThrew = $false
 try { Assert-ValidConfiguration -Config $equalCfg } catch { $equalThrew = $_.Exception.Message -match 'must differ' }
 Assert-True $equalThrew 'StartHour equal to EndHour must be rejected.'
 
+# T25: exit 3010 uses per-row reboot flags plus Test-PendingReboot; the narrower duplicate is gone.
+$mainText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Main'
+Assert-True ($scriptContent -notmatch 'function Test-RebootRequired') 'Test-RebootRequired duplicate must be removed.'
+Assert-True ($mainText -match 'rowNeedsReboot' -and $mainText -match 'Test-PendingReboot\)\)\)') 'Exit 3010 must consider row RebootRequired and Test-PendingReboot.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

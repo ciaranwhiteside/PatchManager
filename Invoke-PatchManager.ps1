@@ -7041,19 +7041,6 @@ function Invoke-SelfUpdate {
 
 #endregion
 
-#region -- Reboot Detection -----------------------------------------------------------
-
-function Test-RebootRequired {
-    $keys = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
-    )
-    foreach ($k in $keys) { if (Test-Path $k) { return $true } }
-    return $false
-}
-
-#endregion
-
 #region -- Main Orchestration ---------------------------------------------------------
 
 function Invoke-Main {
@@ -7327,9 +7314,10 @@ function Invoke-Main {
         Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath
     }
 
-    Exit-SingleInstance
-
-    if ($script:ExitCode -eq 0 -and (Test-RebootRequired)) {
+    # A row that says "reboot required" (choco 3010, firmware) counts even when no
+    # registry flag is set; Test-PendingReboot covers PFRO/CBS/SCCM signals too.
+    $rowNeedsReboot = @($updateResults | Where-Object { $_.PSObject.Properties['RebootRequired'] -and [bool]$_.RebootRequired }).Count -gt 0
+    if ($script:ExitCode -eq 0 -and ($rowNeedsReboot -or (Test-PendingReboot))) {
         Write-Log 'Reboot required to complete updates.' -Level WARN
         Write-RunEvent -EventId 3010 -Type Warning -Message "Reboot required on $($script:HOSTNAME) to complete updates."
         exit 3010
