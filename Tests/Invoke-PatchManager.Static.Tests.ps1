@@ -2103,4 +2103,18 @@ foreach ($badCase in @(
 $selfUpdateText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-SelfUpdate'
 Assert-True ($selfUpdateText -match 'SHA256 mismatch[^\r\n]*-Level WARN') 'Pinned hash mismatch must log at WARN so the run does not exit 1.'
 
+# T37: self-update refuses a release whose defaults no longer know a key this config sets.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ConfigKeysUnknownToScript')
+$compatDir = Join-Path ([IO.Path]::GetTempPath()) "pm-compat-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $compatDir)
+try {
+    $newScript = Join-Path $compatDir 'new.ps1'
+    Set-Content -Path $newScript -Value "`$script:DefaultCfg = [ordered]@{`n    ScopeProfile = 'Personal'`n    WinGet = [ordered]@{ Scope = 'machine'; Delays = [ordered]@{ A = 1 } }`n}`nthrow 'must never run'" -Encoding UTF8
+    $compatCfg = Join-Path $compatDir 'cfg.json'
+    Set-Content -Path $compatCfg -Value '{"_comment":"x","ScopeProfile":"Personal","WinGet":{"Scope":"user","SuppressReboot":true},"Legacy":{}}' -Encoding UTF8
+    $unknownCfgKeys = @(Get-ConfigKeysUnknownToScript -ScriptPath $newScript -ConfigPath $compatCfg)
+    Assert-True (($unknownCfgKeys -join ',') -eq 'WinGet.SuppressReboot,Legacy') "Unknown keys must be listed (got '$($unknownCfgKeys -join ',')')."
+    Assert-True (@(Get-ConfigKeysUnknownToScript -ScriptPath $scriptPath -ConfigPath $exampleConfigPath).Count -eq 0) 'The shipped example config must be compatible with the current script.'
+} finally { Remove-Item $compatDir -Recurse -Force -EA SilentlyContinue }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

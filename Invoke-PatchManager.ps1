@@ -6959,6 +6959,36 @@ function Resolve-SelfUpdateRef {
     }
 }
 
+function Get-ConfigKeysUnknownToScript {
+    # Static check, nothing from the download is executed: lists keys the config file
+    # sets that the script's $script:DefaultCfg no longer declares (Import-Configuration
+    # rejects unknown keys).
+    param([string]$ScriptPath, [string]$ConfigPath)
+    if (-not $ConfigPath -or -not (Test-Path -LiteralPath $ConfigPath)) { return @() }
+    $tokens = $null; $parseErrors = $null
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors)
+    $assign = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:DefaultCfg' }, $true)
+    if (-not $assign) { return @('(default configuration not found)') }
+    $table = $assign.Right.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+    $known = @{}
+    foreach ($pair in $table.KeyValuePairs) {
+        $section = $pair.Item1.Extent.Text.Trim("'", '"')
+        $inner = $pair.Item2.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+        $known[$section] = if ($inner) { @($inner.KeyValuePairs | ForEach-Object { $_.Item1.Extent.Text.Trim("'", '"') }) } else { $null }
+    }
+    $unknown = [System.Collections.Generic.List[string]]::new()
+    $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    foreach ($section in $config.PSObject.Properties) {
+        if ($section.Name -like '_*' -or $section.Name -eq '$schema') { continue }
+        if (-not $known.ContainsKey($section.Name)) { $unknown.Add($section.Name); continue }
+        if ($null -eq $known[$section.Name] -or $section.Value -isnot [PSCustomObject]) { continue }
+        foreach ($key in $section.Value.PSObject.Properties) {
+            if ($key.Name -notlike '_*' -and $key.Name -notin $known[$section.Name]) { $unknown.Add("$($section.Name).$($key.Name)") }
+        }
+    }
+    return @($unknown)
+}
+
 function Invoke-SelfUpdate {
     # Refresh PatchManager itself from GitHub. Security posture:
     #   - On for Personal/Commercial, off for CommercialManaged (resolved by profile).
@@ -7069,6 +7099,15 @@ function Invoke-SelfUpdate {
         if ($DryRun -or $ReportOnly) {
             Write-Log "Self-update: update $localVer -> $remoteVer available. Not applied in DryRun/ReportOnly." -Level INFO
             $script:SelfUpdateStatus = "Available ($localVer -> $remoteVer)"
+            return
+        }
+
+        # Integrity gate 3: the current config must still load under the new script, or
+        # every later run exits 2 and self-update can never fix it.
+        $unknownKeys = @(Get-ConfigKeysUnknownToScript -ScriptPath $tempFile -ConfigPath $ConfigPath)
+        if ($unknownKeys.Count -gt 0) {
+            Write-Log "Self-update: $localVer -> $remoteVer would reject this config (unknown key(s): $($unknownKeys -join ', ')); not applied. Update the config first." -Level WARN
+            $script:SelfUpdateStatus = "Available ($localVer -> $remoteVer, config incompatible)"
             return
         }
 
