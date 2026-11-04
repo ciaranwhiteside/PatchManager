@@ -1717,4 +1717,27 @@ foreach ($write in $reportWrites) {
     Assert-True $inTry "Report write at line $($write.Extent.StartLineNumber) must be inside try/catch."
 }
 
+# T5: a truncated KEV cache must not throw; an HTML (proxy) response must not be cached.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-CISAKEVData')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ContentAtomic')
+$kevCacheDir = Join-Path ([IO.Path]::GetTempPath()) "pm-kev-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $kevCacheDir)
+try {
+    & {
+        Set-StrictMode -Version Latest
+        $script:CFG = [pscustomobject]@{ CISAKEV = [pscustomobject]@{ Enabled = $true; CachePath = $kevCacheDir; CacheHours = 24; FeedUrl = 'https://example.invalid/kev.json' } }
+        Set-Content -Path (Join-Path $kevCacheDir 'cisa_kev.json') -Value '{"vulnerabilities":[{"cveID":"CVE-1' -Encoding UTF8
+        function Invoke-RestMethod { throw 'offline' }
+        Assert-True ($null -eq (Get-CISAKEVData)) 'Truncated KEV cache with no network should return null, not throw.'
+        function Invoke-RestMethod { '<html>captive portal</html>' }
+        Assert-True ($null -eq (Get-CISAKEVData)) 'HTML response should be rejected.'
+        Assert-True ((Get-Content (Join-Path $kevCacheDir 'cisa_kev.json') -Raw) -notmatch 'captive') 'HTML response must not be cached.'
+        function Invoke-RestMethod { [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID = 'CVE-2024-0001' }) } }
+        $fresh = Get-CISAKEVData
+        Assert-True (@($fresh.vulnerabilities).Count -eq 1) 'Valid feed should be returned.'
+        $cachedKev = Get-Content (Join-Path $kevCacheDir 'cisa_kev.json') -Raw | ConvertFrom-Json
+        Assert-True ($cachedKev.vulnerabilities[0].cveID -eq 'CVE-2024-0001') 'Valid feed should be cached.'
+    }
+} finally { Remove-Item $kevCacheDir -Recurse -Force -EA SilentlyContinue }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

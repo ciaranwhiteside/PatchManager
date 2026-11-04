@@ -2037,23 +2037,37 @@ function Get-CISAKEVData {
 
     if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
 
+    # A catalogue only counts when it parses and lists vulnerabilities; a truncated
+    # file or a proxy's HTML page must never be used (or cached) as the feed.
+    $readCache = {
+        try {
+            $cached = Get-Content $cacheFile -Raw -EA Stop | ConvertFrom-Json -EA Stop
+            if (@(Get-ObjectPropertyValue $cached 'vulnerabilities' @()).Count -gt 0) { return $cached }
+        } catch { }
+        Write-Log 'CISA KEV: cache file is unreadable or empty; ignoring it.' -Level WARN
+        return $null
+    }
+
     if (Test-Path $cacheFile) {
         $age = ((Get-Date) - (Get-Item $cacheFile).LastWriteTime).TotalHours
         if ($age -lt $kev.CacheHours) {
             Write-Log "CISA KEV: Using cache ($([Math]::Round($age,1))h old)." -Level DEBUG
-            return Get-Content $cacheFile -Raw | ConvertFrom-Json
+            $cached = & $readCache
+            if ($cached) { return $cached }
         }
     }
 
     try {
         Write-Log 'CISA KEV: Fetching latest catalogue...' -Level INFO
         $data = Invoke-RestMethod -Uri $kev.FeedUrl -TimeoutSec 30 -EA Stop
-        $data | ConvertTo-Json -Depth 10 | Set-Content $cacheFile -Encoding UTF8
-        Write-Log "CISA KEV: $($data.vulnerabilities.Count) entries cached." -Level INFO
+        $count = @(Get-ObjectPropertyValue $data 'vulnerabilities' @()).Count
+        if ($count -eq 0) { throw 'response contained no vulnerabilities (proxy or captive portal?)' }
+        [void](Set-ContentAtomic -Path $cacheFile -Content ($data | ConvertTo-Json -Depth 10))
+        Write-Log "CISA KEV: $count entries cached." -Level INFO
         return $data
     } catch {
         Write-Log "CISA KEV fetch failed: $_. $(if (Test-Path $cacheFile) {'Using stale cache.'} else {'No cache available.'})" -Level WARN
-        if (Test-Path $cacheFile) { return Get-Content $cacheFile -Raw | ConvertFrom-Json }
+        if (Test-Path $cacheFile) { return (& $readCache) }
         return $null
     }
 }
