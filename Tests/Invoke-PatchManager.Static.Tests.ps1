@@ -2117,4 +2117,7 @@ try {
     Assert-True (@(Get-ConfigKeysUnknownToScript -ScriptPath $scriptPath -ConfigPath $exampleConfigPath).Count -eq 0) 'The shipped example config must be compatible with the current script.'
 } finally { Remove-Item $compatDir -Recurse -Force -EA SilentlyContinue }
 
+# T38: one property helper, not a nested byte-identical copy.
+Assert-True ($scriptContent -notmatch 'Get-ReportProperty') 'Get-ReportProperty duplicate must be removed in favour of Get-ObjectPropertyValue.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

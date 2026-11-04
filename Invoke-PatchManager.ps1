@@ -6178,14 +6178,6 @@ function New-HTMLReport {
         return [System.Net.WebUtility]::HtmlEncode([string]$Value)
     }
 
-    function Get-ReportProperty {
-        param($Object, [string]$Name, $Default = '')
-        if ($null -eq $Object) { return $Default }
-        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) { return $Object[$Name] }
-        $prop = $Object.PSObject.Properties[$Name]
-        if ($null -ne $prop) { return $prop.Value }
-        return $Default
-    }
 
     function Get-ReportStat {
         param([string]$Name, $Default = 0)
@@ -6204,7 +6196,7 @@ function New-HTMLReport {
         ([string]$_) -notmatch '^\s*(?:SLA\s+)?BREACH:'
     })
     $errorCount     = $runtimeErrors.Count
-    $slaEnabled     = [bool](Get-ReportProperty $script:CFG.SLA 'Enabled' $true)
+    $slaEnabled     = [bool](Get-ObjectPropertyValue $script:CFG.SLA 'Enabled' $true)
     $slaEvidence    = @()
     if ($slaEnabled -and $null -ne $SLABreaches) {
         $slaEvidence = @($SLABreaches | Where-Object { $null -ne $_ })
@@ -6223,20 +6215,20 @@ function New-HTMLReport {
     $primaryCount   = if ($isDryRun) { $plannedCount } else { $appliedCount }
     $primaryLabel   = if ($isDryRun) { 'Updates planned' } else { 'Updates applied' }
     $statusGroups = @($Results | Group-Object {
-        $status = Get-ReportProperty $_ 'Status' ''
+        $status = Get-ObjectPropertyValue $_ 'Status' ''
         if ([string]::IsNullOrWhiteSpace([string]$status)) { 'Unknown' } else { [string]$status }
     } | Sort-Object Name)
     $sourceGroups = @($Results | Group-Object {
-        $source = Get-ReportProperty $_ 'Source' 'unknown'
+        $source = Get-ObjectPropertyValue $_ 'Source' 'unknown'
         if ([string]::IsNullOrWhiteSpace([string]$source)) { 'unknown' } else { [string]$source }
     } | Sort-Object Name)
     $providerGroups = @($Results | Group-Object {
-        $provider = Get-ReportProperty $_ 'Provider' (Get-ReportProperty $_ 'Source' 'unknown')
+        $provider = Get-ObjectPropertyValue $_ 'Provider' (Get-ObjectPropertyValue $_ 'Source' 'unknown')
         if ([string]::IsNullOrWhiteSpace([string]$provider)) { 'unknown' } else { [string]$provider }
     } | Sort-Object Name)
-    $blockedCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Blocked' }).Count
-    $failedRowCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Failed' }).Count
-    $rebootCount = @($Results | Where-Object { [bool](Get-ReportProperty $_ 'RebootRequired' $false) }).Count
+    $blockedCount = @($Results | Where-Object { (Get-ObjectPropertyValue $_ 'Status' '') -eq 'Blocked' }).Count
+    $failedRowCount = @($Results | Where-Object { (Get-ObjectPropertyValue $_ 'Status' '') -eq 'Failed' }).Count
+    $rebootCount = @($Results | Where-Object { [bool](Get-ObjectPropertyValue $_ 'RebootRequired' $false) }).Count
     # Count the rows the copy actually promises: blocked, failed, verifying,
     # reboot-required, and KEV - plus any script errors. Previously this summed only
     # blocked + verifying + failed + errors, so a report could headline "1 item(s) need
@@ -6251,24 +6243,24 @@ function New-HTMLReport {
     # for the same installed product and exposure state become one verification task.
     $inventoryKevReviewGroups = @($InventoryKEVMatches |
         Where-Object { $_.ExposureState -in @('Affected', 'Unknown') } |
-        Group-Object { "$(Get-ReportProperty $_ 'InstalledApp' 'Installed application')|$(Get-ReportProperty $_ 'ExposureState' 'Unknown')" })
+        Group-Object { "$(Get-ObjectPropertyValue $_ 'InstalledApp' 'Installed application')|$(Get-ObjectPropertyValue $_ 'ExposureState' 'Unknown')" })
     $inventoryKevAttentionCount = $inventoryKevReviewGroups.Count
     $stalenessReviewCount = @($StalenessFindings | Where-Object {
-        [string](Get-ReportProperty $_ 'Severity' '') -eq 'review'
+        [string](Get-ObjectPropertyValue $_ 'Severity' '') -eq 'review'
     }).Count
     $eolReviewFindings = @($EndOfLifeFindings | Where-Object {
-        [string](Get-ReportProperty $_ 'Severity' '') -eq 'review'
+        [string](Get-ObjectPropertyValue $_ 'Severity' '') -eq 'review'
     })
     $eolReviewCount = $eolReviewFindings.Count
     $eolConfirmedCount = @($eolReviewFindings | Where-Object {
-        [string](Get-ReportProperty $_ 'Status' '') -eq 'EOL'
+        [string](Get-ObjectPropertyValue $_ 'Status' '') -eq 'EOL'
     }).Count
     $nvdCriticalCount = @($NVDVulnFindings | Where-Object {
-        [int](Get-ReportProperty $_ 'CriticalCount' 0) -gt 0
+        [int](Get-ObjectPropertyValue $_ 'CriticalCount' 0) -gt 0
     }).Count
     $nvdHighCount = @($NVDVulnFindings | Where-Object {
-        [int](Get-ReportProperty $_ 'CriticalCount' 0) -eq 0 -and
-        [int](Get-ReportProperty $_ 'HighCount' 0) -gt 0
+        [int](Get-ObjectPropertyValue $_ 'CriticalCount' 0) -eq 0 -and
+        [int](Get-ObjectPropertyValue $_ 'HighCount' 0) -gt 0
     }).Count
     $attentionCount = $attentionRowCount + $slaCount + $inventoryKevAttentionCount + $errorCount +
         $stalenessReviewCount + $eolReviewCount + $nvdCriticalCount + $nvdHighCount
@@ -6289,14 +6281,14 @@ function New-HTMLReport {
     function New-KEVRowsHtml {
         param([array]$Candidates)
         return (($Candidates | Sort-Object @{ Expression = {
-            switch ([string](Get-ReportProperty $_ 'ExposureState' 'Unknown')) {
+            switch ([string](Get-ObjectPropertyValue $_ 'ExposureState' 'Unknown')) {
                 'Affected'    { 0 }
                 'Unknown'     { 1 }
                 default       { 2 }
             } } }, CVE | ForEach-Object {
-            $state = [string](Get-ReportProperty $_ 'ExposureState' 'Unknown')
-            $fixed = [string](Get-ReportProperty $_ 'FixedVersion' '')
-            $why   = [string](Get-ReportProperty $_ 'ExposureDetail' '')
+            $state = [string](Get-ObjectPropertyValue $_ 'ExposureState' 'Unknown')
+            $fixed = [string](Get-ObjectPropertyValue $_ 'FixedVersion' '')
+            $why   = [string](Get-ObjectPropertyValue $_ 'ExposureDetail' '')
             $badge = switch ($state) {
                 'Affected'    { "<span class='status fail'>Affected</span>" }
                 'NotAffected' { "<span class='status ok'>Not affected</span>" }
@@ -6318,23 +6310,23 @@ function New-HTMLReport {
         param([array]$Rows)
         if ($Rows.Count -eq 0) { return '' }
         return (($Rows | ForEach-Object {
-            $success = [bool](Get-ReportProperty $_ 'Success' $false)
-            $isKev = [bool](Get-ReportProperty $_ 'IsKEV' $false)
-            $name = Get-ReportProperty $_ 'Name' ''
-            $packageId = Get-ReportProperty $_ 'PackageId' ''
-            $installedVer = Get-ReportProperty $_ 'InstalledVersion' (Get-ReportProperty $_ 'OldVer' '')
-            $availableVer = Get-ReportProperty $_ 'AvailableVersion' (Get-ReportProperty $_ 'NewVer' '')
-            $reportedVer = Get-ReportProperty $_ 'ReportedVersion' ''
-            $confirmedVer = Get-ReportProperty $_ 'ConfirmedVersion' ''
+            $success = [bool](Get-ObjectPropertyValue $_ 'Success' $false)
+            $isKev = [bool](Get-ObjectPropertyValue $_ 'IsKEV' $false)
+            $name = Get-ObjectPropertyValue $_ 'Name' ''
+            $packageId = Get-ObjectPropertyValue $_ 'PackageId' ''
+            $installedVer = Get-ObjectPropertyValue $_ 'InstalledVersion' (Get-ObjectPropertyValue $_ 'OldVer' '')
+            $availableVer = Get-ObjectPropertyValue $_ 'AvailableVersion' (Get-ObjectPropertyValue $_ 'NewVer' '')
+            $reportedVer = Get-ObjectPropertyValue $_ 'ReportedVersion' ''
+            $confirmedVer = Get-ObjectPropertyValue $_ 'ConfirmedVersion' ''
             $targetText = if ($availableVer -and $reportedVer -and $availableVer -ne $reportedVer) { "$availableVer / reported $reportedVer" } elseif ($availableVer) { $availableVer } else { $reportedVer }
-            $rebootRequired = [bool](Get-ReportProperty $_ 'RebootRequired' $false)
-            $timestamp = Get-ReportProperty $_ 'Timestamp' ''
-            $status = Get-ReportProperty $_ 'Status' ''
+            $rebootRequired = [bool](Get-ObjectPropertyValue $_ 'RebootRequired' $false)
+            $timestamp = Get-ObjectPropertyValue $_ 'Timestamp' ''
+            $status = Get-ObjectPropertyValue $_ 'Status' ''
             if ([string]::IsNullOrWhiteSpace([string]$status)) {
                 $status = if ($success) { 'Succeeded' } else { 'Failed' }
             }
-            $engineSource = Get-ReportProperty $_ 'Source' 'winget'
-            $provider = Get-ReportProperty $_ 'Provider' $engineSource
+            $engineSource = Get-ObjectPropertyValue $_ 'Source' 'winget'
+            $provider = Get-ObjectPropertyValue $_ 'Provider' $engineSource
             $rowClass = switch -Regex ($status) {
                 '^Planned$'   { 'planned'; break }
                 '^Succeeded$' { 'ok'; break }
@@ -6348,8 +6340,8 @@ function New-HTMLReport {
                 default       { if ($success) { 'ok' } else { 'fail' } }
             }
             $kev = if ($isKev) { '<span class="flag danger">KEV</span>' } else { '' }
-            $evidence = Get-ReportProperty $_ 'Evidence' (Get-ReportProperty $_ 'Reason' '')
-            $remediation = Get-ReportProperty $_ 'Remediation' ''
+            $evidence = Get-ObjectPropertyValue $_ 'Evidence' (Get-ObjectPropertyValue $_ 'Reason' '')
+            $remediation = Get-ObjectPropertyValue $_ 'Remediation' ''
             $details = (($evidence, $remediation | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
             $detailsFallback = if ($isDryRun -and $status -eq 'Planned') { 'Dry run only - no package action was attempted.' } else { 'No additional evidence was recorded.' }
             $rebootText = if ($rebootRequired) { 'Yes' } else { 'No' }
@@ -6366,7 +6358,7 @@ function New-HTMLReport {
                 'action'    { 1 }
                 default     { 2 }
             }
-        } }, @{ Expression = { [string](Get-ReportProperty $_ 'Name' '') } })
+        } }, @{ Expression = { [string](Get-ObjectPropertyValue $_ 'Name' '') } })
     $providerCheckRows = @($Results | Where-Object { (Get-ReportRowKind $_) -eq 'provider' })
     $skippedRows = @($Results | Where-Object { (Get-ReportRowKind $_) -eq 'skipped' })
     $actionableUpdateRows = New-ReportRowsHtml -Rows $actionableRows
@@ -6378,7 +6370,7 @@ function New-HTMLReport {
     $kevRows = New-KEVRowsHtml -Candidates $KEVMatches
 
     $slaRows = ($slaEvidence | ForEach-Object {
-        "<tr class='breach'><td>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'PackageName' 'Unknown package'))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'PackageId' ''))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'VersionAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'FirstSeenAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'SLADue' ''))</td><td>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'Ring' ''))</td></tr>"
+        "<tr class='breach'><td>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'PackageName' 'Unknown package'))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'PackageId' ''))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'VersionAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'FirstSeenAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'SLADue' ''))</td><td>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'Ring' ''))</td></tr>"
     }) -join "`n"
 
     $errorItems = ($runtimeErrors | ForEach-Object {
@@ -6407,18 +6399,18 @@ function New-HTMLReport {
 
     $attentionSequence = [System.Collections.Generic.List[string]]::new()
     foreach ($row in @($actionableRows | Where-Object { (Get-ReportRowKind $_) -eq 'attention' })) {
-        $status = [string](Get-ReportProperty $row 'Status' 'Review')
-        $name = [string](Get-ReportProperty $row 'Name' 'Package')
-        $evidence = [string](Get-ReportProperty $row 'Evidence' 'Review the package evidence.')
-        $confirmedPackage = ($status -in @('Blocked','Failed') -or [bool](Get-ReportProperty $row 'IsKEV' $false))
+        $status = [string](Get-ObjectPropertyValue $row 'Status' 'Review')
+        $name = [string](Get-ObjectPropertyValue $row 'Name' 'Package')
+        $evidence = [string](Get-ObjectPropertyValue $row 'Evidence' 'Review the package evidence.')
+        $confirmedPackage = ($status -in @('Blocked','Failed') -or [bool](Get-ObjectPropertyValue $row 'IsKEV' $false))
         $itemClass = if ($confirmedPackage) { '' } else { " class='review'" }
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>$(ConvertTo-ReportHtml $status) - $(ConvertTo-ReportHtml $name)</strong><p>$(ConvertTo-ReportHtml $evidence)</p></div><a href='#updates'>Package evidence</a></li>")
     }
     foreach ($group in $inventoryKevReviewGroups) {
         $first = @($group.Group)[0]
-        $appName = [string](Get-ReportProperty $first 'InstalledApp' 'Installed application')
-        $state = [string](Get-ReportProperty $first 'ExposureState' 'Unknown')
-        $cves = @($group.Group | ForEach-Object { [string](Get-ReportProperty $_ 'CVE' 'CISA KEV') } | Sort-Object -Unique)
+        $appName = [string](Get-ObjectPropertyValue $first 'InstalledApp' 'Installed application')
+        $state = [string](Get-ObjectPropertyValue $first 'ExposureState' 'Unknown')
+        $cves = @($group.Group | ForEach-Object { [string](Get-ObjectPropertyValue $_ 'CVE' 'CISA KEV') } | Sort-Object -Unique)
         $cveText = $cves -join ', '
         $itemClass = if ($state -eq 'Unknown') { " class='review'" } else { '' }
         $title = if ($state -eq 'Unknown') { "Verify inventory KEV - $appName" } else { "Confirmed inventory KEV - $appName" }
@@ -6426,15 +6418,15 @@ function New-HTMLReport {
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>$(ConvertTo-ReportHtml $title)</strong><p>$(ConvertTo-ReportHtml $message)</p></div><a href='#security'>Security evidence</a></li>")
     }
     foreach ($breach in $slaEvidence) {
-        $packageName = [string](Get-ReportProperty $breach 'PackageName' 'Package')
-        $due = [string](Get-ReportProperty $breach 'SLADue' 'due date unavailable')
+        $packageName = [string](Get-ObjectPropertyValue $breach 'PackageName' 'Package')
+        $due = [string](Get-ObjectPropertyValue $breach 'SLADue' 'due date unavailable')
         $attentionSequence.Add("<li><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>SLA exposure - $(ConvertTo-ReportHtml $packageName)</strong><p>Remediation due $(ConvertTo-ReportHtml $due).</p></div><a href='#security'>SLA evidence</a></li>")
     }
-    foreach ($finding in @($NVDVulnFindings | Sort-Object @{ Expression = { [int](Get-ReportProperty $_ 'CriticalCount' 0) }; Descending = $true })) {
-        $critical = [int](Get-ReportProperty $finding 'CriticalCount' 0)
-        $high = [int](Get-ReportProperty $finding 'HighCount' 0)
+    foreach ($finding in @($NVDVulnFindings | Sort-Object @{ Expression = { [int](Get-ObjectPropertyValue $_ 'CriticalCount' 0) }; Descending = $true })) {
+        $critical = [int](Get-ObjectPropertyValue $finding 'CriticalCount' 0)
+        $high = [int](Get-ObjectPropertyValue $finding 'HighCount' 0)
         if ($critical -le 0 -and $high -le 0) { continue }
-        $item = [string](Get-ReportProperty $finding 'Item' 'Installed software')
+        $item = [string](Get-ObjectPropertyValue $finding 'Item' 'Installed software')
         $itemClass = if ($critical -gt 0) { '' } else { " class='review'" }
         $severity = if ($critical -gt 0) { "$critical Critical" } else { "$high High" }
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>NVD exposure - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $severity) version-matched vulnerability finding(s).</p></div><a href='#security'>NVD evidence</a></li>")
@@ -6443,14 +6435,14 @@ function New-HTMLReport {
         $attentionSequence.Add("<li><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Runtime error</strong><p>$(ConvertTo-ReportHtml $scriptError)</p></div><a href='#auditDetail'>Runtime evidence</a></li>")
     }
     foreach ($finding in $eolReviewFindings) {
-        $item = [string](Get-ReportProperty $finding 'Item' 'Installed software')
-        $status = [string](Get-ReportProperty $finding 'Status' 'Lifecycle review')
+        $item = [string](Get-ObjectPropertyValue $finding 'Item' 'Installed software')
+        $status = [string](Get-ObjectPropertyValue $finding 'Status' 'Lifecycle review')
         $itemClass = if ($status -eq 'EOL') { '' } else { " class='review'" }
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Lifecycle - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $status). Review the supported-version evidence.</p></div><a href='#lifecycle'>Lifecycle evidence</a></li>")
     }
-    foreach ($finding in @($StalenessFindings | Where-Object { [string](Get-ReportProperty $_ 'Severity' '') -eq 'review' })) {
-        $item = [string](Get-ReportProperty $finding 'Item' 'Environment evidence')
-        $detail = [string](Get-ReportProperty $finding 'Detail' 'Freshness evidence needs review.')
+    foreach ($finding in @($StalenessFindings | Where-Object { [string](Get-ObjectPropertyValue $_ 'Severity' '') -eq 'review' })) {
+        $item = [string](Get-ObjectPropertyValue $finding 'Item' 'Environment evidence')
+        $detail = [string](Get-ObjectPropertyValue $finding 'Detail' 'Freshness evidence needs review.')
         $attentionSequence.Add("<li class='review'><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Staleness - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $detail)</p></div><a href='#lifecycle'>Staleness evidence</a></li>")
     }
     $attentionSequenceHtml = $attentionSequence -join ''
