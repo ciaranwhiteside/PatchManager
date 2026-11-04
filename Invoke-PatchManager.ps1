@@ -6129,11 +6129,14 @@ function Complete-EarlyRun {
     Update-StatsFromResults -Results $results
 
     $reportInfo = $null
+    $slaBreaches = @()   # also used by the notification below, even if the report fails
     try {
         $patchState = Get-PatchState
         $metrics = Get-PatchMetrics -State $patchState -Enabled ([bool]$script:CFG.SLA.Enabled)
         $slaBreaches = @()
         if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
+        # Early runs are the latest evidence the fleet sees; they must carry the SLA count.
+        $script:Stats.SLABreaches = $slaBreaches.Count
         $reportInfo = New-ComplianceReport -Results $results -KEVMatches @() -SLABreaches $slaBreaches `
                                            -PatchState $patchState -Metrics $metrics
         Copy-LogsToCentral
@@ -6149,7 +6152,7 @@ function Complete-EarlyRun {
         Write-RunEvent -EventId 1010 -Type Information -Message $message
     }
 
-    try { Send-RunNotification -ReportInfo $reportInfo -KEVMatches @() -SLABreaches @() } catch { }
+    try { Send-RunNotification -ReportInfo $reportInfo -KEVMatches @() -SLABreaches $slaBreaches } catch { }
     try { Restore-BITSThrottle } catch { }
     try { Exit-SingleInstance } catch { }
     # A skipped attempt (lock contention, outside the window) is not a finished run.

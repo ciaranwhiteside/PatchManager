@@ -2036,4 +2036,26 @@ $script:Stats = @{ Errors = [System.Collections.Generic.List[string]]::new() }
 Update-StatsFromResults -Results @((New-PatchResult -Name 'Windows Update' -PackageId 'WU' -Provider 'windows-update' -Source 'wu' -Status 'AlreadyCurrent' -Success $true))
 Assert-True ($script:Stats.UpdatesSkipped -eq 0) 'AlreadyCurrent must not count as skipped.'
 
+# T32: early-run reports and notifications carry the SLA breach count.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun')
+& {
+    $script:CFG = [pscustomobject]@{ SLA = [pscustomobject]@{ Enabled = $true } }
+    $script:Stats = @{ Errors = [System.Collections.Generic.List[string]]::new(); SLABreaches = 0 }
+    $script:STARTTIME = Get-Date
+    $script:HOSTNAME = 'TEST'
+    function Get-PatchState { [pscustomobject]@{ TrackedUpdates = @() } }
+    function Get-PatchMetrics { $null }
+    function Get-SLABreaches { @([pscustomobject]@{ PackageName = 'A' }, [pscustomobject]@{ PackageName = 'B' }) }
+    function New-ComplianceReport { $script:reportSla = $script:Stats.SLABreaches; $null }
+    function Copy-LogsToCentral { }
+    function Write-RunEvent { }
+    function Send-RunNotification { param($ReportInfo, $KEVMatches, $SLABreaches) $script:notifiedSla = @($SLABreaches).Count }
+    function Restore-BITSThrottle { }
+    function Exit-SingleInstance { }
+    function Show-CompletionPopup { }
+    Complete-EarlyRun -Name 'Maintenance-window deferral' -Status 'Skipped' -Evidence 'test'
+    Assert-True ($script:reportSla -eq 2 -and $script:notifiedSla -eq 2) 'Early runs must report and notify SLA breaches.'
+}
+$script:HOSTNAME = $env:COMPUTERNAME
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
