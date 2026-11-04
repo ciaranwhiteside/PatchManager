@@ -4515,7 +4515,7 @@ function Invoke-VendorUpdaterProvider {
         $versionValueName = [string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version')
         $versionFilePaths = @(Get-ObjectPropertyValue $entry 'VersionFilePaths' @())
         $currentVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
-        if (-not $currentVersion) { $currentVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
+        if (-not $currentVersion) { $currentVersion = Get-RegistryVersion -Paths @(Get-ObjectPropertyValue $entry 'VersionRegistryPaths' @()) -ValueName $versionValueName }
 
         $reason = ''
         if (Test-IsDescoped -Item ([PSCustomObject]@{ Name=$name; PackageId=$packageId; Provider=$provider; Source=$provider }) -Reason ([ref]$reason)) {
@@ -4523,7 +4523,7 @@ function Invoke-VendorUpdaterProvider {
             continue
         }
 
-        $updaterArgs = @($entry.UpdaterArgs)
+        $updaterArgs = @(Get-ObjectPropertyValue $entry 'UpdaterArgs' @())
         if ($DryRun) {
             $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Planned' -Evidence "Would run native updater: $updater $($updaterArgs -join ' ')."))
             continue
@@ -4545,7 +4545,7 @@ function Invoke-VendorUpdaterProvider {
                 continue
             }
             $afterVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
-            if (-not $afterVersion) { $afterVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
+            if (-not $afterVersion) { $afterVersion = Get-RegistryVersion -Paths @(Get-ObjectPropertyValue $entry 'VersionRegistryPaths' @()) -ValueName $versionValueName }
             # If we can read a version delta, report Updated/AlreadyCurrent;
             # otherwise keep the outcome Verifying rather than assuming success.
             $status = if ($currentVersion -and $afterVersion) {

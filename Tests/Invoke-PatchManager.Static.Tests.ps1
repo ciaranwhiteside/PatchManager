@@ -1693,4 +1693,18 @@ $jsonDelays = '{"Pilot":0,"Early":3,"Broad":10}' | ConvertFrom-Json
 Assert-True ((Get-ObjectPropertyValue $jsonDelays 'Early' 0) -eq 3) 'Ring delay lookup must work on a JSON object.'
 Assert-True ($scriptContent -notmatch '\.Ring\.Delays\[') 'Ring.Delays must not be indexed with [] (throws on PSCustomObject under StrictMode).'
 
+# T3: a schema-minimal ExtraCatalogue entry (no UpdaterArgs / VersionRegistryPaths) must not throw.
+foreach ($fn in 'Invoke-VendorUpdaterProvider','Resolve-FirstExistingPath','Get-InstalledFileVersion','Get-RegistryVersion') {
+    Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn)
+}
+& {
+    Set-StrictMode -Version Latest
+    function Get-VendorUpdaterCatalogue { ,@('{"Name":"X","PackageId":"X.X","Provider":"x","UpdaterPathCandidates":["' + ("$env:SystemRoot\System32\where.exe" -replace '\\','\\') + '"]}' | ConvertFrom-Json) }
+    function Test-IsDescoped { param($Item, [ref]$Reason) $false }
+    $script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $true } }
+    $DryRun = $true
+    $vendorRows = @(Invoke-VendorUpdaterProvider)
+    Assert-True ($vendorRows.Count -eq 1 -and $vendorRows[0].Status -eq 'Planned') 'Minimal ExtraCatalogue entry should plan, not throw.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
