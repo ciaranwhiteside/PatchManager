@@ -2978,13 +2978,19 @@ function Save-PatchState {
     foreach ($upgrade in $AvailableUpgrades) {
         $key = "$($upgrade.PackageId)|$($upgrade.Available)"
         if (-not $existingIndex.ContainsKey($key)) {
+            # A newer release of a package still at the same installed version keeps the
+            # original SLA clock; otherwise fast-releasing apps (browsers) never breach.
+            $carried = @($State.TrackedUpdates | Where-Object {
+                $_.PackageId -eq $upgrade.PackageId -and -not $_.Applied -and
+                [string]$_.VersionPrior -eq [string]$upgrade.Version -and $_.FirstSeenAvailable
+            } | Sort-Object FirstSeenAvailable | Select-Object -First 1)
             $newEntry = [PSCustomObject]@{
                 PackageId          = $upgrade.PackageId
                 PackageName        = $upgrade.Name
                 VersionAvailable   = $upgrade.Available
                 VersionPrior       = $upgrade.Version
-                FirstSeenAvailable = $today
-                SLADue             = (Get-Date).AddDays($slaDays).ToString('yyyy-MM-dd')
+                FirstSeenAvailable = $(if ($carried) { $carried[0].FirstSeenAvailable } else { $today })
+                SLADue             = $(if ($carried) { $carried[0].SLADue } else { (Get-Date).AddDays($slaDays).ToString('yyyy-MM-dd') })
                 Ring               = $script:RING
                 Applied            = $false
                 AppliedOn          = $null

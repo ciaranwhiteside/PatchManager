@@ -1993,4 +1993,22 @@ $consoleIdle = [PatchManagerIdle]::GetConsoleIdleMilliseconds()
 Assert-True ($consoleIdle -ge -2) 'Console idle query must return a value without throwing.'
 Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-UserIdleMinutes') -match 'catch \{\s*return 0') 'An idle-check failure must treat the user as active.'
 
+# T28: a superseding release keeps the SLA clock while the installed version is unchanged.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Save-PatchState')
+$slaDir = Join-Path ([IO.Path]::GetTempPath()) "pm-sla-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $slaDir)
+try {
+    $script:CFG = [pscustomobject]@{ State = [pscustomobject]@{ StatePath = $slaDir; StateFile = 'state.json' }; SLA = [pscustomobject]@{ Critical = 14 }; Logging = [pscustomobject]@{ RetentionDays = 90 } }
+    $script:RING = 'Broad'
+    $slaState = [pscustomobject]@{ TrackedUpdates = @() }
+    $slaState = Save-PatchState -State $slaState -AvailableUpgrades @([pscustomobject]@{ PackageId = 'Google.Chrome'; Name = 'Chrome'; Version = '129.0'; Available = '130.0' })
+    $slaState.TrackedUpdates[0].FirstSeenAvailable = '2026-01-01'; $slaState.TrackedUpdates[0].SLADue = '2026-01-15'
+    $slaState = Save-PatchState -State $slaState -AvailableUpgrades @([pscustomobject]@{ PackageId = 'Google.Chrome'; Name = 'Chrome'; Version = '129.0'; Available = '131.0' })
+    $row131 = $slaState.TrackedUpdates | Where-Object { $_.VersionAvailable -eq '131.0' }
+    Assert-True ($row131.FirstSeenAvailable -eq '2026-01-01' -and $row131.SLADue -eq '2026-01-15') 'A superseding release must keep the original SLA clock.'
+    $slaState = Save-PatchState -State $slaState -AvailableUpgrades @([pscustomobject]@{ PackageId = 'Google.Chrome'; Name = 'Chrome'; Version = '131.0'; Available = '132.0' })
+    $row132 = $slaState.TrackedUpdates | Where-Object { $_.VersionAvailable -eq '132.0' }
+    Assert-True ($row132.FirstSeenAvailable -eq (Get-Date -Format 'yyyy-MM-dd')) 'After the installed version moves, the next release starts a fresh clock.'
+} finally { Remove-Item $slaDir -Recurse -Force -EA SilentlyContinue }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
