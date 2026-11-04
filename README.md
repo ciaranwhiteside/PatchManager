@@ -257,7 +257,7 @@ How the task behaves:
   safeties still apply — pre-flight checks (disk, battery, pending reboot,
   connectivity), restore point, and reboot flagging.
 - **It never overlaps itself** thanks to the single-instance mutex, so dense
-  startup/logon triggers are safe.
+  sign-in triggers are safe.
 - **It stays out of your way if you ask it to**: enable
   `PreFlight.RequireUserIdle` in the config and runs quietly defer while
   you're actively using the machine, retrying at the next trigger.
