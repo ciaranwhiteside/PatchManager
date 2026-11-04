@@ -1786,4 +1786,23 @@ Assert-True ($null -eq $refused.ExitCode -and $refused.Output -match '^Refused')
 $script:CFG = [pscustomobject]@{ ScopeProfile = 'Personal' }
 Assert-True (Test-SafeExecutablePath (Join-Path $env:LOCALAPPDATA 'Google\Update\GoogleUpdate.exe')) 'Personal profile keeps per-user tools.'
 
+# T9: fleet identity comes from the share folder, not host-written JSON.
+$spoofRoot = Join-Path ([IO.Path]::GetTempPath()) "pm-fleet-spoof-$([guid]::NewGuid())"
+$spoofOut = "$spoofRoot-out"
+$fixtureJson = Get-Content (Get-ChildItem (Join-Path $PSScriptRoot 'Fixtures\FleetCentral\TEST-HOST') -Filter '*.json' | Select-Object -First 1).FullName -Raw
+try {
+    foreach ($spoofHost in 'DC01','EVIL') {
+        $dir = New-Item -ItemType Directory -Path (Join-Path $spoofRoot $spoofHost) -Force
+        $json = Join-Path $dir.FullName "PatchReport_${spoofHost}_20260101_000000_000.json"
+        Set-Content -Path $json -Value ($fixtureJson -replace '"TEST-HOST"', '"DC01"') -Encoding UTF8
+        Set-Content -Path ([IO.Path]::ChangeExtension($json, '.html')) -Value "<title>$spoofHost</title>" -Encoding UTF8
+    }
+    & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $spoofRoot -OutputPath $spoofOut -StaleDays 9999 | Out-Null
+    $spoofRows = @(Import-Csv (Get-ChildItem $spoofOut -Filter 'FleetReport_*.csv' | Select-Object -First 1).FullName)
+    Assert-True ((@($spoofRows.Hostname) -join ',') -eq 'DC01,EVIL') 'Fleet: each share folder must produce its own row.'
+    Assert-True (($spoofRows | Where-Object Hostname -eq 'EVIL').Note -match "claims hostname 'DC01'") 'Fleet: a hostname mismatch must be noted.'
+    $spoofHtml = Get-Content (Get-ChildItem $spoofOut -Filter 'FleetReport_*.html' | Select-Object -First 1).FullName -Raw
+    Assert-True ($spoofHtml -match '/EVIL/PatchReport_EVIL_' -and $spoofHtml -match '/DC01/PatchReport_DC01_') 'Fleet: each row must link to its own folder''s report.'
+} finally { Remove-Item $spoofRoot, $spoofOut -Recurse -Force -EA SilentlyContinue }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

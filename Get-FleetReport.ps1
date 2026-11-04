@@ -210,7 +210,11 @@ foreach ($hostDir in $hostDirs) {
         $null -ne $_ -and [string](Get-JsonProperty $_ 'Severity' '') -eq 'review'
     }).Count
 
-    $resolvedHostname = [string](Get-JsonProperty $metadata 'Hostname' $hostDir.Name)
+    # Identity comes from the share folder, never from host-written JSON: one host
+    # must not be able to hide itself or take over another host's row and link.
+    $resolvedHostname = $hostDir.Name
+    $claimedHostname = [string](Get-JsonProperty $metadata 'Hostname' $hostDir.Name)
+    $hostnameNote = if ($claimedHostname -ine $hostDir.Name) { "Report claims hostname '$claimedHostname'." } else { '' }
     $candidateHtmlPath = [System.IO.Path]::ChangeExtension($latestJson.FullName, '.html')
     if (Test-Path -LiteralPath $candidateHtmlPath -PathType Leaf) {
         $reportLinks[$resolvedHostname] = (New-Object System.Uri($candidateHtmlPath)).AbsoluteUri
@@ -241,7 +245,7 @@ foreach ($hostDir in $hostDirs) {
         RebootRequired  = $reboot.Count
         AttentionItems  = $attention.Count
         ProvidersExecuted = [bool](Get-JsonProperty $metadata 'ProvidersExecuted' $true)
-        Note            = $(if ([bool](Get-JsonProperty $metadata 'ProvidersExecuted' $true)) { '' } else { [string](Get-JsonProperty $metadata 'RunDisposition' 'Providers did not run') })
+        Note            = (@($hostnameNote, $(if ([bool](Get-JsonProperty $metadata 'ProvidersExecuted' $true)) { '' } else { [string](Get-JsonProperty $metadata 'RunDisposition' 'Providers did not run') })) | Where-Object { $_ }) -join ' '
     })
 }
 
