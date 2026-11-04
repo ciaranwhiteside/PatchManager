@@ -6135,7 +6135,7 @@ function Complete-EarlyRun {
         Write-RunEvent -EventId 1010 -Type Information -Message $message
     }
 
-    try { Send-RunNotification -ReportInfo $reportInfo -KEVMatches @() -SLABreaches $slaBreaches } catch { }
+    try { Send-RunNotification -ReportInfo $reportInfo -SLABreaches $slaBreaches } catch { }
     try { Restore-BITSThrottle } catch { }
     try { Exit-SingleInstance } catch { }
     # A skipped attempt (lock contention, outside the window) is not a finished run.
@@ -6806,7 +6806,7 @@ function Send-RunNotification {
     # Posts a compact JSON run summary to a webhook (Teams/Slack incoming webhooks
     # and generic JSON receivers). Both a human-readable "text" field and structured
     # fields are included. Fire-and-forget: a webhook failure never fails the run.
-    param([object]$ReportInfo, [array]$KEVMatches, [array]$SLABreaches)
+    param([object]$ReportInfo, [array]$SLABreaches)
 
     $notify = Get-ObjectPropertyValue $script:CFG 'Notifications' $null
     if ($null -eq $notify) { return }
@@ -7369,7 +7369,7 @@ function Invoke-Main {
         Write-RunEvent -EventId 1011 -Type Warning -Message $summaryMsg
     }
 
-    Send-RunNotification -ReportInfo $reportInfo -KEVMatches $kevMatches -SLABreaches $slaBreaches
+    Send-RunNotification -ReportInfo $reportInfo -SLABreaches $slaBreaches
 
     # Release machine-wide state before the popup: it waits for the user, and the
     # lock and BITS throttle must not be held while nobody is at the screen.

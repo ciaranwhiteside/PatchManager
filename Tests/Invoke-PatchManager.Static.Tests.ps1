@@ -2049,7 +2049,7 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-Early
     function New-ComplianceReport { $script:reportSla = $script:Stats.SLABreaches; $null }
     function Copy-LogsToCentral { }
     function Write-RunEvent { }
-    function Send-RunNotification { param($ReportInfo, $KEVMatches, $SLABreaches) $script:notifiedSla = @($SLABreaches).Count }
+    function Send-RunNotification { param($ReportInfo, $SLABreaches) $script:notifiedSla = @($SLABreaches).Count }
     function Restore-BITSThrottle { }
     function Exit-SingleInstance { }
     function Show-CompletionPopup { }
@@ -2066,7 +2066,7 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Send-RunNotifi
     $script:ExitCode = 0
     $script:posted = $false
     function Invoke-RestMethod { $script:posted = $true }
-    Send-RunNotification -ReportInfo $null -KEVMatches @([pscustomobject]@{ CVE = 'CVE-1'; ExposureState = 'NotAffected' }) -SLABreaches @()
+    Send-RunNotification -ReportInfo $null -SLABreaches @()   # KEV name candidates exist but Stats.KEVMatches (confirmed) is 0
     Assert-True (-not $script:posted) 'Unconfirmed KEV candidates must not trigger an OnlyOnProblems notification.'
 }
 
