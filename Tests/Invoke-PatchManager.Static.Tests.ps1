@@ -1822,4 +1822,8 @@ $chromePkg = [pscustomobject]@{ Name = 'Google Chrome'; PackageId = 'Google.Chro
 $chromiumHits = @(Find-KEVCandidates -Packages @($chromePkg) -KEVData $chromiumKev)
 Assert-True ($chromiumHits.Count -eq 1 -and $chromiumHits[0].Product -eq 'Chrome') 'A Chromium KEV entry must become a Google Chrome candidate.'
 
+# T12: an OS CPE (chrome_os) must not align with desktop Chrome; app qualifiers still do.
+Assert-True (-not (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:o:google:chrome_os:*:*:*:*:*:*:*:*') 'Google' 'Chrome')) 'A ChromeOS CPE must not align with a Chrome KEV entry.'
+Assert-True (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:a:microsoft:edge_chromium:*:*:*:*:*:*:*:*') 'Microsoft' 'Edge') 'Application qualifiers (edge_chromium) still align.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

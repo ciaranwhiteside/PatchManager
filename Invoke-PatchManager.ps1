@@ -2198,10 +2198,10 @@ function Test-CpeProductAlignment {
     $cpeProd = [string]$Cpe.Product
     $kevProd = ConvertTo-CpeToken $Product
     if (-not $cpeProd -or -not $kevProd) { return $false }
-    # Exact, or one is a qualified form of the other ('edge' vs 'edge_chromium').
+    # Exact, or (applications only) one is a qualified form of the other ('edge' vs
+    # 'edge_chromium'). Never for OS CPEs: 'chrome_os' is not desktop Chrome.
     $prodOk = ($cpeProd -eq $kevProd) -or
-              ($cpeProd.StartsWith("${kevProd}_")) -or
-              ($kevProd.StartsWith("$($cpeProd)_"))
+              ($Cpe.Part -eq 'a' -and ($cpeProd.StartsWith("${kevProd}_") -or $kevProd.StartsWith("$($cpeProd)_")))
     if (-not $prodOk) { return $false }
     $cpeVend = [string]$Cpe.Vendor
     $kevVend = ConvertTo-CpeToken $Vendor
