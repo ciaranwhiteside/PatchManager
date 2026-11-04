@@ -1470,17 +1470,18 @@ function Install-PatchManagerStartupTask {
     # popups still appear; they are separate WinForms windows.
     $actionArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Force"
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
-    $startupTrigger = New-ScheduledTaskTrigger -AtStartup
-    $startupTrigger.Delay = $delayIso
-    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    # Logon of any administrator, run in their session (dialogs work) with their elevated
+    # token. Not the installing account only: with over-the-shoulder UAC that was a
+    # different admin. No startup trigger: an interactive principal cannot run at boot.
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
     $logonTrigger.Delay = $delayIso
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+    $principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-544' -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
-    $task = New-ScheduledTask -Action $action -Trigger @($startupTrigger, $logonTrigger) -Principal $principal -Settings $settings -Description 'Runs PatchManager at startup/logon for personal device patching.'
+    $task = New-ScheduledTask -Action $action -Trigger @($logonTrigger) -Principal $principal -Settings $settings -Description 'Runs PatchManager when an administrator signs in, for personal device patching.'
 
     Register-ScheduledTask -TaskName $Name -InputObject $task -Force -ErrorAction Stop | Out-Null
     Write-Host "Scheduled task installed: $Name" -ForegroundColor Green
-    Write-Host "Triggers: startup + user logon, ${DelayMinutes} minute delay, highest privileges." -ForegroundColor Cyan
+    Write-Host "Trigger: administrator sign-in, ${DelayMinutes} minute delay, highest privileges." -ForegroundColor Cyan
 }
 
 function Uninstall-PatchManagerStartupTask {

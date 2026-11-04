@@ -2026,4 +2026,9 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Start-Jittered
 }
 $script:HOSTNAME = $env:COMPUTERNAME
 
+# T30: the startup task is an Administrators-group logon task with no dead boot trigger.
+$taskText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Install-PatchManagerStartupTask'
+Assert-True ($taskText -notmatch '-AtStartup' -and $taskText -notmatch 'AtLogOn -User') 'Task must not use a boot trigger or a single-user logon trigger.'
+Assert-True ($taskText -match "-GroupId 'S-1-5-32-544'") 'Task principal must be the Administrators group.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
