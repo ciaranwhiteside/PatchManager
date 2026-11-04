@@ -485,7 +485,7 @@ the HTML report directly.
 | `LocalLogPath` | `C:\ProgramData\PatchManager\Logs` | Daily log files. |
 | `CentralLogPath` | `""` | Optional UNC share; logs are copied per-host with retries. |
 | `EventLogSource` | `PatchManager` | Application event log source for SIEM. |
-| `RetentionDays` | `90` | Local log/report retention. |
+| `RetentionDays` | `90` | Local log/report retention in days (minimum 1), also applied to this host's folder on the central share. |
 | `LogLevel` | `Info` | `Debug`, `Info`, `Warning`, or `Error`. |
 
 ### `Reporting`

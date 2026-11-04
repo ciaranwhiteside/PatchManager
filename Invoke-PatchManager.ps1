@@ -556,7 +556,8 @@ function Assert-ValidConfiguration {
     foreach ($nullableFlag in @(
         @{ Name='Network.BITSThrottleEnabled'; Value=$Config.Network.BITSThrottleEnabled },
         @{ Name='PackageManagers.ChocolateyEnabled'; Value=$Config.PackageManagers.ChocolateyEnabled },
-        @{ Name='SelfUpdate.Enabled'; Value=$Config.SelfUpdate.Enabled }
+        @{ Name='SelfUpdate.Enabled'; Value=$Config.SelfUpdate.Enabled },
+        @{ Name='SLA.Enabled'; Value=$Config.SLA.Enabled }   # "false" (a string) would be truthy
     )) {
         if ($null -ne $nullableFlag.Value -and -not ($nullableFlag.Value -is [bool])) {
             $errors.Add("$($nullableFlag.Name) must be true, false, or null.")
@@ -591,7 +592,9 @@ function Assert-ValidConfiguration {
     # A 0s timeout makes every install "time out" instantly and orphans the installer.
     foreach ($item in @(
         @{ Name='WinGet.PackageTimeoutSeconds'; Value=$Config.WinGet.PackageTimeoutSeconds },
-        @{ Name='Browsers.NativeTimeoutSeconds'; Value=$Config.Browsers.NativeTimeoutSeconds }
+        @{ Name='Browsers.NativeTimeoutSeconds'; Value=$Config.Browsers.NativeTimeoutSeconds },
+        # 0 days would delete the reports this run just wrote.
+        @{ Name='Logging.RetentionDays'; Value=$Config.Logging.RetentionDays }
     )) {
         if ($null -ne $item.Value -and [double]$item.Value -lt 1) { $errors.Add("$($item.Name) must be at least 1.") }
     }

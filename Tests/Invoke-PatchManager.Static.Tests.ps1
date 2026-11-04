@@ -2087,4 +2087,16 @@ try {
     Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-ComplianceReport') -match "Remove-OldFiles -Path \`$dest -Filter 'PatchReport_\*'") 'Central report folder must be pruned after the copy.'
 } finally { Remove-Item $centralRoot -Recurse -Force -EA SilentlyContinue; $script:HOSTNAME = $env:COMPUTERNAME }
 
+# T35: RetentionDays 0 and a string SLA.Enabled are rejected.
+foreach ($badCase in @(
+    @{ Set = { param($c) $c.Logging.RetentionDays = 0 }; Expect = 'RetentionDays must be at least 1' },
+    @{ Set = { param($c) $c.SLA.Enabled = 'false' }; Expect = 'SLA.Enabled must be true, false, or null' }
+)) {
+    $badCfg = New-TestDefaultCfg
+    & $badCase.Set $badCfg
+    $badThrew = $false
+    try { Assert-ValidConfiguration -Config $badCfg } catch { $badThrew = $_.Exception.Message -match [regex]::Escape($badCase.Expect) }
+    Assert-True $badThrew "Config validation must reject: $($badCase.Expect)."
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
