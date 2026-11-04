@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.9.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.9.2 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -117,7 +117,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.9.1'
+$script:VERSION       = '1.9.2'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null

@@ -6,6 +6,8 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-11-04
+
 ### Fixed
 
 - The software inventory now includes classic desktop apps from the registry.
