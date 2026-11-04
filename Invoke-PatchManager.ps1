@@ -7052,7 +7052,8 @@ function Invoke-SelfUpdate {
         if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
             $actualHash = (Get-FileHash -Path $tempFile -Algorithm SHA256).Hash
             if ($actualHash -ine $expectedHash.Trim()) {
-                Write-Log "Self-update: SHA256 mismatch (expected $($expectedHash.Trim()), got $actualHash); refusing to install." -Level ERROR
+                # WARN, not ERROR: a newer release that is not yet approved is not a failed run.
+                Write-Log "Self-update: SHA256 mismatch (expected $($expectedHash.Trim()), got $actualHash): newer build not approved; refusing to install." -Level WARN
                 $script:SelfUpdateStatus = 'Available (hash mismatch)'
                 return
             }

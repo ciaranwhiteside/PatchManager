@@ -2099,4 +2099,8 @@ foreach ($badCase in @(
     Assert-True $badThrew "Config validation must reject: $($badCase.Expect)."
 }
 
+# T36: a pinned-hash mismatch (newer, unapproved release) is a WARN, not a run error.
+$selfUpdateText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-SelfUpdate'
+Assert-True ($selfUpdateText -match 'SHA256 mismatch[^\r\n]*-Level WARN') 'Pinned hash mismatch must log at WARN so the run does not exit 1.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
