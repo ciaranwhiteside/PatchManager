@@ -2070,4 +2070,21 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Send-RunNotifi
     Assert-True (-not $script:posted) 'Unconfirmed KEV candidates must not trigger an OnlyOnProblems notification.'
 }
 
+# T34: central log copies prune the host's share folder with the retention window.
+foreach ($fn in 'Copy-LogsToCentral','Remove-OldFiles') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+$centralRoot = Join-Path ([IO.Path]::GetTempPath()) "pm-central-$([guid]::NewGuid())"
+try {
+    $script:HOSTNAME = 'HOST1'
+    $hostShare = New-Item -ItemType Directory -Path (Join-Path $centralRoot 'HOST1') -Force
+    $oldLog = Join-Path $hostShare.FullName 'PatchManager_20200101.log'
+    Set-Content -Path $oldLog -Value 'old'
+    (Get-Item $oldLog).LastWriteTime = (Get-Date).AddDays(-400)
+    $script:LOGFILE = Join-Path $centralRoot 'PatchManager_today.log'
+    Set-Content -Path $script:LOGFILE -Value 'new'
+    $script:CFG = [pscustomobject]@{ Logging = [pscustomobject]@{ CentralLogPath = $centralRoot; RetentionDays = 90 } }
+    Copy-LogsToCentral
+    Assert-True (-not (Test-Path $oldLog) -and (Test-Path (Join-Path $hostShare.FullName 'PatchManager_today.log'))) 'Central log folder must drop files past retention and keep the new copy.'
+    Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-ComplianceReport') -match "Remove-OldFiles -Path \`$dest -Filter 'PatchReport_\*'") 'Central report folder must be pruned after the copy.'
+} finally { Remove-Item $centralRoot -Recurse -Force -EA SilentlyContinue; $script:HOSTNAME = $env:COMPUTERNAME }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

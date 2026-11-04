@@ -896,6 +896,7 @@ function Copy-LogsToCentral {
             if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force -EA Stop | Out-Null }
             Copy-Item $script:LOGFILE -Destination $dest -Force -EA Stop
             Write-Log "Log copied to central store: $dest" -Level INFO
+            Remove-OldFiles -Path $dest -Filter 'PatchManager_*.log' -Days $script:CFG.Logging.RetentionDays
             return
         }
         catch {
@@ -6097,6 +6098,9 @@ function New-ComplianceReport {
             if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
             Get-ChildItem (Join-Path $rptDir "$base*") | Copy-Item -Destination $dest -Force -EA Stop
             Write-Log "Reports copied to central store: $dest" -Level INFO
+            # Each host prunes its own share folder with the local retention, so the
+            # share does not grow forever and fleet scans stay fast.
+            Remove-OldFiles -Path $dest -Filter 'PatchReport_*' -Days $script:CFG.Logging.RetentionDays
         } catch {
             Write-Log "Failed to copy reports to central store: $_" -Level WARN
         }
