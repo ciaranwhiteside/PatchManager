@@ -61,6 +61,28 @@ All notable changes to PatchManager are documented here. The format follows
 - The newest WinGet is chosen by numeric version and CPU architecture (ARM64).
 - Chocolatey ConfirmedVersion is read from the installed package, not assumed.
 
+### Fixed (scheduling and pre-flight)
+
+- The completion popup now times out and appears only after the run lock and
+  the BITS throttle are released; skipped attempts (lock contention, outside
+  the window) no longer show a "finished" popup.
+- Overnight maintenance windows check the weekday the window started on, and
+  a window with equal start and end hours is rejected.
+- Exit code 3010 is returned when any result row needs a reboot, using the
+  full pending-reboot check.
+- Laptops with two batteries are read correctly for AC power and charge.
+- `RequireUserIdle` measures the console session when running as SYSTEM and
+  treats the user as active when idle time cannot be known.
+- The SLA clock is kept when a newer release supersedes an unapplied one while
+  the installed version is unchanged.
+- Jitter is seeded from a SHA256 of the hostname, spreading hosts evenly.
+
+### Changed
+
+- `-InstallStartupTask` now registers a logon task for any member of the local
+  Administrators group, instead of the installing account plus a boot trigger
+  that could never fire.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
