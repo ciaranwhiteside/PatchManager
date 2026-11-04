@@ -54,6 +54,22 @@ jobs:
         shell: pwsh
         run: .\Tests\Invoke-PatchManager.Static.Tests.ps1
 
+      - name: Report usability tests (Playwright, device + fleet HTML)
+        shell: pwsh
+        run: |
+          $fixtures = Join-Path $env:RUNNER_TEMP 'usability'
+          .\Tests\Invoke-PatchManager.Static.Tests.ps1 -VisualArtifactPath $fixtures
+          # Install outside the checkout so the release package never sees node_modules.
+          $pw = Join-Path $env:RUNNER_TEMP 'playwright'
+          New-Item -ItemType Directory -Path $pw -Force | Out-Null
+          npm install --prefix $pw --no-save --no-package-lock playwright@1.48.2
+          if ($LASTEXITCODE -ne 0) { throw 'npm install playwright failed' }
+          & (Join-Path $pw 'node_modules\.bin\playwright.cmd') install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'playwright browser install failed' }
+          $env:NODE_PATH = Join-Path $pw 'node_modules'
+          node .\Tests\Report.Usability.Tests.cjs $fixtures
+          if ($LASTEXITCODE -ne 0) { throw 'Report usability tests failed' }
+
       - name: Validate example with runtime validator
         shell: powershell
         run: .\Invoke-PatchManager.ps1 -ValidateConfig -ConfigPath .\PatchManager.config.example.json

@@ -2147,4 +2147,7 @@ foreach ($fn in 'Add-SkippedUpgradeResult','Get-FilteredUpgrades') { Invoke-Expr
     Assert-True (@($script:SkippedUpgradeResults | Where-Object Status -eq 'Descoped').Count -eq 2 -and $script:SkippedUpgradeResults[0].Provider -eq 'winget') 'Descoped rows keep their status and provider.'
 }
 
+# T42: CI runs the browser usability test, not just checks that the file exists.
+Assert-True ((Get-Content (Join-Path $root '.github\workflows\ci.yml') -Raw).Contains('node .\Tests\Report.Usability.Tests.cjs')) 'CI must run Tests/Report.Usability.Tests.cjs.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
