@@ -1680,6 +1680,17 @@ function Update-StatsFromResults {
 
 #region -- WinGet Resolution ----------------------------------------------------------
 
+function Select-WinGetPackageFolder {
+    # Newest DesktopAppInstaller folder for this CPU. A string sort picked 1.9 over 1.27,
+    # and an x64-only filter found nothing on ARM64.
+    param([array]$Folders)
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    return ($Folders |
+        Where-Object { $_.Name -match "^Microsoft\.DesktopAppInstaller_([\d.]+)_${arch}__8wekyb3d8bbwe$" } |
+        Sort-Object { [version](($_.Name -split '_')[1]) } -Descending |
+        Select-Object -First 1)
+}
+
 function Resolve-WinGetPath {
     # Try PATH first (interactive sessions)
     $cmd = Get-Command 'winget' -EA SilentlyContinue
@@ -1688,11 +1699,9 @@ function Resolve-WinGetPath {
     # WindowsApps lookup for SYSTEM context (Intune/SCCM)
     $appBase = 'C:\Program Files\WindowsApps'
     if (Test-Path $appBase) {
-        $latest = Get-ChildItem -Path $appBase `
-                                -Filter 'Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe' `
-                                -EA SilentlyContinue |
-                  Sort-Object Name -Descending |
-                  Select-Object -First 1
+        $latest = Select-WinGetPackageFolder -Folders @(Get-ChildItem -Path $appBase `
+                                -Filter 'Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe' -Directory `
+                                -EA SilentlyContinue)
         if ($latest) {
             $exe = Join-Path $latest.FullName 'winget.exe'
             if (Test-Path $exe) { return $exe }

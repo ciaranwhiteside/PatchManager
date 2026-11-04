@@ -1925,4 +1925,15 @@ $storeSnap = @{
 Assert-True ((Find-StoreSnapshotPackage -Snapshot $storeSnap -Candidate ([pscustomobject]@{ Name = 'X' })).Version -eq '2.0') 'Exact name match must win over substring matches.'
 Assert-True ($scriptContent -notmatch 'Compare-VersionText') 'Compare-VersionText must be replaced by Compare-SoftwareVersion.'
 
+# T21: winget package folder is chosen by numeric version and CPU architecture.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Select-WinGetPackageFolder')
+$wingetFolders = @('Microsoft.DesktopAppInstaller_1.9.25200.0_x64__8wekyb3d8bbwe', 'Microsoft.DesktopAppInstaller_1.27.460.0_x64__8wekyb3d8bbwe', 'Microsoft.DesktopAppInstaller_1.28.1.0_arm64__8wekyb3d8bbwe', 'Microsoft.DesktopAppInstaller_1.27.460.0_neutral_~_8wekyb3d8bbwe') | ForEach-Object { [pscustomobject]@{ Name = $_ } }
+$savedArch = $env:PROCESSOR_ARCHITECTURE
+try {
+    $env:PROCESSOR_ARCHITECTURE = 'AMD64'
+    Assert-True ((Select-WinGetPackageFolder -Folders $wingetFolders).Name -like '*_1.27.460.0_x64_*') 'x64 must pick 1.27 over 1.9 (numeric sort).'
+    $env:PROCESSOR_ARCHITECTURE = 'ARM64'
+    Assert-True ((Select-WinGetPackageFolder -Folders $wingetFolders).Name -like '*_arm64_*') 'ARM64 must pick the arm64 package.'
+} finally { $env:PROCESSOR_ARCHITECTURE = $savedArch }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
