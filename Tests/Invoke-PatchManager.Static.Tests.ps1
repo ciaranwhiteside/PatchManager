@@ -1960,4 +1960,17 @@ foreach ($popupFn in 'Invoke-Main', 'Complete-EarlyRun') {
 Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-CompletionPopup') -notmatch '-TimeoutSeconds 0') 'The completion popup must time out.'
 Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun') -match "\`$Status -ne 'Skipped'") 'Skipped early runs must not show the completion popup.'
 
+# T24: the tail of an overnight window belongs to the night it started.
+$Force = [System.Management.Automation.SwitchParameter]::new($false)
+$script:CFG = [pscustomobject]@{ MaintenanceWindow = [pscustomobject]@{ Enabled = $true; StartHour = 22; EndHour = 6; AllowedDays = @('Saturday'); JitterMaxMinutes = 0 } }
+# 2026-01-10 is a Saturday.
+Assert-True (Test-MaintenanceWindow -Now ([datetime]'2026-01-11 02:00')) 'Sunday 02:00 is Saturday night and must be inside.'
+Assert-True (-not (Test-MaintenanceWindow -Now ([datetime]'2026-01-10 02:00'))) 'Saturday 02:00 is Friday night and must be outside.'
+Assert-True (Test-MaintenanceWindow -Now ([datetime]'2026-01-10 23:00')) 'Saturday 23:00 must be inside.'
+$equalCfg = New-TestDefaultCfg
+$equalCfg.MaintenanceWindow.StartHour = 3; $equalCfg.MaintenanceWindow.EndHour = 3
+$equalThrew = $false
+try { Assert-ValidConfiguration -Config $equalCfg } catch { $equalThrew = $_.Exception.Message -match 'must differ' }
+Assert-True $equalThrew 'StartHour equal to EndHour must be rejected.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

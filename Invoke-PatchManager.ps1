@@ -524,6 +524,9 @@ function Assert-ValidConfiguration {
         $hour = $Config.MaintenanceWindow.$hourKey
         if ($hour -lt 0 -or $hour -gt 23) { $errors.Add("MaintenanceWindow.$hourKey must be between 0 and 23.") }
     }
+    if ($Config.MaintenanceWindow.Enabled -and $Config.MaintenanceWindow.StartHour -eq $Config.MaintenanceWindow.EndHour) {
+        $errors.Add('MaintenanceWindow.StartHour and EndHour must differ (an equal pair is a window that never opens).')
+    }
     $validDays = @('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')
     foreach ($day in @($Config.MaintenanceWindow.AllowedDays)) {
         if ([string]$day -notin $validDays) { $errors.Add("MaintenanceWindow.AllowedDays contains invalid day '$day'.") }
@@ -1963,10 +1966,11 @@ function Test-MaintenanceWindow {
 
     $mw    = $script:CFG.MaintenanceWindow
     $now   = $Now
-    $day   = $now.DayOfWeek.ToString()
     $hour  = $now.Hour
     $start = $mw.StartHour
     $end   = $mw.EndHour
+    # After midnight an overnight window (22-6) still belongs to the night it started.
+    $day   = if ($start -gt $end -and $hour -lt $end) { $now.AddDays(-1).DayOfWeek.ToString() } else { $now.DayOfWeek.ToString() }
 
     if ($day -notin $mw.AllowedDays) {
         Write-Log "Outside maintenance window: $day not in allowed days." -Level INFO
