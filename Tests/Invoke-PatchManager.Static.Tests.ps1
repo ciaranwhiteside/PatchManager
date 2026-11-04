@@ -2058,4 +2058,16 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-Early
 }
 $script:HOSTNAME = $env:COMPUTERNAME
 
+# T33: a KEV name candidate that NVD resolved as NotAffected does not trigger an OnlyOnProblems webhook.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Send-RunNotification')
+& {
+    $script:CFG = [pscustomobject]@{ Notifications = [pscustomobject]@{ Enabled = $true; WebhookUrl = 'https://example.invalid/hook'; OnlyOnProblems = $true; TimeoutSec = 5 } }
+    $script:Stats = @{ UpdatesFailed = 0; Errors = [System.Collections.Generic.List[string]]::new(); KEVMatches = 0; SLABreaches = 0; UpdatesApplied = 0; UpdatesSkipped = 0 }
+    $script:ExitCode = 0
+    $script:posted = $false
+    function Invoke-RestMethod { $script:posted = $true }
+    Send-RunNotification -ReportInfo $null -KEVMatches @([pscustomobject]@{ CVE = 'CVE-1'; ExposureState = 'NotAffected' }) -SLABreaches @()
+    Assert-True (-not $script:posted) 'Unconfirmed KEV candidates must not trigger an OnlyOnProblems notification.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

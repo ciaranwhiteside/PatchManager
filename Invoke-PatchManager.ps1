@@ -6844,7 +6844,7 @@ function Send-RunNotification {
 
     $hasProblems = ($script:Stats.UpdatesFailed -gt 0) -or
                    ($script:Stats.Errors.Count -gt 0) -or
-                   ($KEVMatches.Count -gt 0) -or
+                   ($script:Stats.KEVMatches -gt 0) -or   # confirmed-affected only, not every name candidate
                    ($SLABreaches.Count -gt 0) -or
                    ($script:ExitCode -ne 0)
 
