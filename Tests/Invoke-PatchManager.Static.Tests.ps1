@@ -1805,4 +1805,12 @@ try {
     Assert-True ($spoofHtml -match '/EVIL/PatchReport_EVIL_' -and $spoofHtml -match '/DC01/PatchReport_DC01_') 'Fleet: each row must link to its own folder''s report.'
 } finally { Remove-Item $spoofRoot, $spoofOut -Recurse -Force -EA SilentlyContinue }
 
+# T10: CSV exports neutralise spreadsheet formulas from untrusted text.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-SafeCsvRow')
+$safeRow = [pscustomobject]@{ Name = '=HYPERLINK("http://x")'; Ver = '+1'; Count = -3; Plain = 'Chrome' } | ConvertTo-SafeCsvRow
+Assert-True ($safeRow.Name -eq '''=HYPERLINK("http://x")' -and $safeRow.Ver -eq '''+1') 'Formula-like text must be prefixed with a quote.'
+Assert-True ($safeRow.Count -eq -3 -and $safeRow.Plain -eq 'Chrome') 'Numbers and plain text must be unchanged.'
+Assert-True (($scriptContent -split 'Export-Csv').Count -eq ($scriptContent -split 'ConvertTo-SafeCsvRow \| Export-Csv').Count) 'Every device CSV export must pass through ConvertTo-SafeCsvRow.'
+Assert-True ((Get-Content (Join-Path $root 'Get-FleetReport.ps1') -Raw) -match 'ConvertTo-SafeCsvRow \| Export-Csv') 'Fleet CSV export must pass through ConvertTo-SafeCsvRow.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

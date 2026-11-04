@@ -5766,6 +5766,20 @@ function New-PatchRestorePoint {
 
 #region -- Compliance Reporting -------------------------------------------------------
 
+function ConvertTo-SafeCsvRow {
+    # Spreadsheets run cells starting with = + - @ (or tab/CR) as formulas. Package names
+    # and host-written JSON are untrusted, so prefix such text with a quote before export.
+    process {
+        $row = [ordered]@{}
+        foreach ($p in $_.PSObject.Properties) {
+            $v = $p.Value
+            if ($v -is [string] -and $v -match '^[=+\-@\t\r]') { $v = "'" + $v }
+            $row[$p.Name] = $v
+        }
+        [PSCustomObject]$row
+    }
+}
+
 function New-ComplianceReport {
     param(
         [array]$Results,
@@ -5857,7 +5871,7 @@ function New-ComplianceReport {
                 Select-Object Name, PackageId, Provider, Source, InstalledVersion, AvailableVersion,
                               ReportedVersion, ConfirmedVersion, Status, Success, RebootRequired,
                               IsKEV, Timestamp, Evidence, Remediation |
-                Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+                ConvertTo-SafeCsvRow | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
             Write-Log "CSV report: $csvPath" -Level INFO
         } catch {
             Write-Log "CSV report generation failed: $_" -Level WARN
@@ -5867,7 +5881,7 @@ function New-ComplianceReport {
                 $stalenessCsv = Join-Path $rptDir "$base.staleness.csv"
                 @($script:StalenessFindings) |
                     Select-Object Category, Item, Severity, Detail, Recommendation, Timestamp |
-                    Export-Csv -Path $stalenessCsv -NoTypeInformation -Encoding UTF8
+                    ConvertTo-SafeCsvRow | Export-Csv -Path $stalenessCsv -NoTypeInformation -Encoding UTF8
                 Write-Log "Staleness CSV: $stalenessCsv" -Level INFO
             } catch {
                 Write-Log "Staleness CSV generation failed: $_" -Level WARN
@@ -5879,7 +5893,7 @@ function New-ComplianceReport {
                 @($script:EndOfLifeFindings) |
                     Select-Object Product, Item, InstalledVersion, Cycle, Status, EolDate,
                                   DaysRemaining, LatestSupported, Severity, Detail, Recommendation, Timestamp |
-                    Export-Csv -Path $eolCsv -NoTypeInformation -Encoding UTF8
+                    ConvertTo-SafeCsvRow | Export-Csv -Path $eolCsv -NoTypeInformation -Encoding UTF8
                 Write-Log "End-of-life CSV: $eolCsv" -Level INFO
             } catch {
                 Write-Log "End-of-life CSV generation failed: $_" -Level WARN
@@ -5898,7 +5912,7 @@ function New-ComplianceReport {
                             Published = $c.Published; Description = $c.Description; Timestamp = $f.Timestamp
                         }
                     }
-                } | Export-Csv -Path $nvdCsv -NoTypeInformation -Encoding UTF8
+                } | ConvertTo-SafeCsvRow | Export-Csv -Path $nvdCsv -NoTypeInformation -Encoding UTF8
                 Write-Log "NVD vulnerabilities CSV: $nvdCsv" -Level INFO
             } catch {
                 Write-Log "NVD CSV generation failed: $_" -Level WARN

@@ -65,6 +65,20 @@ function ConvertTo-FleetHtml {
     return [System.Net.WebUtility]::HtmlEncode([string]$Value)
 }
 
+function ConvertTo-SafeCsvRow {
+    # Spreadsheets run cells starting with = + - @ (or tab/CR) as formulas. Package names
+    # and host-written JSON are untrusted, so prefix such text with a quote before export.
+    process {
+        $row = [ordered]@{}
+        foreach ($p in $_.PSObject.Properties) {
+            $v = $p.Value
+            if ($v -is [string] -and $v -match '^[=+\-@\t\r]') { $v = "'" + $v }
+            $row[$p.Name] = $v
+        }
+        [PSCustomObject]$row
+    }
+}
+
 function Get-JsonProperty {
     param($Object, [string]$Name, $Default = $null)
     if ($null -eq $Object) { return $Default }
@@ -257,7 +271,7 @@ $stamp    = Get-Date -Format 'yyyyMMdd_HHmmss'
 $csvPath  = Join-Path $OutputPath "FleetReport_$stamp.csv"
 $htmlPath = Join-Path $OutputPath "FleetReport_$stamp.html"
 
-$hostRows | Sort-Object Hostname | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+$hostRows | Sort-Object Hostname | ConvertTo-SafeCsvRow | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 
 #-- Fleet summary numbers ---------------------------------------------------
 $totalHosts    = $hostRows.Count
