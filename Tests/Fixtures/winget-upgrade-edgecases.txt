@@ -5,4 +5,12 @@ Some App With No Source Col   Vendor.SomeApp           1.0.0         2.0.0
 Short line
 Duplicate App                 Vendor.Duplicate         1.0           1.1           winget
 Duplicate App                 Vendor.Duplicate         1.0           1.1           winget
+Microsoft Visual Studio Code  Microsoft.VisualStudioC…  1.90.0        1.91.0        winget
 2 upgrades available.
+
+1 package(s) have pins that prevent upgrade. Use the 'winget pin' command to view and edit pins. Using the --include-pinned argument may show more results.
+
+The following packages have an upgrade available, but require explicit targeting for upgrade:
+Name                          Id                       Version       Available     Source
+------------------------------------------------------------------------------------------
+Discord                       Discord.Discord          1.0.9000      1.0.9200      winget

@@ -6,6 +6,119 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-04
+
+### Fixed
+
+- AppX sub-products such as `Microsoft.Edge.GameAssist` no longer match KEV
+  entries for the parent product (Edge).
+- KEV emergency and SLA breach messages are logged at WARN, so a clean run no
+  longer exits 1 and a pending reboot still returns 3010.
+- `Ring.Delays` overrides in the JSON config no longer crash every run.
+- `VendorUpdaters.ExtraCatalogue` entries without `UpdaterArgs` or
+  `VersionRegistryPaths` no longer crash the run after patching.
+- A failed JSON report write is logged instead of ending the run as FATAL 99.
+- A truncated KEV cache or a proxy/captive-portal response can no longer crash
+  runs or silently disable KEV; the cache is written atomically.
+- A corrupt patch state file is preserved as `*.corrupt-<stamp>` with a warning
+  instead of silently discarding SLA history.
+
+### Security
+
+- Elevated runs refuse a script, config or cache file that a non-administrator
+  account owns or can write (exit 2 for script/config; untrusted cache files are
+  discarded).
+- Commercial and CommercialManaged profiles refuse to run executables from
+  user-writable locations (per-user updaters, Scoop/py shims, user PATH).
+- The fleet report takes each host's identity from its share folder, so one host
+  can no longer hide itself or take over another host's row and report link.
+- Device and fleet CSV exports neutralise spreadsheet formulas.
+
+### Fixed (threat detection)
+
+- KEV name matching now matches products next to punctuation (`.NET Framework`,
+  `Visual C++`) and treats Google "Chromium <component>" entries as Google Chrome.
+- A ChromeOS CPE can no longer mark desktop Chrome as KEV-affected and trigger a
+  false emergency.
+- NVD lookups retry once after a failure (rate limits), failed lookups are no
+  longer memoised for the run, and API failures are logged at WARN.
+- KEV name matching pre-filters with one substring check per entry, cutting a
+  1500-entry x 300-package match from seconds to well under one.
+
+### Fixed (update engines)
+
+- The WinGet text parser reads only the first table: footers, pin notices and
+  the "require explicit targeting" table no longer become packages, and
+  truncated (`…`) ids are skipped.
+- Non-English winget output without the Microsoft.WinGet.Client module is now
+  a Failed discovery instead of "0 upgrades", so SLA history is kept.
+- An empty Microsoft.WinGet.Client result no longer triggers a second scan
+  with winget.exe.
+- Timeouts kill the whole process tree (no orphaned installers blocking the
+  next install); zero timeouts are rejected and browser/winget timeouts have a
+  30-second floor.
+- Dell (500) and HP (256/257) "no updates" exit codes are AlreadyCurrent, and
+  a timed-out firmware scan no longer runs apply.
+- System restore points are created through CIM, so PowerShell 7 hosts get one.
+- Store update verification no longer matches unrelated apps on empty or very
+  short name keys and prefers exact name matches.
+- The newest WinGet is chosen by numeric version and CPU architecture (ARM64).
+- Chocolatey ConfirmedVersion is read from the installed package, not assumed.
+- Chocolatey packages already updated outside choco (installed version newer
+  than the choco target) are skipped with guidance instead of failing as a
+  downgrade (MSI 1603).
+
+### Fixed (scheduling and pre-flight)
+
+- The completion popup now times out and appears only after the run lock and
+  the BITS throttle are released; skipped attempts (lock contention, outside
+  the window) no longer show a "finished" popup.
+- Overnight maintenance windows check the weekday the window started on, and
+  a window with equal start and end hours is rejected.
+- Exit code 3010 is returned when any result row needs a reboot, using the
+  full pending-reboot check.
+- Laptops with two batteries are read correctly for AC power and charge.
+- `RequireUserIdle` measures the console session when running as SYSTEM and
+  treats the user as active when idle time cannot be known.
+- The SLA clock is kept when a newer release supersedes an unapplied one while
+  the installed version is unchanged.
+- Jitter is seeded from a SHA256 of the hostname, spreading hosts evenly.
+
+### Changed
+
+- `-InstallStartupTask` now registers a logon task for any member of the local
+  Administrators group, instead of the installing account plus a boot trigger
+  that could never fire.
+
+### Fixed (reporting and configuration)
+
+- AlreadyCurrent rows are no longer counted as skipped, so a clean run is not
+  flagged "needs review".
+- Early-exit reports and notifications carry the real SLA breach count.
+- Webhook notifications under `OnlyOnProblems` fire on confirmed KEV matches
+  only, not on every name candidate.
+- Each host prunes its own folder on the central share with
+  `Logging.RetentionDays`.
+- `Logging.RetentionDays` must be at least 1, and `SLA.Enabled` must be a
+  boolean or null (a string `"false"` used to turn SLA on).
+- A pinned `SelfUpdate.ExpectedSha256` that does not match a newer release is
+  logged at WARN instead of failing every run.
+- Self-update refuses a release whose default configuration would reject the
+  current config file (checked statically; the download is never executed).
+
+### Removed
+
+- Duplicate helpers: the nested `Get-ReportProperty` (now
+  `Get-ObjectPropertyValue`), `Compare-VersionText` (now
+  `Compare-SoftwareVersion`), `Test-RebootRequired` (now `Test-PendingReboot`),
+  recomputed report counters, and the inline copies of the skipped/descoped
+  row builder. Browser helpers reuse the shared version/path helpers.
+
+### CI
+
+- The Playwright report usability test (device and fleet HTML at three widths)
+  now runs in CI.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added

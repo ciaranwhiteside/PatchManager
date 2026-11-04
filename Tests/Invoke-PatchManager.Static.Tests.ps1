@@ -299,6 +299,9 @@ Assert-True ($chrome.Source -eq 'winget') 'Sample fixture: Chrome source should 
 $edgeLines = Get-Content -Path (Join-Path $fixtureDir 'winget-upgrade-edgecases.txt')
 $edgeParse = ConvertFrom-WinGetUpgradeOutput -Lines $edgeLines -QuerySource 'winget'
 Assert-True ($edgeParse.Upgrades.Count -eq 2) "Edge fixture: expected 2 upgrades (dedupe + short-line skip), got $($edgeParse.Upgrades.Count)."
+Assert-True (-not ($edgeParse.Upgrades.PackageId -contains 'Discord.Discord')) 'Edge fixture: the explicit-targeting table after the first table must be ignored.'
+Assert-True (@($edgeParse.Upgrades | Where-Object { $_.PackageId -like '*VisualStudio*' }).Count -eq 0) 'Edge fixture: truncated ids must be skipped.'
+Assert-True (@($edgeParse.Upgrades | Where-Object { $_.Name -like '*pins*' }).Count -eq 0) 'Edge fixture: footer lines must not become packages.'
 $noSource = $edgeParse.Upgrades | Where-Object { $_.PackageId -eq 'Vendor.SomeApp' }
 Assert-True ($null -ne $noSource -and $noSource.Source -eq 'winget') 'Edge fixture: row without source column should default to the query source.'
 
@@ -502,7 +505,7 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorU
 # Regression guard: Start-Process -PassThru leaves .ExitCode $null with redirected
 # streams on PS 5.1, which made every choco upgrade look Failed and choco discovery
 # look "failed to run". Invoke-CapturedProcess must return the real exit code.
-Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+foreach ($fn in 'Invoke-CapturedProcess','Test-SafeExecutablePath','Test-IsFleetProfile','Test-TrustedPath') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-SuccessfulProcessOutput')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserUpdaterArguments')
 $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
@@ -563,7 +566,7 @@ $resolvedScope = Resolve-WinGetInstalledScope -PackageId 'Google.PlatformTools' 
 Assert-True ($resolvedScope -eq 'user') 'Scope resolution must fall back from machine to the user scope that owns the package.'
 Assert-True ($script:ScopeProbeCalls.Count -eq 2 -and $script:ScopeProbeCalls[0] -match '--scope machine' -and $script:ScopeProbeCalls[1] -match '--scope user') 'Scope resolution must probe the configured scope first and alternate scope second.'
 Remove-Item Function:\Invoke-CapturedProcess
-Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+foreach ($fn in 'Invoke-CapturedProcess','Test-SafeExecutablePath','Test-IsFleetProfile','Test-TrustedPath') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
 
 $browserProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-BrowserProvider'
 $vendorProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider'
@@ -1675,5 +1678,493 @@ if (-not [string]::IsNullOrWhiteSpace($VisualArtifactPath)) {
     & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $visualCentral -OutputPath $visualFleetOutput -StaleDays 7
     Write-Host "Visual artifacts: $VisualArtifactPath" -ForegroundColor Cyan
 }
+
+# --- Audit 2026-11 regression tests -----------------------------------------------
+
+function Protect-TestPath {
+    # Leave only the current account on a temp path, so Test-TrustedPath sees it as admin-owned.
+    param([string]$Path)
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+    $inherit = if (Test-Path -LiteralPath $Path -PathType Container) { 'ContainerInherit, ObjectInherit' } else { 'None' }
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($me, 'FullControl', $inherit, 'None', 'Allow')))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+# T1: KEV emergency / SLA breach messages must not force exit 1 (ERROR sets ExitCode).
+$kevSlaErrorLogs = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Write-Log' -and
+    $node.Extent.Text -match '(EMERGENCY:|BREACH:)' -and
+    $node.Extent.Text -match '-Level ERROR'
+}, $true))
+Assert-True ($kevSlaErrorLogs.Count -eq 0) 'KEV emergency and SLA breach logs must be WARN so a clean run does not exit 1.'
+
+# T2: Ring.Delays loaded from JSON is a PSCustomObject; the lookup must not index it.
+$jsonDelays = '{"Pilot":0,"Early":3,"Broad":10}' | ConvertFrom-Json
+Assert-True ((Get-ObjectPropertyValue $jsonDelays 'Early' 0) -eq 3) 'Ring delay lookup must work on a JSON object.'
+Assert-True ($scriptContent -notmatch '\.Ring\.Delays\[') 'Ring.Delays must not be indexed with [] (throws on PSCustomObject under StrictMode).'
+
+# T3: a schema-minimal ExtraCatalogue entry (no UpdaterArgs / VersionRegistryPaths) must not throw.
+foreach ($fn in 'Invoke-VendorUpdaterProvider','Resolve-FirstExistingPath','Get-InstalledFileVersion','Get-RegistryVersion') {
+    Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn)
+}
+& {
+    Set-StrictMode -Version Latest
+    function Get-VendorUpdaterCatalogue { ,@('{"Name":"X","PackageId":"X.X","Provider":"x","UpdaterPathCandidates":["' + ("$env:SystemRoot\System32\where.exe" -replace '\\','\\') + '"]}' | ConvertFrom-Json) }
+    function Test-IsDescoped { param($Item, [ref]$Reason) $false }
+    $script:CFG = [pscustomobject]@{ VendorUpdaters = [pscustomobject]@{ Enabled = $true } }
+    $DryRun = $true
+    $vendorRows = @(Invoke-VendorUpdaterProvider)
+    Assert-True ($vendorRows.Count -eq 1 -and $vendorRows[0].Status -eq 'Planned') 'Minimal ExtraCatalogue entry should plan, not throw.'
+}
+
+# T4: every report Set-Content in New-ComplianceReport must sit inside a try, so a full disk is not FATAL 99.
+$complianceAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-ComplianceReport' }, $true)
+$reportWrites = @($complianceAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in 'Set-Content','Export-Csv' }, $true))
+Assert-True ($reportWrites.Count -ge 2) 'Expected report writes in New-ComplianceReport.'
+foreach ($write in $reportWrites) {
+    $p = $write.Parent; $inTry = $false
+    while ($p -and $p -ne $complianceAst) { if ($p -is [System.Management.Automation.Language.TryStatementAst]) { $inTry = $true; break }; $p = $p.Parent }
+    Assert-True $inTry "Report write at line $($write.Extent.StartLineNumber) must be inside try/catch."
+}
+
+# T5: a truncated KEV cache must not throw; an HTML (proxy) response must not be cached.
+foreach ($fn in 'Get-CISAKEVData','Test-TrustedPath') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ContentAtomic')
+$kevCacheDir = Join-Path ([IO.Path]::GetTempPath()) "pm-kev-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $kevCacheDir)
+Protect-TestPath $kevCacheDir
+try {
+    & {
+        Set-StrictMode -Version Latest
+        $script:CFG = [pscustomobject]@{ CISAKEV = [pscustomobject]@{ Enabled = $true; CachePath = $kevCacheDir; CacheHours = 24; FeedUrl = 'https://example.invalid/kev.json' } }
+        Set-Content -Path (Join-Path $kevCacheDir 'cisa_kev.json') -Value '{"vulnerabilities":[{"cveID":"CVE-1' -Encoding UTF8
+        function Invoke-RestMethod { throw 'offline' }
+        Assert-True ($null -eq (Get-CISAKEVData)) 'Truncated KEV cache with no network should return null, not throw.'
+        function Invoke-RestMethod { '<html>captive portal</html>' }
+        Assert-True ($null -eq (Get-CISAKEVData)) 'HTML response should be rejected.'
+        Assert-True ((Get-Content (Join-Path $kevCacheDir 'cisa_kev.json') -Raw) -notmatch 'captive') 'HTML response must not be cached.'
+        function Invoke-RestMethod { [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID = 'CVE-2024-0001' }) } }
+        $fresh = Get-CISAKEVData
+        Assert-True (@($fresh.vulnerabilities).Count -eq 1) 'Valid feed should be returned.'
+        $cachedKev = Get-Content (Join-Path $kevCacheDir 'cisa_kev.json') -Raw | ConvertFrom-Json
+        Assert-True ($cachedKev.vulnerabilities[0].cveID -eq 'CVE-2024-0001') 'Valid feed should be cached.'
+    }
+} finally { Remove-Item $kevCacheDir -Recurse -Force -EA SilentlyContinue }
+
+# T6: a corrupt state file is preserved as .corrupt-* before a fresh state is returned.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchState')
+$stateDir = Join-Path ([IO.Path]::GetTempPath()) "pm-state-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $stateDir)
+try {
+    $script:CFG = [pscustomobject]@{ State = [pscustomobject]@{ StatePath = $stateDir; StateFile = 'state.json' } }
+    Set-Content -Path (Join-Path $stateDir 'state.json') -Value '{"TrackedUpdates":[{"Pack' -Encoding UTF8
+    $freshState = Get-PatchState
+    Assert-True (@($freshState.TrackedUpdates).Count -eq 0) 'Corrupt state should yield a fresh state.'
+    Assert-True (@(Get-ChildItem $stateDir -Filter 'state.json.corrupt-*').Count -eq 1) 'Corrupt state file should be preserved.'
+} finally { Remove-Item $stateDir -Recurse -Force -EA SilentlyContinue }
+
+# T7: files a standard user can write are not trusted by an elevated run.
+$trustFile = Join-Path ([IO.Path]::GetTempPath()) "pm-trust-$([guid]::NewGuid()).json"
+Set-Content -Path $trustFile -Value '{}' -Encoding UTF8
+try {
+    Protect-TestPath $trustFile
+    Assert-True (Test-TrustedPath $trustFile) 'A file owned and writable only by the running account should be trusted.'
+    & icacls.exe $trustFile /grant '*S-1-5-32-545:(W)' | Out-Null
+    Assert-True (-not (Test-TrustedPath $trustFile)) 'A file BUILTIN\Users can write must not be trusted.'
+    Assert-True (-not (Test-TrustedPath (Join-Path $trustFile 'missing'))) 'An unreadable path must not be trusted.'
+} finally { Remove-Item $trustFile -Force -EA SilentlyContinue }
+
+# T8: fleet profiles refuse executables in user-writable folders; Personal keeps per-user tools.
+$script:CFG = [pscustomobject]@{ ScopeProfile = 'Commercial' }
+Assert-True (Test-SafeExecutablePath "$env:SystemRoot\System32\cmd.exe") 'System32 binaries are safe.'
+Assert-True (-not (Test-SafeExecutablePath (Join-Path $env:LOCALAPPDATA 'Google\Update\GoogleUpdate.exe'))) 'Per-user updater must be refused in fleet profiles.'
+Assert-True (-not (Test-SafeExecutablePath (Join-Path $env:USERPROFILE 'scoop\shims\scoop.cmd'))) 'Scoop shim must be refused in fleet profiles.'
+$refused = Invoke-CapturedProcess -FilePath (Join-Path $env:USERPROFILE 'evil.exe') -TimeoutSeconds 5
+Assert-True ($null -eq $refused.ExitCode -and $refused.Output -match '^Refused') 'Invoke-CapturedProcess must refuse user-writable executables in fleet profiles.'
+$script:CFG = [pscustomobject]@{ ScopeProfile = 'Personal' }
+Assert-True (Test-SafeExecutablePath (Join-Path $env:LOCALAPPDATA 'Google\Update\GoogleUpdate.exe')) 'Personal profile keeps per-user tools.'
+
+# T9: fleet identity comes from the share folder, not host-written JSON.
+$spoofRoot = Join-Path ([IO.Path]::GetTempPath()) "pm-fleet-spoof-$([guid]::NewGuid())"
+$spoofOut = "$spoofRoot-out"
+$fixtureJson = Get-Content (Get-ChildItem (Join-Path $PSScriptRoot 'Fixtures\FleetCentral\TEST-HOST') -Filter '*.json' | Select-Object -First 1).FullName -Raw
+try {
+    foreach ($spoofHost in 'DC01','EVIL') {
+        $dir = New-Item -ItemType Directory -Path (Join-Path $spoofRoot $spoofHost) -Force
+        $json = Join-Path $dir.FullName "PatchReport_${spoofHost}_20260101_000000_000.json"
+        Set-Content -Path $json -Value ($fixtureJson -replace '"TEST-HOST"', '"DC01"') -Encoding UTF8
+        Set-Content -Path ([IO.Path]::ChangeExtension($json, '.html')) -Value "<title>$spoofHost</title>" -Encoding UTF8
+    }
+    & (Join-Path $root 'Get-FleetReport.ps1') -CentralReportPath $spoofRoot -OutputPath $spoofOut -StaleDays 9999 | Out-Null
+    $spoofRows = @(Import-Csv (Get-ChildItem $spoofOut -Filter 'FleetReport_*.csv' | Select-Object -First 1).FullName)
+    Assert-True ((@($spoofRows.Hostname) -join ',') -eq 'DC01,EVIL') 'Fleet: each share folder must produce its own row.'
+    Assert-True (($spoofRows | Where-Object Hostname -eq 'EVIL').Note -match "claims hostname 'DC01'") 'Fleet: a hostname mismatch must be noted.'
+    $spoofHtml = Get-Content (Get-ChildItem $spoofOut -Filter 'FleetReport_*.html' | Select-Object -First 1).FullName -Raw
+    Assert-True ($spoofHtml -match '/EVIL/PatchReport_EVIL_' -and $spoofHtml -match '/DC01/PatchReport_DC01_') 'Fleet: each row must link to its own folder''s report.'
+} finally { Remove-Item $spoofRoot, $spoofOut -Recurse -Force -EA SilentlyContinue }
+
+# T10: CSV exports neutralise spreadsheet formulas from untrusted text.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'ConvertTo-SafeCsvRow')
+$safeRow = [pscustomobject]@{ Name = '=HYPERLINK("http://x")'; Ver = '+1'; Count = -3; Plain = 'Chrome' } | ConvertTo-SafeCsvRow
+Assert-True ($safeRow.Name -eq '''=HYPERLINK("http://x")' -and $safeRow.Ver -eq '''+1') 'Formula-like text must be prefixed with a quote.'
+Assert-True ($safeRow.Count -eq -3 -and $safeRow.Plain -eq 'Chrome') 'Numbers and plain text must be unchanged.'
+Assert-True (($scriptContent -split 'Export-Csv').Count -eq ($scriptContent -split 'ConvertTo-SafeCsvRow \| Export-Csv').Count) 'Every device CSV export must pass through ConvertTo-SafeCsvRow.'
+Assert-True ((Get-Content (Join-Path $root 'Get-FleetReport.ps1') -Raw) -match 'ConvertTo-SafeCsvRow \| Export-Csv') 'Fleet CSV export must pass through ConvertTo-SafeCsvRow.'
+
+# T11: whole-word match works next to '.'/'+', and Chromium KEV entries reach Google Chrome.
+Assert-True (Test-WordMatch 'Microsoft .NET Framework 4.8' '.NET Framework') '.NET Framework must match.'
+Assert-True (Test-WordMatch 'Microsoft Visual C++ 2015 Redistributable' 'Visual C++') 'Visual C++ must match.'
+Assert-True (-not (Test-WordMatch 'Snapple' 'Apple')) 'Whole-word matching must still reject substrings.'
+$chromiumKev = [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID = 'CVE-2025-0001'; vendorProject = 'Google'; product = 'Chromium V8'; vulnerabilityName = 'V8 type confusion'; dateAdded = '2025-01-01'; dueDate = '2025-01-22' }) }
+$chromePkg = [pscustomobject]@{ Name = 'Google Chrome'; PackageId = 'Google.Chrome'; Version = '120.0.1'; Source = 'winget' }
+$chromiumHits = @(Find-KEVCandidates -Packages @($chromePkg) -KEVData $chromiumKev)
+Assert-True ($chromiumHits.Count -eq 1 -and $chromiumHits[0].Product -eq 'Chrome') 'A Chromium KEV entry must become a Google Chrome candidate.'
+$edgeKev = [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID = 'CVE-2016-7200'; vendorProject = 'Microsoft'; product = 'Edge'; vulnerabilityName = 'Edge memory corruption'; dateAdded = '2022-03-28'; dueDate = '2022-04-18' }) }
+$gameAssist = [pscustomobject]@{ Name = 'Microsoft.Edge.GameAssist'; Version = '1.0.4019.0'; Source = 'inventory' }
+Assert-True (@(Find-KEVCandidates -Packages @($gameAssist) -KEVData $edgeKev).Count -eq 0) 'An AppX sub-product (Microsoft.Edge.GameAssist) must not match the Edge KEV product.'
+$edgePkgs = @([pscustomobject]@{ Name = 'Microsoft Edge'; Version = '130.0'; Source = 'inventory' }, [pscustomobject]@{ Name = 'Edge Stable'; PackageId = 'Microsoft.Edge'; Version = '130.0'; Source = 'winget' })
+Assert-True (@(Find-KEVCandidates -Packages $edgePkgs -KEVData $edgeKev).Count -eq 2) 'Real Edge display names and package ids must still match.'
+
+# T12: an OS CPE (chrome_os) must not align with desktop Chrome; app qualifiers still do.
+Assert-True (-not (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:o:google:chrome_os:*:*:*:*:*:*:*:*') 'Google' 'Chrome')) 'A ChromeOS CPE must not align with a Chrome KEV entry.'
+Assert-True (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:a:microsoft:edge_chromium:*:*:*:*:*:*:*:*') 'Microsoft' 'Edge') 'Application qualifiers (edge_chromium) still align.'
+
+# T13: a failed NVD fetch is retried once and never memoised.
+foreach ($fn in 'Invoke-NVDPacedRequest','Get-NVDCpeMatches') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+& {
+    $nvdCfg = [pscustomobject]@{ Enabled = $true; RequestDelayMs = 0; CachePath = (Join-Path ([IO.Path]::GetTempPath()) "pm-nvd-$([guid]::NewGuid())"); MaxLookupsPerRun = 5 }
+    $script:NVDLastRequest = [datetime]::MinValue
+    $script:nvdCalls = 0
+    function Get-CachedApiJson { $script:nvdCalls++; if ($script:nvdCalls -eq 1) { $null } else { [pscustomobject]@{ ok = $true } } }
+    $nvdReq = Invoke-NVDPacedRequest -NvdCfg $nvdCfg -Endpoint 'cves' -PublicBaseUrl 'https://example.invalid/cves' -Query 'cveId=CVE-1' -CacheKey 'nvd_CVE-1'
+    Assert-True ($script:nvdCalls -eq 2 -and $nvdReq.Data.ok) 'A failed NVD fetch should be retried once.'
+
+    $script:CFG = [pscustomobject]@{ NVD = $nvdCfg }
+    $script:NVDMemo = @{}; $script:NVDLookupCount = 0
+    function Invoke-NVDPacedRequest { [pscustomobject]@{ Data = $null; Fetched = $true } }
+    [void](Get-NVDCpeMatches -CveId 'CVE-2')
+    Assert-True (-not $script:NVDMemo.ContainsKey('CVE-2')) 'A failed NVD lookup must not be memoised.'
+}
+
+# T15: localised winget output (unrecognised header) is a Failed discovery, never "0 upgrades".
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-WinGetUpgrades')
+& {
+    function Get-WinGetUpgradesViaModule { $null }
+    $script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ IncludeMSStore = $false } }
+    $script:SourceCheckResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $deLines = Get-Content -Path (Join-Path $PSScriptRoot 'Fixtures\winget-upgrade-de.txt') -Encoding UTF8
+    $script:WINGET = { $global:LASTEXITCODE = 0; $deLines }.GetNewClosure()
+    $deUpgrades = @(Get-WinGetUpgrades)
+    Assert-True ($deUpgrades.Count -eq 0) 'German output parses no rows.'
+    Assert-True ($script:SourceCheckResults[0].Status -eq 'Failed') 'Unrecognised winget table must mark discovery Failed so SLA state is kept.'
+}
+
+# T16: an empty module result is @(), not $null, so winget.exe is not re-run.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-WinGetUpgradesViaModule')
+& {
+    function Get-Module { [pscustomobject]@{ Name = 'Microsoft.WinGet.Client' } }
+    function Import-Module { }
+    function Get-WinGetPackage { }
+    $script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ IncludeMSStore = $false } }
+    $script:SourceCheckResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $moduleResult = Get-WinGetUpgradesViaModule
+    Assert-True ($null -ne $moduleResult -and @($moduleResult).Count -eq 0) 'Empty module discovery must return an empty array, not $null.'
+}
+
+# T17: a timeout kills the whole process tree; zero timeouts are rejected.
+$script:CFG = $null
+$treeRun = Invoke-CapturedProcess -FilePath "$env:SystemRoot\System32\cmd.exe" -Arguments @('/c', 'ping -n 37 127.0.0.37 >nul') -TimeoutSeconds 2
+Start-Sleep -Milliseconds 500
+$orphans = @(Get-CimInstance Win32_Process -Filter "Name = 'PING.EXE'" | Where-Object { $_.CommandLine -match '127\.0\.0\.37' })
+Assert-True ($treeRun.TimedOut -and $orphans.Count -eq 0) 'Timed-out child processes (grandchildren) must be killed too.'
+$zeroCfg = New-TestDefaultCfg
+$zeroCfg.WinGet.PackageTimeoutSeconds = 0
+$zeroThrew = $false
+try { Assert-ValidConfiguration -Config $zeroCfg } catch { $zeroThrew = $_.Exception.Message -match 'PackageTimeoutSeconds must be at least 1' }
+Assert-True $zeroThrew 'WinGet.PackageTimeoutSeconds = 0 must be rejected.'
+
+# T18: OEM "no updates" exit codes are AlreadyCurrent; a timed-out scan skips apply.
+foreach ($fn in 'Invoke-FirmwareProvider','Get-FirmwareCatalogue') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+& {
+    $DryRun = $false
+    $script:CFG = [pscustomobject]@{ Firmware = [pscustomobject]@{ Enabled = $true } }
+    function Get-CimInstance { [pscustomobject]@{ Manufacturer = 'Dell Inc.' } }
+    function Test-OnACPower { $true }
+    function Resolve-FirstExistingPath { 'C:\fake\dcu-cli.exe' }
+    $script:fwCalls = @()
+    function Invoke-CapturedProcess { param($FilePath, $Arguments, $TimeoutSeconds) $script:fwCalls += ,$Arguments; [pscustomobject]@{ ExitCode = 500; TimedOut = $false; Output = 'No updates' } }
+    $fwRow = @(Invoke-FirmwareProvider)[0]
+    Assert-True ($fwRow.Status -eq 'AlreadyCurrent' -and $fwRow.Success -and $script:fwCalls.Count -eq 1) 'Dell exit 500 on scan must be AlreadyCurrent without running apply.'
+    $script:fwCalls = @()
+    function Invoke-CapturedProcess { param($FilePath, $Arguments, $TimeoutSeconds) $script:fwCalls += ,$Arguments; [pscustomobject]@{ ExitCode = $null; TimedOut = $true; Output = '' } }
+    $fwRow = @(Invoke-FirmwareProvider)[0]
+    Assert-True ($fwRow.Status -eq 'Failed' -and $script:fwCalls.Count -eq 1) 'A timed-out firmware scan must not be followed by apply.'
+}
+
+# T19: restore points use CIM (works on PowerShell 5.1 and 7), not 5.1-only cmdlets.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchRestorePoint')
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchRestorePoint') -notmatch 'Checkpoint-Computer|Enable-ComputerRestore') 'Restore point must not depend on Windows PowerShell-only cmdlets.'
+& {
+    $DryRun = $false
+    $script:CFG = [pscustomobject]@{ SystemRestore = [pscustomobject]@{ Enabled = $true; Description = 'test' } }
+    $script:cimCalls = @()
+    function Invoke-CimMethod { param($Namespace, $ClassName, $MethodName, $Arguments) $script:cimCalls += $MethodName; [pscustomobject]@{ ReturnValue = 0 } }
+    New-PatchRestorePoint
+    Assert-True ($script:cimCalls -contains 'CreateRestorePoint') 'New-PatchRestorePoint must call SystemRestore.CreateRestorePoint.'
+}
+
+# T20: Store matching ignores empty/short keys and prefers exact names.
+foreach ($fn in 'ConvertTo-StoreMatchKey','Test-StoreKeyMatch','Find-StoreSnapshotPackage') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+Assert-True (-not (Test-StoreKeyMatch 'Microsoft.WindowsCalculator_8wekyb3d8bbwe' ([string][char]0x5FAE + [char]0x4FE1))) 'An empty (CJK) key must not match.'
+Assert-True (-not (Test-StoreKeyMatch 'Microsoft.Photos_2024.1_x64__8wekyb3d8bbwe' 'X')) 'A 1-character key must not substring-match x64.'
+Assert-True (Test-StoreKeyMatch 'Microsoft.WindowsCalculator' 'Windows Calculator') 'A real name still substring-matches.'
+$storeSnap = @{
+    a = [pscustomobject]@{ Name = 'Microsoft.XboxApp'; PackageFamilyName = 'Microsoft.XboxApp_8wekyb3d8bbwe'; PackageFullName = 'Microsoft.XboxApp_1.0_x64__8wekyb3d8bbwe'; Version = '1.0' }
+    b = [pscustomobject]@{ Name = 'X'; PackageFamilyName = 'X_abc'; PackageFullName = 'X_2.0_x64__abc'; Version = '2.0' }
+}
+Assert-True ((Find-StoreSnapshotPackage -Snapshot $storeSnap -Candidate ([pscustomobject]@{ Name = 'X' })).Version -eq '2.0') 'Exact name match must win over substring matches.'
+Assert-True ($scriptContent -notmatch 'Compare-VersionText') 'Compare-VersionText must be replaced by Compare-SoftwareVersion.'
+
+# T21: winget package folder is chosen by numeric version and CPU architecture.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Select-WinGetPackageFolder')
+$wingetFolders = @('Microsoft.DesktopAppInstaller_1.9.25200.0_x64__8wekyb3d8bbwe', 'Microsoft.DesktopAppInstaller_1.27.460.0_x64__8wekyb3d8bbwe', 'Microsoft.DesktopAppInstaller_1.28.1.0_arm64__8wekyb3d8bbwe', 'Microsoft.DesktopAppInstaller_1.27.460.0_neutral_~_8wekyb3d8bbwe') | ForEach-Object { [pscustomobject]@{ Name = $_ } }
+$savedArch = $env:PROCESSOR_ARCHITECTURE
+try {
+    $env:PROCESSOR_ARCHITECTURE = 'AMD64'
+    Assert-True ((Select-WinGetPackageFolder -Folders $wingetFolders).Name -like '*_1.27.460.0_x64_*') 'x64 must pick 1.27 over 1.9 (numeric sort).'
+    $env:PROCESSOR_ARCHITECTURE = 'ARM64'
+    Assert-True ((Select-WinGetPackageFolder -Folders $wingetFolders).Name -like '*_arm64_*') 'ARM64 must pick the arm64 package.'
+} finally { $env:PROCESSOR_ARCHITECTURE = $savedArch }
+
+# T22: Chocolatey ConfirmedVersion comes from the installed nuspec, not the requested target.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ChocoInstalledVersion')
+$chocoRoot = Join-Path ([IO.Path]::GetTempPath()) "pm-choco-$([guid]::NewGuid())"
+try {
+    [void](New-Item -ItemType Directory -Path (Join-Path $chocoRoot 'bin'), (Join-Path $chocoRoot 'lib\git') -Force)
+    Set-Content -Path (Join-Path $chocoRoot 'lib\git\git.nuspec') -Value '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"><metadata><id>git</id><version>2.47.1</version></metadata></package>' -Encoding UTF8
+    Assert-True ((Get-ChocoInstalledVersion -ChocoPath (Join-Path $chocoRoot 'bin\choco.exe') -PackageId 'git') -eq '2.47.1') 'Installed choco version must be read from the nuspec.'
+    Assert-True ((Get-ChocoInstalledVersion -ChocoPath (Join-Path $chocoRoot 'bin\choco.exe') -PackageId 'missing') -eq '') 'Unknown package must give an empty confirmed version.'
+} finally { Remove-Item $chocoRoot -Recurse -Force -EA SilentlyContinue }
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-ChocolateyProvider') -notmatch 'ConfirmedVersion \$pkg\.Available') 'Chocolatey must not claim the target version as confirmed.'
+
+# Live run 2026-11-04: LibreOffice updated outside choco made choco attempt a downgrade (MSI 1603).
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ChocoNewerInstalledVersion')
+$lo = @([pscustomobject]@{ Name = 'LibreOffice 26.8.2.2'; Version = '26.8.2.2' }, [pscustomobject]@{ Name = 'Google Chrome'; Version = '130.0' })
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'libreoffice-fresh' -Available '26.2.6' -Inventory $lo) -eq '26.8.2.2') 'A newer version installed outside choco must be detected.'
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'libreoffice-fresh' -Available '26.9.0' -Inventory $lo) -eq '') 'An older installed version must still be upgraded.'
+$twoGits = @([pscustomobject]@{ Name = 'Git'; Version = '9.0' }, [pscustomobject]@{ Name = 'Git Extensions'; Version = '9.0' })
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'gitkraken' -Available '1.0' -Inventory $twoGits) -eq '') 'No whole-word match must not skip.'
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'nodejs' -Available '1.0' -Inventory @()) -eq '') 'Empty inventory must not skip.'
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'vlc' -Available '1.0' -Inventory @([pscustomobject]@{ Name = 'VLC media player'; Version = '9.0' })) -eq '') 'Ids shorter than 4 characters are too generic to match.'
+$twoLo = @([pscustomobject]@{ Name = 'LibreOffice 26.8'; Version = '26.8' }, [pscustomobject]@{ Name = 'LibreOffice Help Pack'; Version = '26.8' })
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'libreoffice-fresh' -Available '26.2.6' -Inventory $twoLo) -eq '') 'Ambiguous matches must not skip.'
+
+# T23: the lock and BITS throttle are released before any popup; popups time out; skipped attempts show none.
+foreach ($popupFn in 'Invoke-Main', 'Complete-EarlyRun') {
+    $popupAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $popupFn }, $true)
+    $popupCalls = @($popupAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in 'Show-CompletionPopup','Exit-SingleInstance','Restore-BITSThrottle' }, $true))
+    $firstPopup = ($popupCalls | Where-Object { $_.GetCommandName() -eq 'Show-CompletionPopup' } | Select-Object -First 1).Extent.StartOffset
+    foreach ($release in 'Exit-SingleInstance','Restore-BITSThrottle') {
+        $releaseAt = ($popupCalls | Where-Object { $_.GetCommandName() -eq $release } | Select-Object -First 1).Extent.StartOffset
+        Assert-True ($null -ne $releaseAt -and $releaseAt -lt $firstPopup) "${popupFn}: $release must run before Show-CompletionPopup."
+    }
+}
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-CompletionPopup') -notmatch '-TimeoutSeconds 0') 'The completion popup must time out.'
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun') -match "\`$Status -ne 'Skipped'") 'Skipped early runs must not show the completion popup.'
+
+# T24: the tail of an overnight window belongs to the night it started.
+$Force = [System.Management.Automation.SwitchParameter]::new($false)
+$script:CFG = [pscustomobject]@{ MaintenanceWindow = [pscustomobject]@{ Enabled = $true; StartHour = 22; EndHour = 6; AllowedDays = @('Saturday'); JitterMaxMinutes = 0 } }
+# 2026-01-10 is a Saturday.
+Assert-True (Test-MaintenanceWindow -Now ([datetime]'2026-01-11 02:00')) 'Sunday 02:00 is Saturday night and must be inside.'
+Assert-True (-not (Test-MaintenanceWindow -Now ([datetime]'2026-01-10 02:00'))) 'Saturday 02:00 is Friday night and must be outside.'
+Assert-True (Test-MaintenanceWindow -Now ([datetime]'2026-01-10 23:00')) 'Saturday 23:00 must be inside.'
+$equalCfg = New-TestDefaultCfg
+$equalCfg.MaintenanceWindow.StartHour = 3; $equalCfg.MaintenanceWindow.EndHour = 3
+$equalThrew = $false
+try { Assert-ValidConfiguration -Config $equalCfg } catch { $equalThrew = $_.Exception.Message -match 'must differ' }
+Assert-True $equalThrew 'StartHour equal to EndHour must be rejected.'
+
+# T25: exit 3010 uses per-row reboot flags plus Test-PendingReboot; the narrower duplicate is gone.
+$mainText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Main'
+Assert-True ($scriptContent -notmatch 'function Test-RebootRequired') 'Test-RebootRequired duplicate must be removed.'
+Assert-True ($mainText -match 'rowNeedsReboot' -and $mainText -match 'Test-PendingReboot\)\)\)') 'Exit 3010 must consider row RebootRequired and Test-PendingReboot.'
+
+# T26: two batteries on AC power count as on AC.
+$preflightText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-PreFlightChecks'
+$batteryLines = ($preflightText -split "`n" | Where-Object { $_ -match '^\s*\$(pct|onAC)\s*=' }) -join "`n"
+$battery = @([pscustomobject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 80 }, [pscustomobject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 15 })
+Invoke-Expression $batteryLines
+Assert-True ($onAC -eq $true -and $pct -eq 15) 'Two charging batteries must read as on AC with the lowest charge.'
+
+# T27: idle detection compiles, measures the console session for SYSTEM, and fails closed.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-UserIdleMinutes')
+$idleNow = Get-UserIdleMinutes
+Assert-True ($idleNow -is [double] -or $idleNow -is [int] -or $idleNow -is [long]) 'Idle minutes must be a number.'
+$consoleIdle = [PatchManagerIdle]::GetConsoleIdleMilliseconds()
+Assert-True ($consoleIdle -ge -2) 'Console idle query must return a value without throwing.'
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-UserIdleMinutes') -match 'catch \{\s*return 0') 'An idle-check failure must treat the user as active.'
+
+# T28: a superseding release keeps the SLA clock while the installed version is unchanged.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Save-PatchState')
+$slaDir = Join-Path ([IO.Path]::GetTempPath()) "pm-sla-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $slaDir)
+try {
+    $script:CFG = [pscustomobject]@{ State = [pscustomobject]@{ StatePath = $slaDir; StateFile = 'state.json' }; SLA = [pscustomobject]@{ Critical = 14 }; Logging = [pscustomobject]@{ RetentionDays = 90 } }
+    $script:RING = 'Broad'
+    $slaState = [pscustomobject]@{ TrackedUpdates = @() }
+    $slaState = Save-PatchState -State $slaState -AvailableUpgrades @([pscustomobject]@{ PackageId = 'Google.Chrome'; Name = 'Chrome'; Version = '129.0'; Available = '130.0' })
+    $slaState.TrackedUpdates[0].FirstSeenAvailable = '2026-01-01'; $slaState.TrackedUpdates[0].SLADue = '2026-01-15'
+    $slaState = Save-PatchState -State $slaState -AvailableUpgrades @([pscustomobject]@{ PackageId = 'Google.Chrome'; Name = 'Chrome'; Version = '129.0'; Available = '131.0' })
+    $row131 = $slaState.TrackedUpdates | Where-Object { $_.VersionAvailable -eq '131.0' }
+    Assert-True ($row131.FirstSeenAvailable -eq '2026-01-01' -and $row131.SLADue -eq '2026-01-15') 'A superseding release must keep the original SLA clock.'
+    $slaState = Save-PatchState -State $slaState -AvailableUpgrades @([pscustomobject]@{ PackageId = 'Google.Chrome'; Name = 'Chrome'; Version = '131.0'; Available = '132.0' })
+    $row132 = $slaState.TrackedUpdates | Where-Object { $_.VersionAvailable -eq '132.0' }
+    Assert-True ($row132.FirstSeenAvailable -eq (Get-Date -Format 'yyyy-MM-dd')) 'After the installed version moves, the next release starts a fresh clock.'
+} finally { Remove-Item $slaDir -Recurse -Force -EA SilentlyContinue }
+
+# T29: hostname-seeded jitter spreads hosts and separates anagrams.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Start-JitteredDelay')
+& {
+    $DryRun = $true
+    $script:CFG = [pscustomobject]@{ MaintenanceWindow = [pscustomobject]@{ JitterMaxMinutes = 120 } }
+    $script:jitterSlots = @{}
+    function Write-Log { param($Message, $Level) if ($Message -match 'Jitter delay: (\d+) min') { $script:jitterSlots[$script:HOSTNAME] = [int]$Matches[1] } }
+    foreach ($n in 1..300) { $script:HOSTNAME = 'WS{0:D3}' -f $n; $script:jitterSlots[$script:HOSTNAME] = 0; Start-JitteredDelay -Ring 'Broad' }
+    $distinctSlots = @($script:jitterSlots.Values | Sort-Object -Unique).Count
+    Assert-True ($distinctSlots -ge 90) "Jitter must spread 300 hosts over many slots (got $distinctSlots)."
+    foreach ($n in 'PC-012','PC-021') { $script:HOSTNAME = $n; Start-JitteredDelay -Ring 'Broad' }
+    Assert-True ($script:jitterSlots['PC-012'] -ne $script:jitterSlots['PC-021']) 'Anagram hostnames must not share a jitter slot.'
+}
+$script:HOSTNAME = $env:COMPUTERNAME
+
+# T30: the startup task is an Administrators-group logon task with no dead boot trigger.
+$taskText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Install-PatchManagerStartupTask'
+Assert-True ($taskText -notmatch '-AtStartup' -and $taskText -notmatch 'AtLogOn -User') 'Task must not use a boot trigger or a single-user logon trigger.'
+Assert-True ($taskText -match "-GroupId 'S-1-5-32-544'") 'Task principal must be the Administrators group.'
+
+# T31: AlreadyCurrent rows are not "skipped" work.
+$script:Stats = @{ Errors = [System.Collections.Generic.List[string]]::new() }
+Update-StatsFromResults -Results @((New-PatchResult -Name 'Windows Update' -PackageId 'WU' -Provider 'windows-update' -Source 'wu' -Status 'AlreadyCurrent' -Success $true))
+Assert-True ($script:Stats.UpdatesSkipped -eq 0) 'AlreadyCurrent must not count as skipped.'
+
+# T32: early-run reports and notifications carry the SLA breach count.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun')
+& {
+    $script:CFG = [pscustomobject]@{ SLA = [pscustomobject]@{ Enabled = $true } }
+    $script:Stats = @{ Errors = [System.Collections.Generic.List[string]]::new(); SLABreaches = 0 }
+    $script:STARTTIME = Get-Date
+    $script:HOSTNAME = 'TEST'
+    function Get-PatchState { [pscustomobject]@{ TrackedUpdates = @() } }
+    function Get-PatchMetrics { $null }
+    function Get-SLABreaches { @([pscustomobject]@{ PackageName = 'A' }, [pscustomobject]@{ PackageName = 'B' }) }
+    function New-ComplianceReport { $script:reportSla = $script:Stats.SLABreaches; $null }
+    function Copy-LogsToCentral { }
+    function Write-RunEvent { }
+    function Send-RunNotification { param($ReportInfo, $SLABreaches) $script:notifiedSla = @($SLABreaches).Count }
+    function Restore-BITSThrottle { }
+    function Exit-SingleInstance { }
+    function Show-CompletionPopup { }
+    Complete-EarlyRun -Name 'Maintenance-window deferral' -Status 'Skipped' -Evidence 'test'
+    Assert-True ($script:reportSla -eq 2 -and $script:notifiedSla -eq 2) 'Early runs must report and notify SLA breaches.'
+}
+$script:HOSTNAME = $env:COMPUTERNAME
+
+# T33: a KEV name candidate that NVD resolved as NotAffected does not trigger an OnlyOnProblems webhook.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Send-RunNotification')
+& {
+    $script:CFG = [pscustomobject]@{ Notifications = [pscustomobject]@{ Enabled = $true; WebhookUrl = 'https://example.invalid/hook'; OnlyOnProblems = $true; TimeoutSec = 5 } }
+    $script:Stats = @{ UpdatesFailed = 0; Errors = [System.Collections.Generic.List[string]]::new(); KEVMatches = 0; SLABreaches = 0; UpdatesApplied = 0; UpdatesSkipped = 0 }
+    $script:ExitCode = 0
+    $script:posted = $false
+    function Invoke-RestMethod { $script:posted = $true }
+    Send-RunNotification -ReportInfo $null -SLABreaches @()   # KEV name candidates exist but Stats.KEVMatches (confirmed) is 0
+    Assert-True (-not $script:posted) 'Unconfirmed KEV candidates must not trigger an OnlyOnProblems notification.'
+}
+
+# T34: central log copies prune the host's share folder with the retention window.
+foreach ($fn in 'Copy-LogsToCentral','Remove-OldFiles') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+$centralRoot = Join-Path ([IO.Path]::GetTempPath()) "pm-central-$([guid]::NewGuid())"
+try {
+    $script:HOSTNAME = 'HOST1'
+    $hostShare = New-Item -ItemType Directory -Path (Join-Path $centralRoot 'HOST1') -Force
+    $oldLog = Join-Path $hostShare.FullName 'PatchManager_20200101.log'
+    Set-Content -Path $oldLog -Value 'old'
+    (Get-Item $oldLog).LastWriteTime = (Get-Date).AddDays(-400)
+    $script:LOGFILE = Join-Path $centralRoot 'PatchManager_today.log'
+    Set-Content -Path $script:LOGFILE -Value 'new'
+    $script:CFG = [pscustomobject]@{ Logging = [pscustomobject]@{ CentralLogPath = $centralRoot; RetentionDays = 90 } }
+    Copy-LogsToCentral
+    Assert-True (-not (Test-Path $oldLog) -and (Test-Path (Join-Path $hostShare.FullName 'PatchManager_today.log'))) 'Central log folder must drop files past retention and keep the new copy.'
+    Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-ComplianceReport') -match "Remove-OldFiles -Path \`$dest -Filter 'PatchReport_\*'") 'Central report folder must be pruned after the copy.'
+} finally { Remove-Item $centralRoot -Recurse -Force -EA SilentlyContinue; $script:HOSTNAME = $env:COMPUTERNAME }
+
+# T35: RetentionDays 0 and a string SLA.Enabled are rejected.
+foreach ($badCase in @(
+    @{ Set = { param($c) $c.Logging.RetentionDays = 0 }; Expect = 'RetentionDays must be at least 1' },
+    @{ Set = { param($c) $c.SLA.Enabled = 'false' }; Expect = 'SLA.Enabled must be true, false, or null' }
+)) {
+    $badCfg = New-TestDefaultCfg
+    & $badCase.Set $badCfg
+    $badThrew = $false
+    try { Assert-ValidConfiguration -Config $badCfg } catch { $badThrew = $_.Exception.Message -match [regex]::Escape($badCase.Expect) }
+    Assert-True $badThrew "Config validation must reject: $($badCase.Expect)."
+}
+
+# T36: a pinned-hash mismatch (newer, unapproved release) is a WARN, not a run error.
+$selfUpdateText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-SelfUpdate'
+Assert-True ($selfUpdateText -match 'SHA256 mismatch[^\r\n]*-Level WARN') 'Pinned hash mismatch must log at WARN so the run does not exit 1.'
+
+# T37: self-update refuses a release whose defaults no longer know a key this config sets.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ConfigKeysUnknownToScript')
+$compatDir = Join-Path ([IO.Path]::GetTempPath()) "pm-compat-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $compatDir)
+try {
+    $newScript = Join-Path $compatDir 'new.ps1'
+    Set-Content -Path $newScript -Value "`$script:DefaultCfg = [ordered]@{`n    ScopeProfile = 'Personal'`n    WinGet = [ordered]@{ Scope = 'machine'; Delays = [ordered]@{ A = 1 } }`n}`nthrow 'must never run'" -Encoding UTF8
+    $compatCfg = Join-Path $compatDir 'cfg.json'
+    Set-Content -Path $compatCfg -Value '{"_comment":"x","ScopeProfile":"Personal","WinGet":{"Scope":"user","SuppressReboot":true},"Legacy":{}}' -Encoding UTF8
+    $unknownCfgKeys = @(Get-ConfigKeysUnknownToScript -ScriptPath $newScript -ConfigPath $compatCfg)
+    Assert-True (($unknownCfgKeys -join ',') -eq 'WinGet.SuppressReboot,Legacy') "Unknown keys must be listed (got '$($unknownCfgKeys -join ',')')."
+    Assert-True (@(Get-ConfigKeysUnknownToScript -ScriptPath $scriptPath -ConfigPath $exampleConfigPath).Count -eq 0) 'The shipped example config must be compatible with the current script.'
+} finally { Remove-Item $compatDir -Recurse -Force -EA SilentlyContinue }
+
+# T38: one property helper, not a nested byte-identical copy.
+Assert-True ($scriptContent -notmatch 'Get-ReportProperty') 'Get-ReportProperty duplicate must be removed in favour of Get-ObjectPropertyValue.'
+
+# T39: New-HTMLReport computes each count once.
+$htmlText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-HTMLReport'
+Assert-True ($htmlText -notmatch '\$invKevAffected|\$invKevUnknown|\$hasConfirmedAttention') 'Recomputed counts and aliases must be removed from New-HTMLReport.'
+
+# T40: browser helpers reuse the shared version/path helpers.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserVersion')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-BrowserUpdater')
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserVersion') -match 'Get-RegistryVersion') 'Get-BrowserVersion must reuse Get-RegistryVersion.'
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-BrowserUpdater') -match 'Resolve-FirstExistingPath') 'Resolve-BrowserUpdater must reuse Resolve-FirstExistingPath.'
+$script:CFG = [pscustomobject]@{ ScopeProfile = 'Personal' }
+[void](Get-BrowserVersion -Browser 'Edge')
+[void](Resolve-BrowserUpdater -Browser 'Chrome')
+
+# T41: descoped rows go through Add-SkippedUpgradeResult.
+foreach ($fn in 'Add-SkippedUpgradeResult','Get-FilteredUpgrades') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+& {
+    $script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ ApprovedPackages = @(); PublisherManagedPackageIds = @(); ExcludePackagePrefixes = @('Microsoft.VCLibs') } }
+    $script:SkippedUpgradeResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    function Test-IsDescoped { param($Item, [ref]$Reason) if ($Item.PackageId -eq 'Corp.Tool') { $Reason.Value = 'Descoped by policy.'; return $true }; $false }
+    $filteredPkgs = @(Get-FilteredUpgrades -Upgrades @(
+        [pscustomobject]@{ Name = 'Tool'; PackageId = 'Corp.Tool'; Source = 'winget'; Version = '1'; Available = '2' },
+        [pscustomobject]@{ Name = 'VCLibs'; PackageId = 'Microsoft.VCLibs.140'; Source = 'winget'; Version = '1'; Available = '2' },
+        [pscustomobject]@{ Name = 'Git'; PackageId = 'Git.Git'; Source = 'winget'; Version = '1'; Available = '2' }))
+    Assert-True ($filteredPkgs.Count -eq 1 -and $filteredPkgs[0].PackageId -eq 'Git.Git') 'Only the eligible package remains.'
+    Assert-True (@($script:SkippedUpgradeResults | Where-Object Status -eq 'Descoped').Count -eq 2 -and $script:SkippedUpgradeResults[0].Provider -eq 'winget') 'Descoped rows keep their status and provider.'
+}
+
+# T42: CI runs the browser usability test, not just checks that the file exists.
+Assert-True ((Get-Content (Join-Path $root '.github\workflows\ci.yml') -Raw).Contains('node .\Tests\Report.Usability.Tests.cjs')) 'CI must run Tests/Report.Usability.Tests.cjs.'
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

@@ -20,7 +20,7 @@ set-and-forget updater on a personal machine or as a fleet patching agent across
 a commercial estate with rings, maintenance windows, SLA tracking, version-verified
 CISA KEV emergency handling, and SIEM-ready event logging.
 
-> **Public beta (v1.8.1).** PatchManager runs elevated and changes installed
+> **Public beta (v1.9.0).** PatchManager runs elevated and changes installed
 > software. Read the script, review the configuration, and always start with a
 > dry run.
 
@@ -157,12 +157,12 @@ cd C:\ProgramData\PatchManager
 # 3. Patch for real
 .\Invoke-PatchManager.ps1 -Force
 
-# 4. Set and forget - register the automatic startup/logon task
+# 4. Set and forget - register the automatic sign-in task
 .\Invoke-PatchManager.ps1 -InstallStartupTask
 ```
 
 Step 4 is the whole point for a personal machine: from now on PatchManager
-runs itself a couple of minutes after every startup and logon, patches, and
+runs itself a couple of minutes after every administrator sign-in, patches, and
 writes a fresh compliance report every time — no further action from you.
 Reports (HTML/JSON/CSV) land in `C:\ProgramData\PatchManager\Reports`, and
 the completion popup offers to open the latest one. No configuration needed:
@@ -233,7 +233,7 @@ with [scope profiles and descoping](#scope-profiles-personal-vs-commercial).
 | `-Force` | Ignore the maintenance window for this run. |
 | `-ConfigPath <path>` | Use a specific config file (default: `PatchManager.config.json` next to the script). |
 | `-ForceRing Pilot\|Early\|Broad` | Override ring detection for this run. |
-| `-InstallStartupTask` | Register a scheduled task (startup + logon triggers). |
+| `-InstallStartupTask` | Register a scheduled task that runs when any administrator signs in. |
 | `-UninstallStartupTask` | Remove that scheduled task. |
 | `-ValidateConfig` | Validate the selected config and exit without patching. Invalid existing configs fail closed with exit code `2`. |
 | `-TaskName <name>` / `-TaskDelayMinutes <n>` | Customise the scheduled task. |
@@ -241,7 +241,10 @@ with [scope profiles and descoping](#scope-profiles-personal-vs-commercial).
 ## Scheduled runs
 
 `-InstallStartupTask` (step 4 above) registers a scheduled task that runs
-PatchManager elevated a couple of minutes after every startup and logon.
+PatchManager elevated a couple of minutes after any member of the local
+Administrators group signs in (in that user's session, so dialogs work). It
+does not run for standard users or at boot with nobody signed in; use your own
+SYSTEM task or deployment tool for that.
 
 How the task behaves:
 
@@ -254,7 +257,7 @@ How the task behaves:
   safeties still apply — pre-flight checks (disk, battery, pending reboot,
   connectivity), restore point, and reboot flagging.
 - **It never overlaps itself** thanks to the single-instance mutex, so dense
-  startup/logon triggers are safe.
+  sign-in triggers are safe.
 - **It stays out of your way if you ask it to**: enable
   `PreFlight.RequireUserIdle` in the config and runs quietly defer while
   you're actively using the machine, retrying at the next trigger.
@@ -482,7 +485,7 @@ the HTML report directly.
 | `LocalLogPath` | `C:\ProgramData\PatchManager\Logs` | Daily log files. |
 | `CentralLogPath` | `""` | Optional UNC share; logs are copied per-host with retries. |
 | `EventLogSource` | `PatchManager` | Application event log source for SIEM. |
-| `RetentionDays` | `90` | Local log/report retention. |
+| `RetentionDays` | `90` | Local log/report retention in days (minimum 1), also applied to this host's folder on the central share. |
 | `LogLevel` | `Info` | `Debug`, `Info`, `Warning`, or `Error`. |
 
 ### `Reporting`
@@ -545,7 +548,7 @@ refreshed. Apply is skipped in dry-run/report-only.
 | `PreFlight.MinFreeSpaceGB` | `5` | Abort if the system drive is below this. |
 | `PreFlight.CheckBattery` / `MinBatteryPercent` / `RequireACPower` | `true` / `20` / `false` | Laptop protections. |
 | `PreFlight.AbortOnPendingReboot` | `true` | Don't patch on top of a half-applied state. |
-| `PreFlight.RequireUserIdle` / `MinIdleMinutes` | `false` / `5` | Defer gracefully while the user is active (great for scheduled tasks). |
+| `PreFlight.RequireUserIdle` / `MinIdleMinutes` | `false` / `5` | Defer gracefully while the user is active (great for scheduled tasks). When run as SYSTEM, Windows does not expose the console user's idle time, so a run defers whenever someone is signed in at the console. |
 | `SystemRestore.Enabled` | `true` | Create a restore point before patching (throttled to one per 24 h by Windows). |
 | `CISAKEV.Enabled` | `true` | Fetch and match the KEV catalogue. |
 | `CISAKEV.FeedUrl` / `CacheHours` / `CachePath` | CISA feed / `24` / `C:\ProgramData\PatchManager\Cache` | Feed caching; a stale cache is used if the fetch fails. |

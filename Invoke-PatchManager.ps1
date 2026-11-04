@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Patch Manager v1.8.1 - Personal/commercial app and Windows patching for Windows 10/11
+    Patch Manager v1.9.0 - Personal/commercial app and Windows patching for Windows 10/11
 
 .DESCRIPTION
     Evidence-led patching for Windows, Microsoft 365, browsers, WinGet
@@ -117,7 +117,7 @@ try {
 
 #region -- Script State ---------------------------------------------------------------
 
-$script:VERSION       = '1.8.1'
+$script:VERSION       = '1.9.0'
 $script:STARTTIME     = Get-Date
 $script:HOSTNAME      = $env:COMPUTERNAME
 $script:WINGET        = $null
@@ -524,6 +524,9 @@ function Assert-ValidConfiguration {
         $hour = $Config.MaintenanceWindow.$hourKey
         if ($hour -lt 0 -or $hour -gt 23) { $errors.Add("MaintenanceWindow.$hourKey must be between 0 and 23.") }
     }
+    if ($Config.MaintenanceWindow.Enabled -and $Config.MaintenanceWindow.StartHour -eq $Config.MaintenanceWindow.EndHour) {
+        $errors.Add('MaintenanceWindow.StartHour and EndHour must differ (an equal pair is a window that never opens).')
+    }
     $validDays = @('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')
     foreach ($day in @($Config.MaintenanceWindow.AllowedDays)) {
         if ([string]$day -notin $validDays) { $errors.Add("MaintenanceWindow.AllowedDays contains invalid day '$day'.") }
@@ -553,7 +556,8 @@ function Assert-ValidConfiguration {
     foreach ($nullableFlag in @(
         @{ Name='Network.BITSThrottleEnabled'; Value=$Config.Network.BITSThrottleEnabled },
         @{ Name='PackageManagers.ChocolateyEnabled'; Value=$Config.PackageManagers.ChocolateyEnabled },
-        @{ Name='SelfUpdate.Enabled'; Value=$Config.SelfUpdate.Enabled }
+        @{ Name='SelfUpdate.Enabled'; Value=$Config.SelfUpdate.Enabled },
+        @{ Name='SLA.Enabled'; Value=$Config.SLA.Enabled }   # "false" (a string) would be truthy
     )) {
         if ($null -ne $nullableFlag.Value -and -not ($nullableFlag.Value -is [bool])) {
             $errors.Add("$($nullableFlag.Name) must be true, false, or null.")
@@ -584,6 +588,15 @@ function Assert-ValidConfiguration {
     )
     foreach ($item in $nonNegativeValues) {
         if ($null -ne $item.Value -and [double]$item.Value -lt 0) { $errors.Add("$($item.Name) cannot be negative.") }
+    }
+    # A 0s timeout makes every install "time out" instantly and orphans the installer.
+    foreach ($item in @(
+        @{ Name='WinGet.PackageTimeoutSeconds'; Value=$Config.WinGet.PackageTimeoutSeconds },
+        @{ Name='Browsers.NativeTimeoutSeconds'; Value=$Config.Browsers.NativeTimeoutSeconds },
+        # 0 days would delete the reports this run just wrote.
+        @{ Name='Logging.RetentionDays'; Value=$Config.Logging.RetentionDays }
+    )) {
+        if ($null -ne $item.Value -and [double]$item.Value -lt 1) { $errors.Add("$($item.Name) must be at least 1.") }
     }
 
     foreach ($entry in @($Config.VendorUpdaters.ExtraCatalogue)) {
@@ -677,6 +690,51 @@ function Test-IsAdministrator {
         $principal = New-Object Security.Principal.WindowsPrincipal($identity)
         return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     } catch { return $false }
+}
+
+function Test-TrustedPath {
+    # An elevated run must not obey a file a standard user created or can change:
+    # owner and every effective write ACE must be SYSTEM, Administrators,
+    # TrustedInstaller, or the account running PatchManager.
+    param([Parameter(Mandatory)] [string]$Path)
+    try {
+        $acl = Get-Acl -LiteralPath $Path -EA Stop
+        $sid = [Security.Principal.SecurityIdentifier]
+        $trusted = @('S-1-5-18', 'S-1-5-32-544',
+                     'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464',
+                     [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        if ($acl.GetOwner($sid).Value -notin $trusted) { return $false }
+        $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, Delete, ChangePermissions, TakeOwnership'
+        foreach ($ace in $acl.GetAccessRules($true, $true, $sid)) {
+            if ($ace.AccessControlType -ne 'Allow') { continue }
+            if ($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) { continue }
+            if (($ace.FileSystemRights -band $write) -eq 0) { continue }
+            if ($ace.IdentityReference.Value -notin $trusted) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Test-SafeExecutablePath {
+    # Fleet profiles run elevated on shared machines: never execute a binary a
+    # standard user could have replaced (per-user updaters, Scoop/py shims, user PATH).
+    # shortcut: the Personal profile still runs the signed-in user's own tools (UAC is not a
+    # security boundary on a single-user device); extend this to Personal if it is used on shared PCs.
+    param([string]$Path)
+    if (-not $script:CFG -or -not (Test-IsFleetProfile $script:CFG.ScopeProfile)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try { $full = [IO.Path]::GetFullPath($Path) } catch { return $false }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:SystemRoot) | Where-Object { $_ }) {
+        if ($full.StartsWith($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    # App execution aliases (winget.exe, store.exe) are reparse points into the signed package.
+    $aliasDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+    if ($full.StartsWith($aliasDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        $item = Get-Item -LiteralPath $full -Force -EA SilentlyContinue
+        return [bool]($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))
+    }
+    if ($full.StartsWith((Join-Path $env:SystemDrive 'Users') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    return (Test-TrustedPath $full)
 }
 
 function Set-ScopeProfileDefaults {
@@ -841,6 +899,7 @@ function Copy-LogsToCentral {
             if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force -EA Stop | Out-Null }
             Copy-Item $script:LOGFILE -Destination $dest -Force -EA Stop
             Write-Log "Log copied to central store: $dest" -Level INFO
+            Remove-OldFiles -Path $dest -Filter 'PatchManager_*.log' -Days $script:CFG.Logging.RetentionDays
             return
         }
         catch {
@@ -1379,7 +1438,7 @@ function Show-CompletionPopup {
                                       -Message $message `
                                       -PrimaryText $primaryText `
                                       -SecondaryText $secondaryText `
-                                      -TimeoutSeconds 0 `
+                                      -TimeoutSeconds ([int]$script:CFG.UserExperience.PromptTimeoutSeconds) `
                                       -Tone $tone
     if ($script:CFG.UserExperience.OpenReportPrompt -and $choice -eq 'Primary' -and $HtmlReportPath -and (Test-Path $HtmlReportPath)) {
         try { Start-Process -FilePath $HtmlReportPath | Out-Null } catch { Write-Log "Could not open report '$HtmlReportPath': $_" -Level WARN }
@@ -1415,17 +1474,18 @@ function Install-PatchManagerStartupTask {
     # popups still appear; they are separate WinForms windows.
     $actionArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Force"
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
-    $startupTrigger = New-ScheduledTaskTrigger -AtStartup
-    $startupTrigger.Delay = $delayIso
-    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    # Logon of any administrator, run in their session (dialogs work) with their elevated
+    # token. Not the installing account only: with over-the-shoulder UAC that was a
+    # different admin. No startup trigger: an interactive principal cannot run at boot.
+    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
     $logonTrigger.Delay = $delayIso
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+    $principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-544' -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
-    $task = New-ScheduledTask -Action $action -Trigger @($startupTrigger, $logonTrigger) -Principal $principal -Settings $settings -Description 'Runs PatchManager at startup/logon for personal device patching.'
+    $task = New-ScheduledTask -Action $action -Trigger @($logonTrigger) -Principal $principal -Settings $settings -Description 'Runs PatchManager when an administrator signs in, for personal device patching.'
 
     Register-ScheduledTask -TaskName $Name -InputObject $task -Force -ErrorAction Stop | Out-Null
     Write-Host "Scheduled task installed: $Name" -ForegroundColor Green
-    Write-Host "Triggers: startup + user logon, ${DelayMinutes} minute delay, highest privileges." -ForegroundColor Cyan
+    Write-Host "Trigger: administrator sign-in, ${DelayMinutes} minute delay, highest privileges." -ForegroundColor Cyan
 }
 
 function Uninstall-PatchManagerStartupTask {
@@ -1613,7 +1673,8 @@ function Update-StatsFromResults {
     $script:Stats.UpdatesPlanned = @($Results | Where-Object { $_.Status -eq 'Planned' }).Count
     $script:Stats.UpdatesApplied = @($Results | Where-Object { $_.Status -in @('Succeeded','Updated','Detected') -and $_.Success }).Count
     $script:Stats.UpdatesFailed  = @($Results | Where-Object { $_.Status -in @('Failed','Blocked','Verifying') -or ($_.PSObject.Properties['Success'] -and -not $_.Success -and $_.Status -notin @('Skipped','Descoped','Planned')) }).Count
-    $script:Stats.UpdatesSkipped = @($Results | Where-Object { $_.Status -in @('Skipped','Descoped','AlreadyCurrent') }).Count
+    # AlreadyCurrent is evidence of a clean source, not skipped work (see Get-PatchRowKind).
+    $script:Stats.UpdatesSkipped = @($Results | Where-Object { $_.Status -in @('Skipped','Descoped') }).Count
 
     # Result rows are the authoritative provider outcome. Most provider failures
     # are logged at WARN so a recoverable native-tool error does not masquerade as
@@ -1628,19 +1689,28 @@ function Update-StatsFromResults {
 
 #region -- WinGet Resolution ----------------------------------------------------------
 
+function Select-WinGetPackageFolder {
+    # Newest DesktopAppInstaller folder for this CPU. A string sort picked 1.9 over 1.27,
+    # and an x64-only filter found nothing on ARM64.
+    param([array]$Folders)
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    return ($Folders |
+        Where-Object { $_.Name -match "^Microsoft\.DesktopAppInstaller_([\d.]+)_${arch}__8wekyb3d8bbwe$" } |
+        Sort-Object { [version](($_.Name -split '_')[1]) } -Descending |
+        Select-Object -First 1)
+}
+
 function Resolve-WinGetPath {
     # Try PATH first (interactive sessions)
     $cmd = Get-Command 'winget' -EA SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if ($cmd -and (Test-SafeExecutablePath $cmd.Source)) { return $cmd.Source }
 
     # WindowsApps lookup for SYSTEM context (Intune/SCCM)
     $appBase = 'C:\Program Files\WindowsApps'
     if (Test-Path $appBase) {
-        $latest = Get-ChildItem -Path $appBase `
-                                -Filter 'Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe' `
-                                -EA SilentlyContinue |
-                  Sort-Object Name -Descending |
-                  Select-Object -First 1
+        $latest = Select-WinGetPackageFolder -Folders @(Get-ChildItem -Path $appBase `
+                                -Filter 'Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe' -Directory `
+                                -EA SilentlyContinue)
         if ($latest) {
             $exe = Join-Path $latest.FullName 'winget.exe'
             if (Test-Path $exe) { return $exe }
@@ -1649,7 +1719,7 @@ function Resolve-WinGetPath {
 
     # User-context fallback
     $userExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
-    if (Test-Path $userExe) { return $userExe }
+    if ((Test-Path $userExe) -and (Test-SafeExecutablePath $userExe)) { return $userExe }
 
     return $null
 }
@@ -1710,17 +1780,33 @@ function Test-PendingReboot {
 }
 
 function Get-UserIdleMinutes {
-    # P/Invoke to Win32 GetLastInputInfo - works from SYSTEM context
+    # Own-session idle time via GetLastInputInfo. A SYSTEM task runs in session 0,
+    # which never receives input, so there we ask WTS about the console session.
     $typeDef = @"
 using System;
 using System.Runtime.InteropServices;
-public class Win32Idle {
+public class PatchManagerIdle {
     [StructLayout(LayoutKind.Sequential)]
     public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
     [DllImport("user32.dll")]
     public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
     [DllImport("kernel32.dll")]
     public static extern ulong GetTickCount64();
+    [DllImport("kernel32.dll")]
+    public static extern uint WTSGetActiveConsoleSessionId();
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool WTSQuerySessionInformationW(IntPtr server, uint sessionId, int infoClass, out IntPtr buffer, out uint bytes);
+    [DllImport("wtsapi32.dll")]
+    public static extern void WTSFreeMemory(IntPtr memory);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct WTSINFOW {
+        public int State; public uint SessionId;
+        public uint IncomingBytes, OutgoingBytes, IncomingFrames, OutgoingFrames, IncomingCompressedBytes, OutgoingCompressedBytes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string WinStationName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 17)] public string Domain;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 21)] public string UserName;
+        public long ConnectTime, DisconnectTime, LastInputTime, LogonTime, CurrentTime;
+    }
     public static ulong GetIdleMilliseconds() {
         LASTINPUTINFO lii = new LASTINPUTINFO();
         lii.cbSize = (uint)Marshal.SizeOf(lii);
@@ -1730,15 +1816,39 @@ public class Win32Idle {
         uint now = (uint)(GetTickCount64() & 0xFFFFFFFF);
         return (ulong)unchecked(now - lii.dwTime);
     }
+    // Console session idle ms; -1 = nobody signed in at the console, -2 = unknown.
+    public static long GetConsoleIdleMilliseconds() {
+        uint sessionId = WTSGetActiveConsoleSessionId();
+        if (sessionId == 0xFFFFFFFF) return -1;
+        IntPtr buffer; uint bytes;
+        if (!WTSQuerySessionInformationW(IntPtr.Zero, sessionId, 24, out buffer, out bytes)) return -2;  // 24 = WTSSessionInfo
+        try {
+            WTSINFOW info = (WTSINFOW)Marshal.PtrToStructure(buffer, typeof(WTSINFOW));
+            if (string.IsNullOrEmpty(info.UserName)) return -1;
+            if (info.LastInputTime <= 0 || info.CurrentTime <= info.LastInputTime) return -2;
+            return (info.CurrentTime - info.LastInputTime) / 10000;
+        } finally { WTSFreeMemory(buffer); }
+    }
 }
 "@
-    if (-not ([System.Management.Automation.PSTypeName]'Win32Idle').Type) {
+    if (-not ([System.Management.Automation.PSTypeName]'PatchManagerIdle').Type) {
         Add-Type -TypeDefinition $typeDef -Language CSharp -EA SilentlyContinue
     }
     try {
-        return [Math]::Round([Win32Idle]::GetIdleMilliseconds() / 60000)
+        if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18') {
+            $consoleMs = [PatchManagerIdle]::GetConsoleIdleMilliseconds()
+            if ($consoleMs -eq -1) { return 999 }   # nobody at the console: no one to disturb
+            if ($consoleMs -lt 0) {
+                # Windows leaves LastInputTime at 0 for console sessions, so SYSTEM cannot
+                # measure a signed-in user's idle time: fail closed rather than interrupt them.
+                Write-Log 'User idle: console idle time is not available to SYSTEM; treating the signed-in user as active.' -Level INFO
+                return 0
+            }
+            return [Math]::Round($consoleMs / 60000)
+        }
+        return [Math]::Round([PatchManagerIdle]::GetIdleMilliseconds() / 60000)
     } catch {
-        return 999  # If we can't check, assume idle
+        return 0  # Can't tell: treat the user as active rather than patch in front of them
     }
 }
 
@@ -1775,8 +1885,9 @@ function Invoke-PreFlightChecks {
     if ($pf.CheckBattery) {
         $battery = Get-WmiObject -Class Win32_Battery -EA SilentlyContinue
         if ($battery) {
-            $pct  = $battery.EstimatedChargeRemaining
-            $onAC = $battery.BatteryStatus -in @(2, 6, 7, 8, 9)
+            # Some laptops report two batteries; an array on the left of -in is never "in".
+            $pct  = (@($battery) | Measure-Object -Property EstimatedChargeRemaining -Minimum).Minimum
+            $onAC = @($battery | Where-Object { $_.BatteryStatus -in @(2, 6, 7, 8, 9) }).Count -gt 0
             if ($pf.RequireACPower -and -not $onAC) {
                 Write-Log "PREFLIGHT FAIL: AC power required but device is on battery (${pct}%)." -Level WARN
                 $pass = $false
@@ -1902,10 +2013,11 @@ function Test-MaintenanceWindow {
 
     $mw    = $script:CFG.MaintenanceWindow
     $now   = $Now
-    $day   = $now.DayOfWeek.ToString()
     $hour  = $now.Hour
     $start = $mw.StartHour
     $end   = $mw.EndHour
+    # After midnight an overnight window (22-6) still belongs to the night it started.
+    $day   = if ($start -gt $end -and $hour -lt $end) { $now.AddDays(-1).DayOfWeek.ToString() } else { $now.DayOfWeek.ToString() }
 
     if ($day -notin $mw.AllowedDays) {
         Write-Log "Outside maintenance window: $day not in allowed days." -Level INFO
@@ -1935,9 +2047,10 @@ function Start-JitteredDelay {
     $maxMinutes = if ($CapMinutes -gt 0) { $CapMinutes } else { $script:CFG.MaintenanceWindow.JitterMaxMinutes }
     if ($maxMinutes -le 0) { return }
 
-    # Deterministic seed from hostname - same machine always gets the same slot
-    $seed    = [Math]::Abs(([char[]]$script:HOSTNAME | ForEach-Object { [int]$_ } |
-                Measure-Object -Sum).Sum % [int]::MaxValue)
+    # Deterministic per host. Hash the hostname (SHA256: FIPS-safe): a character sum put
+    # WS001-WS999 into ~27 slots and gave anagrams (PC-012 / PC-021) the same delay.
+    $hash    = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$script:HOSTNAME).ToUpperInvariant()))
+    $seed    = [BitConverter]::ToInt32($hash, 0) -band [int]::MaxValue
     $rng     = New-Object System.Random($seed)
     $mult    = switch ($Ring) { 'Pilot' { 0.3 } 'Early' { 0.65 } default { 1.0 } }
     $minutes = [Math]::Round($rng.NextDouble() * $maxMinutes * $mult)
@@ -2037,23 +2150,41 @@ function Get-CISAKEVData {
 
     if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
 
+    # A catalogue only counts when it parses and lists vulnerabilities; a truncated
+    # file or a proxy's HTML page must never be used (or cached) as the feed.
+    if ((Test-Path $cacheFile) -and -not (Test-TrustedPath $cacheFile)) {
+        Write-Log "CISA KEV: cache file '$cacheFile' is not admin-owned; discarding it." -Level WARN
+        Remove-Item -LiteralPath $cacheFile -Force -EA SilentlyContinue
+    }
+    $readCache = {
+        try {
+            $cached = Get-Content $cacheFile -Raw -EA Stop | ConvertFrom-Json -EA Stop
+            if (@(Get-ObjectPropertyValue $cached 'vulnerabilities' @()).Count -gt 0) { return $cached }
+        } catch { }
+        Write-Log 'CISA KEV: cache file is unreadable or empty; ignoring it.' -Level WARN
+        return $null
+    }
+
     if (Test-Path $cacheFile) {
         $age = ((Get-Date) - (Get-Item $cacheFile).LastWriteTime).TotalHours
         if ($age -lt $kev.CacheHours) {
             Write-Log "CISA KEV: Using cache ($([Math]::Round($age,1))h old)." -Level DEBUG
-            return Get-Content $cacheFile -Raw | ConvertFrom-Json
+            $cached = & $readCache
+            if ($cached) { return $cached }
         }
     }
 
     try {
         Write-Log 'CISA KEV: Fetching latest catalogue...' -Level INFO
         $data = Invoke-RestMethod -Uri $kev.FeedUrl -TimeoutSec 30 -EA Stop
-        $data | ConvertTo-Json -Depth 10 | Set-Content $cacheFile -Encoding UTF8
-        Write-Log "CISA KEV: $($data.vulnerabilities.Count) entries cached." -Level INFO
+        $count = @(Get-ObjectPropertyValue $data 'vulnerabilities' @()).Count
+        if ($count -eq 0) { throw 'response contained no vulnerabilities (proxy or captive portal?)' }
+        [void](Set-ContentAtomic -Path $cacheFile -Content ($data | ConvertTo-Json -Depth 10))
+        Write-Log "CISA KEV: $count entries cached." -Level INFO
         return $data
     } catch {
         Write-Log "CISA KEV fetch failed: $_. $(if (Test-Path $cacheFile) {'Using stale cache.'} else {'No cache available.'})" -Level WARN
-        if (Test-Path $cacheFile) { return Get-Content $cacheFile -Raw | ConvertFrom-Json }
+        if (Test-Path $cacheFile) { return (& $readCache) }
         return $null
     }
 }
@@ -2064,7 +2195,9 @@ function Test-WordMatch {
     param([string]$Haystack, [string]$Needle)
     if ([string]::IsNullOrWhiteSpace($Haystack) -or [string]::IsNullOrWhiteSpace($Needle)) { return $false }
     $escaped = [regex]::Escape($Needle)
-    return $Haystack -imatch "\b$escaped\b"
+    # Lookarounds instead of \b: \b never matches next to '.' or '+', so '.NET Framework'
+    # and 'Visual C++' could never match.
+    return $Haystack -imatch "(?<!\w)$escaped(?!\w)"
 }
 
 function ConvertTo-VersionParts {
@@ -2133,10 +2266,10 @@ function Test-CpeProductAlignment {
     $cpeProd = [string]$Cpe.Product
     $kevProd = ConvertTo-CpeToken $Product
     if (-not $cpeProd -or -not $kevProd) { return $false }
-    # Exact, or one is a qualified form of the other ('edge' vs 'edge_chromium').
+    # Exact, or (applications only) one is a qualified form of the other ('edge' vs
+    # 'edge_chromium'). Never for OS CPEs: 'chrome_os' is not desktop Chrome.
     $prodOk = ($cpeProd -eq $kevProd) -or
-              ($cpeProd.StartsWith("${kevProd}_")) -or
-              ($kevProd.StartsWith("$($cpeProd)_"))
+              ($Cpe.Part -eq 'a' -and ($cpeProd.StartsWith("${kevProd}_") -or $kevProd.StartsWith("$($cpeProd)_")))
     if (-not $prodOk) { return $false }
     $cpeVend = [string]$Cpe.Vendor
     $kevVend = ConvertTo-CpeToken $Vendor
@@ -2287,6 +2420,12 @@ function Invoke-NVDPacedRequest {
     $fetchCfg = [ordered]@{ CachePath = $cacheDir; CacheHours = $CacheHours; Offline = $offline }
     $sep  = if ($base -match '\?') { '&' } else { '?' }
     $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
+    if ($null -eq $resp -and $willFetch) {
+        # NVD answers 403/429/503 when many hosts share an IP or key; one paced retry
+        # recovers most collisions instead of turning a real KEV emergency into Unknown.
+        Start-Sleep -Milliseconds ([int](Get-ObjectPropertyValue $NvdCfg 'RequestDelayMs' 6500))
+        $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
+    }
 
     if ($willFetch -and -not $isMirror) { $script:NVDLastRequest = Get-Date }
     return [PSCustomObject]@{ Data = $resp; Fetched = [bool]$willFetch }
@@ -2328,7 +2467,8 @@ function Get-NVDCpeMatches {
         }
         $cpeMatches = @($collected)
     }
-    $script:NVDMemo[$CveId] = $cpeMatches
+    # Never memoise a failed fetch: a later lookup in this run may still succeed.
+    if ($null -ne $resp) { $script:NVDMemo[$CveId] = $cpeMatches }
     return $cpeMatches
 }
 
@@ -2363,6 +2503,19 @@ function Find-KEVCandidates {
     $kevMatchList = [System.Collections.Generic.List[PSCustomObject]]::new()
     $matchKeys    = [System.Collections.Generic.HashSet[string]]::new()
 
+    # Resolve package fields once. ~1500 KEV entries x every package made per-pair
+    # property lookups and regexes cost tens of seconds per run, so each KEV name is
+    # first checked against all package names in one string before any per-package work.
+    $pkgInfo = @(foreach ($app in $Packages) {
+        [PSCustomObject]@{
+            App       = $app
+            Name      = [string]$app.Name
+            PackageId = [string](Get-ObjectPropertyValue $app 'PackageId' '')
+            Publisher = [string](Get-ObjectPropertyValue $app 'Publisher' '')
+        }
+    })
+    $allProductText = ($pkgInfo | ForEach-Object { "$($_.Name) $($_.PackageId)" }) -join "`n"
+
     foreach ($entry in $KEVData.vulnerabilities) {
         # Catalogue strings are external data. Normalise surrounding whitespace
         # before exclusions and whole-word matching: the live KEV feed has carried
@@ -2383,41 +2536,55 @@ function Find-KEVCandidates {
         # Microsoft Windows KEV entries promote Store/shell packages to emergency.
         if ($vendor -ieq 'Microsoft' -and $product -ieq 'Windows') { continue }
 
-        foreach ($app in $Packages) {
-            $name      = [string]$app.Name
-            $packageId = [string](Get-ObjectPropertyValue $app 'PackageId' '')
-            $publisher = if ($app.PSObject.Properties['Publisher']) { [string]$app.Publisher } else { '' }
+        # CISA files Chrome engine bugs as Google "Chromium <component>" (V8, Mojo, ...),
+        # which never names the installed product. Match them as Google Chrome and let
+        # NVD CPE resolution decide exposure.
+        $names = @(,@($vendor, $product))
+        if ($vendor -ieq 'Google' -and $product -like 'Chromium*') { $names += ,@('Google', 'Chrome') }
 
-            # Require BOTH vendor and product to match on whole-word boundaries.
-            # Vendor can match against app name, package id, or publisher; product must
-            # match the actionable package name or id.
-            $vendorMatch  = (Test-WordMatch $name $vendor) -or
-                            (Test-WordMatch $packageId $vendor) -or
-                            (Test-WordMatch $publisher $vendor)
-            $productMatch = (Test-WordMatch $name $product) -or
-                            (Test-WordMatch $packageId $product)
-
-            if ($vendorMatch -and $productMatch) {
-                # Dedupe: same CVE + same package shouldn't appear twice
-                $source = [string](Get-ObjectPropertyValue $app 'Source' 'inventory')
-                $key = "$($entry.cveID)|$source|$(if ($packageId) { $packageId } else { $name })"
-                if ($matchKeys.Add($key)) {
-                    $kevMatchList.Add([PSCustomObject]@{
-                        CVE            = $entry.cveID
-                        VendorProject  = $vendor
-                        Product        = $product
-                        Description    = $entry.vulnerabilityName
-                        DateAdded      = $entry.dateAdded
-                        CISADueDate    = $entry.dueDate
-                        InstalledApp   = $name
-                        InstalledVer   = $app.Version
-                        PackageId      = $packageId
-                        Source         = $source
-                        # Settled later by Add-KEVExposure. Never assume affected.
-                        ExposureState  = 'Unknown'
-                        FixedVersion   = ''
-                        ExposureDetail = 'Exposure not yet resolved.'
-                    })
+        foreach ($pair in $names) {
+            $vendor, $product = $pair
+            if ($allProductText.IndexOf($product, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            foreach ($pkg in $pkgInfo) {
+                $app       = $pkg.App
+                $name      = $pkg.Name
+                $packageId = $pkg.PackageId
+                $publisher = $pkg.Publisher
+    
+                # Require BOTH vendor and product to match on whole-word boundaries.
+                # Vendor can match against app name, package id, or publisher; product must
+                # match the actionable package name or id.
+                $vendorMatch  = (Test-WordMatch $name $vendor) -or
+                                (Test-WordMatch $packageId $vendor) -or
+                                (Test-WordMatch $publisher $vendor)
+                # AppX identity names (no spaces) put sub-products in further dotted
+                # segments: "Microsoft.Edge.GameAssist" is not Edge.
+                $subProductName = $name -notmatch '\s' -and $name -imatch "(?<!\w)$([regex]::Escape($product))\.\w"
+                $productMatch = ((Test-WordMatch $name $product) -and -not $subProductName) -or
+                                (Test-WordMatch $packageId $product)
+    
+                if ($vendorMatch -and $productMatch) {
+                    # Dedupe: same CVE + same package shouldn't appear twice
+                    $source = [string](Get-ObjectPropertyValue $app 'Source' 'inventory')
+                    $key = "$($entry.cveID)|$source|$(if ($packageId) { $packageId } else { $name })"
+                    if ($matchKeys.Add($key)) {
+                        $kevMatchList.Add([PSCustomObject]@{
+                            CVE            = $entry.cveID
+                            VendorProject  = $vendor
+                            Product        = $product
+                            Description    = $entry.vulnerabilityName
+                            DateAdded      = $entry.dateAdded
+                            CISADueDate    = $entry.dueDate
+                            InstalledApp   = $name
+                            InstalledVer   = $app.Version
+                            PackageId      = $packageId
+                            Source         = $source
+                            # Settled later by Add-KEVExposure. Never assume affected.
+                            ExposureState  = 'Unknown'
+                            FixedVersion   = ''
+                            ExposureDetail = 'Exposure not yet resolved.'
+                        })
+                    }
                 }
             }
         }
@@ -2784,7 +2951,12 @@ function Get-PatchState {
     if (-not (Test-Path $statePath)) { New-Item -ItemType Directory -Path $statePath -Force | Out-Null }
 
     if (Test-Path $stateFile) {
-        try { return Get-Content $stateFile -Raw | ConvertFrom-Json } catch { }
+        try { return Get-Content $stateFile -Raw -EA Stop | ConvertFrom-Json -EA Stop } catch {
+            # Keep the bad file: the next save would otherwise overwrite all SLA history.
+            $backup = "$stateFile.corrupt-$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            Copy-Item -LiteralPath $stateFile -Destination $backup -Force -EA SilentlyContinue
+            Write-Log "Patch state file unreadable ($_). Saved a copy to '$backup' and starting fresh SLA tracking." -Level WARN
+        }
     }
 
     # Clean schema - SLA tracked against update availability date, not CVE dates
@@ -2816,13 +2988,19 @@ function Save-PatchState {
     foreach ($upgrade in $AvailableUpgrades) {
         $key = "$($upgrade.PackageId)|$($upgrade.Available)"
         if (-not $existingIndex.ContainsKey($key)) {
+            # A newer release of a package still at the same installed version keeps the
+            # original SLA clock; otherwise fast-releasing apps (browsers) never breach.
+            $carried = @($State.TrackedUpdates | Where-Object {
+                $_.PackageId -eq $upgrade.PackageId -and -not $_.Applied -and
+                [string]$_.VersionPrior -eq [string]$upgrade.Version -and $_.FirstSeenAvailable
+            } | Sort-Object FirstSeenAvailable | Select-Object -First 1)
             $newEntry = [PSCustomObject]@{
                 PackageId          = $upgrade.PackageId
                 PackageName        = $upgrade.Name
                 VersionAvailable   = $upgrade.Available
                 VersionPrior       = $upgrade.Version
-                FirstSeenAvailable = $today
-                SLADue             = (Get-Date).AddDays($slaDays).ToString('yyyy-MM-dd')
+                FirstSeenAvailable = $(if ($carried) { $carried[0].FirstSeenAvailable } else { $today })
+                SLADue             = $(if ($carried) { $carried[0].SLADue } else { (Get-Date).AddDays($slaDays).ToString('yyyy-MM-dd') })
                 Ring               = $script:RING
                 Applied            = $false
                 AppliedOn          = $null
@@ -2992,7 +3170,9 @@ function Get-WinGetUpgradesViaModule {
         }
 
         Write-Log "WinGet (module): $($upgrades.Count) upgrade(s) available." -Level INFO
-        return $upgrades
+        # The comma keeps an empty result as @() instead of unrolling to $null, which
+        # the caller would read as "module unavailable" and re-scan with winget.exe.
+        return ,$upgrades.ToArray()
     } catch {
         Write-Log "Microsoft.WinGet.Client module discovery failed: $_. Falling back to winget.exe text parsing." -Level WARN
         return $null
@@ -3013,10 +3193,13 @@ function ConvertFrom-WinGetUpgradeOutput {
     $colName = -1; $colId = -1; $colVersion = -1; $colAvail = -1; $colSource = -1
     $inTable = $false
     $sawHeader = $false
+    $tableDone = $false
 
     foreach ($line in $Lines) {
         $line = [string]$line
-        if ($line -match '^\s*Name\s+Id\s+Version\s+Available') {
+        # Only the first table: winget prints a second "require explicit targeting"
+        # table (and pin notices) after it, and those packages must not be upgraded.
+        if (-not $tableDone -and $line -match '^\s*Name\s+Id\s+Version\s+Available') {
             $line = $line.TrimStart()
             $sawHeader  = $true
             $inTable    = $true
@@ -3029,7 +3212,11 @@ function ConvertFrom-WinGetUpgradeOutput {
         }
         if (-not $inTable) { continue }
         if ($line -match '^-{5,}') { continue }
-        if ($line -match '^\d+ upgrade' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+        # '2 upgrades available.' (or a blank line) ends the table; rows never end in '.'.
+        if ($line -match '^\d+\s.*\.\s*$' -or [string]::IsNullOrWhiteSpace($line)) {
+            $inTable = $false; $tableDone = $true
+            continue
+        }
 
         try {
             $len      = $line.Length
@@ -3043,6 +3230,12 @@ function ConvertFrom-WinGetUpgradeOutput {
             $avail  = if ($availEnd -le $len -and $colAvail -ge 0)     { $line.Substring($colAvail,  [Math]::Max(0, $availEnd - $colAvail)).Trim() } else { '' }
             $source = if ($colSource -ge 0 -and $colSource -lt $len)   { $line.Substring($colSource).Trim() } else { $QuerySource }
 
+            if ($id -match '[^\x21-\x7E]') {
+                # winget cut the id short with an ellipsis (garbled to other bytes in some code
+                # pages); package ids are plain ASCII, and --id --exact can never match it.
+                $parseErrors.Add("truncated id: $line")
+                continue
+            }
             if ($name -and $id -and $avail) {
                 $key = "$source|$id|$avail"
                 if ($seen.Add($key)) {
@@ -3120,8 +3313,15 @@ function Get-WinGetUpgrades {
 
         Write-Log "WinGet source '$querySource': $parsedForSource upgrade row(s) parsed." -Level DEBUG
         $sourceProvider = if ($querySource -eq 'msstore') { 'winget-msstore-discovery' } else { 'winget-discovery' }
-        $sourceStatus = if ($exitCode -eq 0) { 'Completed' } else { 'Failed' }
+        # A table was printed but its header was not understood (non-English winget):
+        # report Failed, never "0 upgrades", so SLA tracking is not reconciled away.
+        $unreadTable = (-not $sawHeader) -and @($raw | Where-Object { [string]$_ -match '^-{5,}' }).Count -gt 0
+        $sourceStatus = if ($exitCode -eq 0 -and -not $unreadTable) { 'Completed' } else { 'Failed' }
         $sourceEvidence = "WinGet source '$querySource' checked with exit code $exitCode; parsed $parsedForSource upgrade row(s)."
+        if ($unreadTable) {
+            $sourceEvidence = "$sourceEvidence Unrecognised table header (non-English winget output?); install Microsoft.WinGet.Client for locale-independent discovery."
+            Write-Log "WinGet source '$querySource': upgrade table header not recognised (locale?)." -Level WARN
+        }
         if ($sourceOutput) {
             $sourceEvidence = "$sourceEvidence Output: $sourceOutput"
         }
@@ -3130,7 +3330,7 @@ function Get-WinGetUpgrades {
             -Source $querySource `
             -Provider $sourceProvider `
             -Status $sourceStatus `
-            -Success ($exitCode -eq 0) `
+            -Success ($sourceStatus -eq 'Completed') `
             -Evidence $sourceEvidence))
     }
 
@@ -3141,7 +3341,8 @@ function Get-WinGetUpgrades {
 function Add-SkippedUpgradeResult {
     param(
         [Parameter(Mandatory)] [PSCustomObject]$Package,
-        [Parameter(Mandatory)] [string]$Reason
+        [Parameter(Mandatory)] [string]$Reason,
+        [ValidateSet('Skipped','Descoped')] [string]$Status = 'Skipped'
     )
 
     $provider = if ($Package.PSObject.Properties['Provider']) { $Package.Provider } elseif ($Package.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
@@ -3151,7 +3352,7 @@ function Add-SkippedUpgradeResult {
         -Provider $provider `
         -InstalledVersion $Package.Version `
         -AvailableVersion $Package.Available `
-        -Status 'Skipped' `
+        -Status $Status `
         -Evidence $Reason))
 }
 
@@ -3172,30 +3373,14 @@ function Get-FilteredUpgrades {
 
         $descopeReason = ''
         if (Test-IsDescoped -Item $pkg -Reason ([ref]$descopeReason)) {
-            $provider = if ($pkg.PSObject.Properties['Provider']) { $pkg.Provider } elseif ($pkg.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
-            $script:SkippedUpgradeResults.Add((New-PatchResult -Name $pkg.Name `
-                -PackageId $pkg.PackageId `
-                -Source $pkg.Source `
-                -Provider $provider `
-                -InstalledVersion $pkg.Version `
-                -AvailableVersion $pkg.Available `
-                -Status 'Descoped' `
-                -Evidence $descopeReason))
+            Add-SkippedUpgradeResult -Package $pkg -Reason $descopeReason -Status 'Descoped'
             $excluded++
             continue
         }
 
         $isExcluded = @($script:CFG.WinGet.ExcludePackagePrefixes) | Where-Object { $pkg.PackageId -like "$_*" }
         if ($isExcluded) {
-            $provider = if ($pkg.PSObject.Properties['Provider']) { $pkg.Provider } elseif ($pkg.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
-            $script:SkippedUpgradeResults.Add((New-PatchResult -Name $pkg.Name `
-                -PackageId $pkg.PackageId `
-                -Source $pkg.Source `
-                -Provider $provider `
-                -InstalledVersion $pkg.Version `
-                -AvailableVersion $pkg.Available `
-                -Status 'Descoped' `
-                -Evidence 'Descoped by WinGet component/package prefix safety list.'))
+            Add-SkippedUpgradeResult -Package $pkg -Reason 'Descoped by WinGet component/package prefix safety list.' -Status 'Descoped'
             $excluded++
             continue
         }
@@ -3325,7 +3510,7 @@ function Invoke-PackageUpdate {
         # Start-Process implementation left .ExitCode $null with redirected
         # streams on PS 5.1 and defaulted it to 0 - so a failed installer whose
         # output matched none of the text patterns was recorded as a success.
-        $timeout = $script:CFG.WinGet.PackageTimeoutSeconds
+        $timeout = [Math]::Max(30, [int]$script:CFG.WinGet.PackageTimeoutSeconds)
         $run = Invoke-CapturedProcess -FilePath $script:WINGET -Arguments $argList -TimeoutSeconds $timeout
 
         if ($run.TimedOut) {
@@ -3839,13 +4024,7 @@ function Get-BrowserVersion {
     } else {
         @('HKLM:\SOFTWARE\Microsoft\Edge\BLBeacon','HKCU:\SOFTWARE\Microsoft\Edge\BLBeacon')
     }
-    foreach ($path in $paths) {
-        try {
-            $item = Get-ItemProperty -Path $path -EA Stop
-            if ($item.version) { return [string]$item.version }
-        } catch { }
-    }
-    return ''
+    return (Get-RegistryVersion -Paths $paths)
 }
 
 function Resolve-BrowserUpdater {
@@ -3863,14 +4042,11 @@ function Resolve-BrowserUpdater {
             (Join-Path $env:LOCALAPPDATA 'Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe')
         )
     }
-    # Select-Object -First 1 yields the item or nothing; do not index with [0],
-    # which throws on an empty result under Set-StrictMode -Version Latest.
-    return ($paths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)
+    return (Resolve-FirstExistingPath -Candidates @($paths | Where-Object { $_ -and (Test-SafeExecutablePath $_) }))
 }
 
 # --- Generic native-updater helpers (used by the vendor/firmware providers) ---
-# Generalisations of Get-BrowserVersion / Resolve-BrowserUpdater. The browser
-# provider keeps its own tested copies; these serve the newer providers.
+# Shared version/path helpers for the browser, vendor and firmware providers.
 
 function Get-RegistryVersion {
     # Reads the first available version-style value from a list of registry keys.
@@ -3914,6 +4090,9 @@ function Invoke-CapturedProcess {
         [string[]]$StandardInputLines = @()
     )
 
+    if (-not (Test-SafeExecutablePath $FilePath)) {
+        return [PSCustomObject]@{ ExitCode = $null; TimedOut = $false; Output = "Refused to run '$FilePath': it is in a user-writable location and PatchManager runs elevated." }
+    }
     $proc = $null
     try {
         $escaped = @($Arguments | ForEach-Object {
@@ -3946,7 +4125,10 @@ function Invoke-CapturedProcess {
         $errTask = $proc.StandardError.ReadToEndAsync()
 
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-            try { $proc.Kill() } catch { }
+            # Kill the whole tree: winget/scoop launch msiexec/setup children that would
+            # otherwise keep running and block the next install (1618).
+            try { & taskkill.exe /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
             return [PSCustomObject]@{ ExitCode = $null; TimedOut = $true; Output = "Timed out after ${TimeoutSeconds}s." }
         }
         # Second WaitForExit() ensures the async stream reads have fully flushed.
@@ -4028,9 +4210,10 @@ function Invoke-BrowserProvider {
 
     try {
         Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
-        $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds ([int]$script:CFG.Browsers.NativeTimeoutSeconds)
+        $browserTimeout = [Math]::Max(30, [int]$script:CFG.Browsers.NativeTimeoutSeconds)
+        $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds $browserTimeout
         if ($run.TimedOut) {
-            return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after $($script:CFG.Browsers.NativeTimeoutSeconds)s."))
+            return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after ${browserTimeout}s."))
         }
         if ($null -eq $run.ExitCode -or $run.ExitCode -ne 0) {
             $summary = (([string]$run.Output -replace '\s+', ' ').Trim())
@@ -4085,6 +4268,34 @@ function ConvertFrom-ChocoOutdated {
     return @($items)
 }
 
+function Get-ChocoInstalledVersion {
+    # Observed version from the package's installed nuspec (<root>\lib\<id>\<id>.nuspec),
+    # so ConfirmedVersion is evidence, not the target choco was asked for. '' if unknown.
+    param([string]$ChocoPath, [string]$PackageId)
+    try {
+        $root = Split-Path (Split-Path $ChocoPath -Parent) -Parent
+        $nuspec = Join-Path $root "lib\$PackageId\$PackageId.nuspec"
+        if (-not (Test-Path -LiteralPath $nuspec)) { return '' }
+        return [string]([xml](Get-Content -LiteralPath $nuspec -Raw -EA Stop)).package.metadata.version
+    } catch { return '' }
+}
+
+function Get-ChocoNewerInstalledVersion {
+    # The product may have been updated outside choco (its own updater, winget), so
+    # choco's record is stale and its upgrade fails as a downgrade (MSI 1603). Returns
+    # the installed version when exactly one inventory entry matches the id's first
+    # word and is newer than the choco target; '' otherwise. Pure - unit-testable.
+    # shortcut: name matching by first id word, upgrade to a choco id -> product map if it misfires.
+    param([string]$PackageId, [string]$Available, [array]$Inventory)
+    $word = ($PackageId -split '[-.]')[0]
+    if ($word.Length -lt 4) { return '' }
+    $hits = @($Inventory | Where-Object { Test-WordMatch ([string]$_.Name) $word })
+    if ($hits.Count -ne 1) { return '' }
+    $installed = [string]$hits[0].Version
+    if ((Compare-SoftwareVersion $installed $Available) -eq 1) { return $installed }
+    return ''
+}
+
 function Invoke-ChocolateyProvider {
     $provider = 'chocolatey'
     if (-not [bool](Get-ObjectPropertyValue $script:CFG.PackageManagers 'ChocolateyEnabled' $false)) { return @() }
@@ -4134,6 +4345,11 @@ function Invoke-ChocolateyProvider {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Skipped' -Evidence "Per-run update cap ($max) reached; deferred to next run."))
             continue
         }
+        $newer = Get-ChocoNewerInstalledVersion -PackageId $pkg.Id -Available $pkg.Available -Inventory @($script:Inventory)
+        if ($newer) {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Skipped' -Evidence "Installed version $newer is newer than choco target $($pkg.Available); choco's record ($($pkg.Current)) is stale. Not upgraded, to avoid a downgrade. To stop tracking without uninstalling: choco uninstall $($pkg.Id) --skip-autouninstaller."))
+            continue
+        }
         if ($DryRun) {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Planned' -Evidence "Would run: choco upgrade $($pkg.Id) -y."))
             continue
@@ -4150,7 +4366,8 @@ function Invoke-ChocolateyProvider {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "choco upgrade timed out after ${timeout}s."))
         } elseif ($upg.ExitCode -eq 0 -or $upg.ExitCode -in $rebootCodes) {
             $reboot = $upg.ExitCode -in $rebootCodes
-            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -ConfirmedVersion $pkg.Available -Status 'Succeeded' -Success $true -RebootRequired $reboot -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
+            $confirmed = Get-ChocoInstalledVersion -ChocoPath $choco -PackageId $pkg.Id
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -ConfirmedVersion $confirmed -Status 'Succeeded' -Success $true -RebootRequired $reboot -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
         } else {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
         }
@@ -4167,13 +4384,13 @@ function Resolve-ScoopCommand {
     if ($cmd -and $cmd.Source) {
         if ($cmd.Source -like '*.ps1') {
             $sibling = [System.IO.Path]::ChangeExtension($cmd.Source, '.cmd')
-            if (Test-Path $sibling) { return $sibling }
-        } else {
+            if ((Test-Path $sibling) -and (Test-SafeExecutablePath $sibling)) { return $sibling }
+        } elseif (Test-SafeExecutablePath $cmd.Source) {
             return $cmd.Source
         }
     }
     $userShim = Join-Path $env:USERPROFILE 'scoop\shims\scoop.cmd'
-    if (Test-Path $userShim) { return $userShim }
+    if ((Test-Path $userShim) -and (Test-SafeExecutablePath $userShim)) { return $userShim }
     return $null
 }
 
@@ -4234,7 +4451,7 @@ function Resolve-PyManagerCommand {
     if ($cmd -and $cmd.Source) { $candidates += [string]$cmd.Source }
     $candidates += (Join-Path $env:LOCALAPPDATA 'Python\bin\py.exe')
 
-    foreach ($path in ($candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)) {
+    foreach ($path in ($candidates | Where-Object { $_ -and (Test-Path $_) -and (Test-SafeExecutablePath $_) } | Select-Object -Unique)) {
         try {
             $probe = Invoke-CapturedProcess -FilePath $path -Arguments @('list', '--only-managed', '-f', 'json') -TimeoutSeconds 30
             if ($probe.TimedOut -or $probe.ExitCode -ne 0) { continue }
@@ -4515,7 +4732,7 @@ function Invoke-VendorUpdaterProvider {
         $versionValueName = [string](Get-ObjectPropertyValue $entry 'VersionValueName' 'version')
         $versionFilePaths = @(Get-ObjectPropertyValue $entry 'VersionFilePaths' @())
         $currentVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
-        if (-not $currentVersion) { $currentVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
+        if (-not $currentVersion) { $currentVersion = Get-RegistryVersion -Paths @(Get-ObjectPropertyValue $entry 'VersionRegistryPaths' @()) -ValueName $versionValueName }
 
         $reason = ''
         if (Test-IsDescoped -Item ([PSCustomObject]@{ Name=$name; PackageId=$packageId; Provider=$provider; Source=$provider }) -Reason ([ref]$reason)) {
@@ -4523,7 +4740,7 @@ function Invoke-VendorUpdaterProvider {
             continue
         }
 
-        $updaterArgs = @($entry.UpdaterArgs)
+        $updaterArgs = @(Get-ObjectPropertyValue $entry 'UpdaterArgs' @())
         if ($DryRun) {
             $results.Add((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Planned' -Evidence "Would run native updater: $updater $($updaterArgs -join ' ')."))
             continue
@@ -4545,7 +4762,7 @@ function Invoke-VendorUpdaterProvider {
                 continue
             }
             $afterVersion = Get-InstalledFileVersion -Candidates $versionFilePaths
-            if (-not $afterVersion) { $afterVersion = Get-RegistryVersion -Paths @($entry.VersionRegistryPaths) -ValueName $versionValueName }
+            if (-not $afterVersion) { $afterVersion = Get-RegistryVersion -Paths @(Get-ObjectPropertyValue $entry 'VersionRegistryPaths' @()) -ValueName $versionValueName }
             # If we can read a version delta, report Updated/AlreadyCurrent;
             # otherwise keep the outcome Verifying rather than assuming success.
             $status = if ($currentVersion -and $afterVersion) {
@@ -4691,6 +4908,11 @@ function Get-CachedApiJson {
     $cacheHours = [double](Get-ObjectPropertyValue $Cfg 'CacheHours' 168)
     $offline    = [bool](Get-ObjectPropertyValue $Cfg 'Offline' $false)
 
+    if ((Test-Path $cacheFile) -and -not (Test-TrustedPath $cacheFile)) {
+        Write-Log "${Label}: cache file '$cacheFile' is not admin-owned; discarding it." -Level WARN
+        Remove-Item -LiteralPath $cacheFile -Force -EA SilentlyContinue
+    }
+
     if (Test-Path $cacheFile) {
         $age = ((Get-Date) - (Get-Item $cacheFile).LastWriteTime).TotalHours
         if ($offline -or $age -lt $cacheHours) {
@@ -4707,7 +4929,7 @@ function Get-CachedApiJson {
         try { $resp | ConvertTo-Json -Depth 12 | Set-Content $cacheFile -Encoding UTF8 } catch { }
         return $resp
     } catch {
-        Write-Log "${Label}: fetch '$Uri' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level DEBUG
+        Write-Log "${Label}: fetch '$Uri' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level WARN
         if (Test-Path $cacheFile) {
             try { return (Get-Content $cacheFile -Raw | ConvertFrom-Json) } catch { }
         }
@@ -5049,6 +5271,8 @@ function Get-FirmwareCatalogue {
             # Dell Command Update documented codes: 0=success, 1=reboot required,
             # 2=fatal error, 3=error, 4=invalid system, 5=reboot + rescan required.
             RebootCodes = @(1, 5)
+            # 500 = no updates found (system already current).
+            NoUpdateCodes = @(500)
         }
         [PSCustomObject]@{
             Match     = 'HP|Hewlett'
@@ -5063,6 +5287,8 @@ function Get-FirmwareCatalogue {
             ApplyArgs = @('/Operation:Install', '/Silent', '/Category:BIOS,Firmware', "/ReportFolder:$env:TEMP\HPIA")
             # HP Image Assistant uses the MSI convention: 3010 = success, reboot required.
             RebootCodes = @(3010)
+            # 256 = analysis returned no recommendations; 257 = nothing selected to install.
+            NoUpdateCodes = @(256, 257)
         }
         [PSCustomObject]@{
             Match     = 'Lenovo'
@@ -5078,6 +5304,7 @@ function Get-FirmwareCatalogue {
             # only 0 is trusted as success; anything else is reported as failed
             # with the tool output as evidence.
             RebootCodes = @()
+            NoUpdateCodes = @()
         }
     )
 }
@@ -5111,6 +5338,14 @@ function Invoke-FirmwareProvider {
     try {
         Write-Log "$($entry.Name): scanning ($tool $($entry.ScanArgs -join ' '))." -Level INFO
         $scan = Invoke-CapturedProcess -FilePath $tool -Arguments @($entry.ScanArgs) -TimeoutSeconds $timeout
+        $noUpdateCodes = @(Get-ObjectPropertyValue $entry 'NoUpdateCodes' @())
+        if ($scan.TimedOut) {
+            # The killed scan may still hold the tool; never start apply on top of it.
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Failed' -Evidence "OEM firmware scan timed out after ${timeout}s; apply skipped."))
+        }
+        if ($null -ne $scan.ExitCode -and $scan.ExitCode -in $noUpdateCodes) {
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'AlreadyCurrent' -Success $true -Evidence "OEM firmware scan found no updates (exit code $($scan.ExitCode))."))
+        }
         Write-Log "$($entry.Name): applying updates (reboot suppressed)." -Level INFO
         $apply = Invoke-CapturedProcess -FilePath $tool -Arguments @($entry.ApplyArgs) -TimeoutSeconds $timeout
 
@@ -5123,6 +5358,9 @@ function Invoke-FirmwareProvider {
         # Reboot codes are vendor-specific and declared per catalogue entry. A
         # shared list previously treated Dell's exit 2 (fatal error) as success.
         $rebootCodes = @(Get-ObjectPropertyValue $entry 'RebootCodes' @())
+        if ($null -ne $apply.ExitCode -and $apply.ExitCode -in $noUpdateCodes) {
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'AlreadyCurrent' -Success $true -Evidence "OEM firmware tool reported no updates to install. $summary"))
+        }
         if ($apply.ExitCode -eq 0 -or $apply.ExitCode -in $rebootCodes) {
             $reboot = $apply.ExitCode -in $rebootCodes
             return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Completed' -Success $true -RebootRequired $reboot -Evidence "OEM firmware apply completed. $summary"))
@@ -5196,16 +5434,16 @@ function ConvertTo-StoreMatchKey {
     return (([string]$Value).ToLowerInvariant() -replace '[^a-z0-9]', '')
 }
 
-function Compare-VersionText {
-    param($Left, $Right)
-
-    try {
-        $leftVersion = [version]([string]$Left)
-        $rightVersion = [version]([string]$Right)
-        return $leftVersion.CompareTo($rightVersion)
-    } catch {
-        return $null
-    }
+function Test-StoreKeyMatch {
+    # Name keys strip non-[a-z0-9], so a CJK name becomes '' and an app called 'X'
+    # becomes 'x' (inside every '...x64...'). Empty keys never match; substring
+    # matching needs at least 3 characters.
+    param($Container, $Key, [switch]$Exact)
+    $c = ConvertTo-StoreMatchKey $Container
+    $k = ConvertTo-StoreMatchKey $Key
+    if (-not $c -or -not $k) { return $false }
+    if ($c -eq $k) { return $true }
+    return (-not $Exact -and $k.Length -ge 3 -and $c.Contains($k))
 }
 
 function Find-StoreSnapshotPackage {
@@ -5216,20 +5454,13 @@ function Find-StoreSnapshotPackage {
 
     if (-not $Snapshot -or -not $Candidate) { return $null }
 
-    $candidateKey = ConvertTo-StoreMatchKey $Candidate.Name
-    if ([string]::IsNullOrWhiteSpace($candidateKey)) { return $null }
-
+    # Exact name first; substring matching only as a fallback.
     foreach ($pkg in $Snapshot.Values) {
-        $packageKeys = @(
-            ConvertTo-StoreMatchKey $pkg.Name
-            ConvertTo-StoreMatchKey $pkg.PackageFamilyName
-            ConvertTo-StoreMatchKey $pkg.PackageFullName
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-        foreach ($packageKey in $packageKeys) {
-            if ($packageKey.Contains($candidateKey) -or $candidateKey.Contains($packageKey)) {
-                return $pkg
-            }
+        if (Test-StoreKeyMatch $pkg.Name $Candidate.Name -Exact) { return $pkg }
+    }
+    foreach ($pkg in $Snapshot.Values) {
+        foreach ($field in @($pkg.Name, $pkg.PackageFamilyName, $pkg.PackageFullName)) {
+            if ((Test-StoreKeyMatch $field $Candidate.Name) -or (Test-StoreKeyMatch $Candidate.Name $field)) { return $pkg }
         }
     }
 
@@ -5465,7 +5696,7 @@ function Invoke-MicrosoftStoreClientUpdates {
                 $candidateTargetVersion = $candidateReportedVersion
                 $candidateVersionNote = " StoreCliVersion=$candidateReportedVersion;"
                 if (-not [string]::IsNullOrWhiteSpace($candidateOldVersion) -and -not [string]::IsNullOrWhiteSpace($candidateReportedVersion)) {
-                    $versionComparison = Compare-VersionText -Left $candidateReportedVersion -Right $candidateOldVersion
+                    $versionComparison = Compare-SoftwareVersion -Left $candidateReportedVersion -Right $candidateOldVersion
                     if ($null -ne $versionComparison -and $versionComparison -lt 0) {
                         $candidateTargetVersion = ''
                         $candidateVersionNote = " StoreCliVersion=$candidateReportedVersion; Store CLI listed version is lower than local AppX version $candidateOldVersion, so it is recorded as Store-reported metadata rather than a confirmed target version;"
@@ -5582,13 +5813,13 @@ function Invoke-MicrosoftStoreClientUpdates {
                     if ($storeRow.Status -eq 'Failed') { continue }
 
                     $matchingDiff = @($diffRows | Where-Object {
-                        (ConvertTo-StoreMatchKey $_.Name) -eq (ConvertTo-StoreMatchKey $storeRow.Name) -or
-                        (ConvertTo-StoreMatchKey $_.PackageId).Contains((ConvertTo-StoreMatchKey $storeRow.Name)) -or
-                        (ConvertTo-StoreMatchKey $storeRow.PackageId).Contains((ConvertTo-StoreMatchKey $_.Name))
+                        (Test-StoreKeyMatch $_.Name $storeRow.Name -Exact) -or
+                        (Test-StoreKeyMatch $_.PackageId $storeRow.Name) -or
+                        (Test-StoreKeyMatch $storeRow.PackageId $_.Name)
                     } | Select-Object -First 1)
 
                     $stillOffered = @($remainingCandidates | Where-Object {
-                        (ConvertTo-StoreMatchKey $_.Name) -eq (ConvertTo-StoreMatchKey $storeRow.Name)
+                        Test-StoreKeyMatch $_.Name $storeRow.Name -Exact
                     } | Select-Object -First 1)
 
                     if ($matchingDiff.Count -gt 0) {
@@ -5611,8 +5842,8 @@ function Invoke-MicrosoftStoreClientUpdates {
 
             foreach ($row in $diffRows) {
                 if ($storeCliRows -and @($storeCliRows | Where-Object {
-                    (ConvertTo-StoreMatchKey $_.Name) -eq (ConvertTo-StoreMatchKey $row.Name) -or
-                    (ConvertTo-StoreMatchKey $_.PackageId).Contains((ConvertTo-StoreMatchKey $row.Name))
+                    (Test-StoreKeyMatch $_.Name $row.Name -Exact) -or
+                    (Test-StoreKeyMatch $_.PackageId $row.Name)
                 }).Count -gt 0) {
                     continue
                 }
@@ -5666,15 +5897,18 @@ function New-PatchRestorePoint {
     if ($DryRun) { Write-Log 'DRY RUN: Would create system restore point.' -Level INFO; return }
 
     try {
-        Enable-ComputerRestore -Drive "$env:SystemDrive\" -EA SilentlyContinue
-
-        # Checkpoint-Computer emits a non-terminating WARNING (not an error) when a
-        # restore point was already created within the last 1440 min. That's expected
-        # behaviour, not a problem - suppress the warning stream so it doesn't alarm.
-        Checkpoint-Computer -Description $script:CFG.SystemRestore.Description `
-                            -RestorePointType MODIFY_SETTINGS `
-                            -WarningAction SilentlyContinue -EA Stop
-        Write-Log 'System restore point created.' -Level INFO
+        # CIM instead of the System Restore cmdlets: those are Windows PowerShell-only and do
+        # not exist in PowerShell 7, so no restore point was ever created there.
+        Invoke-CimMethod -Namespace root/default -ClassName SystemRestore -MethodName Enable `
+                         -Arguments @{ Drive = "$env:SystemDrive\" } -EA SilentlyContinue | Out-Null
+        $restore = Invoke-CimMethod -Namespace root/default -ClassName SystemRestore -MethodName CreateRestorePoint `
+                                    -Arguments @{ Description = [string]$script:CFG.SystemRestore.Description; RestorePointType = [uint32]12; EventType = [uint32]100 } -EA Stop
+        if ([int]$restore.ReturnValue -eq 0) {
+            # Windows silently skips a new point if one exists from the last 24h (1440 min).
+            Write-Log 'System restore point requested (an existing point from the last 24h is kept).' -Level INFO
+        } else {
+            Write-Log "Restore point creation returned code $($restore.ReturnValue). Proceeding anyway." -Level WARN
+        }
     } catch {
         # The 1440-minute throttle surfaces as an error in some Windows builds.
         # A recent restore point already exists, which is fine for our purposes.
@@ -5689,6 +5923,20 @@ function New-PatchRestorePoint {
 #endregion
 
 #region -- Compliance Reporting -------------------------------------------------------
+
+function ConvertTo-SafeCsvRow {
+    # Spreadsheets run cells starting with = + - @ (or tab/CR) as formulas. Package names
+    # and host-written JSON are untrusted, so prefix such text with a quote before export.
+    process {
+        $row = [ordered]@{}
+        foreach ($p in $_.PSObject.Properties) {
+            $v = $p.Value
+            if ($v -is [string] -and $v -match '^[=+\-@\t\r]') { $v = "'" + $v }
+            $row[$p.Name] = $v
+        }
+        [PSCustomObject]$row
+    }
+}
 
 function New-ComplianceReport {
     param(
@@ -5736,36 +5984,42 @@ function New-ComplianceReport {
 
     if ($script:CFG.Reporting.GenerateJSON) {
         $jsonPath = Join-Path $rptDir "$base.json"
-        [ordered]@{
-            Metadata = [ordered]@{
-                Hostname    = $script:HOSTNAME
-                ScriptVer   = $script:VERSION
-                RunStart    = $script:STARTTIME.ToString('yyyy-MM-dd HH:mm:ss')
-                DurationMin = $elapsed
-                Ring        = $script:RING
-                DryRun      = $DryRun.IsPresent
-                Emergency   = $script:EmergencyPatch
-                ScopeProfile = $script:CFG.ScopeProfile
-                SelfUpdate   = $script:SelfUpdateStatus
-                ProvidersExecuted = $providersExecuted
-                RunDisposition = $runDisposition
-            }
-            Statistics  = $script:Stats
-            Metrics     = $Metrics
-            StatusSummary = $statusSummary
-            SourceSummary = $sourceSummary
-            ProviderSummary = $providerSummary
-            AttentionItems = $attentionItems
-            RebootRequiredItems = $rebootItems
-            Updates     = $Results
-            KEVMatches  = $KEVMatches
-            InventoryKEVMatches = @($script:InventoryKEVMatches)
-            StalenessFindings = @($script:StalenessFindings)
-            EndOfLifeFindings = @($script:EndOfLifeFindings)
-            NVDVulnFindings = @($script:NVDVulnFindings)
-            SLABreaches = $SLABreaches
-        } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8
-        Write-Log "JSON report: $jsonPath" -Level INFO
+        try {
+            [ordered]@{
+                Metadata = [ordered]@{
+                    Hostname    = $script:HOSTNAME
+                    ScriptVer   = $script:VERSION
+                    RunStart    = $script:STARTTIME.ToString('yyyy-MM-dd HH:mm:ss')
+                    DurationMin = $elapsed
+                    Ring        = $script:RING
+                    DryRun      = $DryRun.IsPresent
+                    Emergency   = $script:EmergencyPatch
+                    ScopeProfile = $script:CFG.ScopeProfile
+                    SelfUpdate   = $script:SelfUpdateStatus
+                    ProvidersExecuted = $providersExecuted
+                    RunDisposition = $runDisposition
+                }
+                Statistics  = $script:Stats
+                Metrics     = $Metrics
+                StatusSummary = $statusSummary
+                SourceSummary = $sourceSummary
+                ProviderSummary = $providerSummary
+                AttentionItems = $attentionItems
+                RebootRequiredItems = $rebootItems
+                Updates     = $Results
+                KEVMatches  = $KEVMatches
+                InventoryKEVMatches = @($script:InventoryKEVMatches)
+                StalenessFindings = @($script:StalenessFindings)
+                EndOfLifeFindings = @($script:EndOfLifeFindings)
+                NVDVulnFindings = @($script:NVDVulnFindings)
+                SLABreaches = $SLABreaches
+            } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8 -EA Stop
+            Write-Log "JSON report: $jsonPath" -Level INFO
+        } catch {
+            # Patches are already applied; keep going so CSV/HTML, central copy and exit code still happen.
+            Write-Log "JSON report generation failed: $_" -Level ERROR
+            $jsonPath = $null
+        }
     }
 
     if ([bool](Get-ObjectPropertyValue $script:CFG.Reporting 'GenerateCSV' $true)) {
@@ -5775,7 +6029,7 @@ function New-ComplianceReport {
                 Select-Object Name, PackageId, Provider, Source, InstalledVersion, AvailableVersion,
                               ReportedVersion, ConfirmedVersion, Status, Success, RebootRequired,
                               IsKEV, Timestamp, Evidence, Remediation |
-                Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+                ConvertTo-SafeCsvRow | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
             Write-Log "CSV report: $csvPath" -Level INFO
         } catch {
             Write-Log "CSV report generation failed: $_" -Level WARN
@@ -5785,7 +6039,7 @@ function New-ComplianceReport {
                 $stalenessCsv = Join-Path $rptDir "$base.staleness.csv"
                 @($script:StalenessFindings) |
                     Select-Object Category, Item, Severity, Detail, Recommendation, Timestamp |
-                    Export-Csv -Path $stalenessCsv -NoTypeInformation -Encoding UTF8
+                    ConvertTo-SafeCsvRow | Export-Csv -Path $stalenessCsv -NoTypeInformation -Encoding UTF8
                 Write-Log "Staleness CSV: $stalenessCsv" -Level INFO
             } catch {
                 Write-Log "Staleness CSV generation failed: $_" -Level WARN
@@ -5797,7 +6051,7 @@ function New-ComplianceReport {
                 @($script:EndOfLifeFindings) |
                     Select-Object Product, Item, InstalledVersion, Cycle, Status, EolDate,
                                   DaysRemaining, LatestSupported, Severity, Detail, Recommendation, Timestamp |
-                    Export-Csv -Path $eolCsv -NoTypeInformation -Encoding UTF8
+                    ConvertTo-SafeCsvRow | Export-Csv -Path $eolCsv -NoTypeInformation -Encoding UTF8
                 Write-Log "End-of-life CSV: $eolCsv" -Level INFO
             } catch {
                 Write-Log "End-of-life CSV generation failed: $_" -Level WARN
@@ -5816,7 +6070,7 @@ function New-ComplianceReport {
                             Published = $c.Published; Description = $c.Description; Timestamp = $f.Timestamp
                         }
                     }
-                } | Export-Csv -Path $nvdCsv -NoTypeInformation -Encoding UTF8
+                } | ConvertTo-SafeCsvRow | Export-Csv -Path $nvdCsv -NoTypeInformation -Encoding UTF8
                 Write-Log "NVD vulnerabilities CSV: $nvdCsv" -Level INFO
             } catch {
                 Write-Log "NVD CSV generation failed: $_" -Level WARN
@@ -5847,6 +6101,9 @@ function New-ComplianceReport {
             if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
             Get-ChildItem (Join-Path $rptDir "$base*") | Copy-Item -Destination $dest -Force -EA Stop
             Write-Log "Reports copied to central store: $dest" -Level INFO
+            # Each host prunes its own share folder with the local retention, so the
+            # share does not grow forever and fleet scans stay fast.
+            Remove-OldFiles -Path $dest -Filter 'PatchReport_*' -Days $script:CFG.Logging.RetentionDays
         } catch {
             Write-Log "Failed to copy reports to central store: $_" -Level WARN
         }
@@ -5879,11 +6136,14 @@ function Complete-EarlyRun {
     Update-StatsFromResults -Results $results
 
     $reportInfo = $null
+    $slaBreaches = @()   # also used by the notification below, even if the report fails
     try {
         $patchState = Get-PatchState
         $metrics = Get-PatchMetrics -State $patchState -Enabled ([bool]$script:CFG.SLA.Enabled)
         $slaBreaches = @()
         if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
+        # Early runs are the latest evidence the fleet sees; they must carry the SLA count.
+        $script:Stats.SLABreaches = $slaBreaches.Count
         $reportInfo = New-ComplianceReport -Results $results -KEVMatches @() -SLABreaches $slaBreaches `
                                            -PatchState $patchState -Metrics $metrics
         Copy-LogsToCentral
@@ -5899,8 +6159,11 @@ function Complete-EarlyRun {
         Write-RunEvent -EventId 1010 -Type Information -Message $message
     }
 
-    try { Send-RunNotification -ReportInfo $reportInfo -KEVMatches @() -SLABreaches @() } catch { }
-    if ($reportInfo -and $reportInfo.HtmlPath) { try { Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath } catch { } }
+    try { Send-RunNotification -ReportInfo $reportInfo -SLABreaches $slaBreaches } catch { }
+    try { Restore-BITSThrottle } catch { }
+    try { Exit-SingleInstance } catch { }
+    # A skipped attempt (lock contention, outside the window) is not a finished run.
+    if ($Status -ne 'Skipped' -and $reportInfo -and $reportInfo.HtmlPath) { try { Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath } catch { } }
     $script:ExitCode = $ExitCode
     return $reportInfo
 }
@@ -5915,14 +6178,6 @@ function New-HTMLReport {
         return [System.Net.WebUtility]::HtmlEncode([string]$Value)
     }
 
-    function Get-ReportProperty {
-        param($Object, [string]$Name, $Default = '')
-        if ($null -eq $Object) { return $Default }
-        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) { return $Object[$Name] }
-        $prop = $Object.PSObject.Properties[$Name]
-        if ($null -ne $prop) { return $prop.Value }
-        return $Default
-    }
 
     function Get-ReportStat {
         param([string]$Name, $Default = 0)
@@ -5941,7 +6196,7 @@ function New-HTMLReport {
         ([string]$_) -notmatch '^\s*(?:SLA\s+)?BREACH:'
     })
     $errorCount     = $runtimeErrors.Count
-    $slaEnabled     = [bool](Get-ReportProperty $script:CFG.SLA 'Enabled' $true)
+    $slaEnabled     = [bool](Get-ObjectPropertyValue $script:CFG.SLA 'Enabled' $true)
     $slaEvidence    = @()
     if ($slaEnabled -and $null -ne $SLABreaches) {
         $slaEvidence = @($SLABreaches | Where-Object { $null -ne $_ })
@@ -5960,20 +6215,20 @@ function New-HTMLReport {
     $primaryCount   = if ($isDryRun) { $plannedCount } else { $appliedCount }
     $primaryLabel   = if ($isDryRun) { 'Updates planned' } else { 'Updates applied' }
     $statusGroups = @($Results | Group-Object {
-        $status = Get-ReportProperty $_ 'Status' ''
+        $status = Get-ObjectPropertyValue $_ 'Status' ''
         if ([string]::IsNullOrWhiteSpace([string]$status)) { 'Unknown' } else { [string]$status }
     } | Sort-Object Name)
     $sourceGroups = @($Results | Group-Object {
-        $source = Get-ReportProperty $_ 'Source' 'unknown'
+        $source = Get-ObjectPropertyValue $_ 'Source' 'unknown'
         if ([string]::IsNullOrWhiteSpace([string]$source)) { 'unknown' } else { [string]$source }
     } | Sort-Object Name)
     $providerGroups = @($Results | Group-Object {
-        $provider = Get-ReportProperty $_ 'Provider' (Get-ReportProperty $_ 'Source' 'unknown')
+        $provider = Get-ObjectPropertyValue $_ 'Provider' (Get-ObjectPropertyValue $_ 'Source' 'unknown')
         if ([string]::IsNullOrWhiteSpace([string]$provider)) { 'unknown' } else { [string]$provider }
     } | Sort-Object Name)
-    $blockedCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Blocked' }).Count
-    $failedRowCount = @($Results | Where-Object { (Get-ReportProperty $_ 'Status' '') -eq 'Failed' }).Count
-    $rebootCount = @($Results | Where-Object { [bool](Get-ReportProperty $_ 'RebootRequired' $false) }).Count
+    $blockedCount = @($Results | Where-Object { (Get-ObjectPropertyValue $_ 'Status' '') -eq 'Blocked' }).Count
+    $failedRowCount = @($Results | Where-Object { (Get-ObjectPropertyValue $_ 'Status' '') -eq 'Failed' }).Count
+    $rebootCount = @($Results | Where-Object { [bool](Get-ObjectPropertyValue $_ 'RebootRequired' $false) }).Count
     # Count the rows the copy actually promises: blocked, failed, verifying,
     # reboot-required, and KEV - plus any script errors. Previously this summed only
     # blocked + verifying + failed + errors, so a report could headline "1 item(s) need
@@ -5988,24 +6243,24 @@ function New-HTMLReport {
     # for the same installed product and exposure state become one verification task.
     $inventoryKevReviewGroups = @($InventoryKEVMatches |
         Where-Object { $_.ExposureState -in @('Affected', 'Unknown') } |
-        Group-Object { "$(Get-ReportProperty $_ 'InstalledApp' 'Installed application')|$(Get-ReportProperty $_ 'ExposureState' 'Unknown')" })
+        Group-Object { "$(Get-ObjectPropertyValue $_ 'InstalledApp' 'Installed application')|$(Get-ObjectPropertyValue $_ 'ExposureState' 'Unknown')" })
     $inventoryKevAttentionCount = $inventoryKevReviewGroups.Count
     $stalenessReviewCount = @($StalenessFindings | Where-Object {
-        [string](Get-ReportProperty $_ 'Severity' '') -eq 'review'
+        [string](Get-ObjectPropertyValue $_ 'Severity' '') -eq 'review'
     }).Count
     $eolReviewFindings = @($EndOfLifeFindings | Where-Object {
-        [string](Get-ReportProperty $_ 'Severity' '') -eq 'review'
+        [string](Get-ObjectPropertyValue $_ 'Severity' '') -eq 'review'
     })
     $eolReviewCount = $eolReviewFindings.Count
     $eolConfirmedCount = @($eolReviewFindings | Where-Object {
-        [string](Get-ReportProperty $_ 'Status' '') -eq 'EOL'
+        [string](Get-ObjectPropertyValue $_ 'Status' '') -eq 'EOL'
     }).Count
     $nvdCriticalCount = @($NVDVulnFindings | Where-Object {
-        [int](Get-ReportProperty $_ 'CriticalCount' 0) -gt 0
+        [int](Get-ObjectPropertyValue $_ 'CriticalCount' 0) -gt 0
     }).Count
     $nvdHighCount = @($NVDVulnFindings | Where-Object {
-        [int](Get-ReportProperty $_ 'CriticalCount' 0) -eq 0 -and
-        [int](Get-ReportProperty $_ 'HighCount' 0) -gt 0
+        [int](Get-ObjectPropertyValue $_ 'CriticalCount' 0) -eq 0 -and
+        [int](Get-ObjectPropertyValue $_ 'HighCount' 0) -gt 0
     }).Count
     $attentionCount = $attentionRowCount + $slaCount + $inventoryKevAttentionCount + $errorCount +
         $stalenessReviewCount + $eolReviewCount + $nvdCriticalCount + $nvdHighCount
@@ -6026,14 +6281,14 @@ function New-HTMLReport {
     function New-KEVRowsHtml {
         param([array]$Candidates)
         return (($Candidates | Sort-Object @{ Expression = {
-            switch ([string](Get-ReportProperty $_ 'ExposureState' 'Unknown')) {
+            switch ([string](Get-ObjectPropertyValue $_ 'ExposureState' 'Unknown')) {
                 'Affected'    { 0 }
                 'Unknown'     { 1 }
                 default       { 2 }
             } } }, CVE | ForEach-Object {
-            $state = [string](Get-ReportProperty $_ 'ExposureState' 'Unknown')
-            $fixed = [string](Get-ReportProperty $_ 'FixedVersion' '')
-            $why   = [string](Get-ReportProperty $_ 'ExposureDetail' '')
+            $state = [string](Get-ObjectPropertyValue $_ 'ExposureState' 'Unknown')
+            $fixed = [string](Get-ObjectPropertyValue $_ 'FixedVersion' '')
+            $why   = [string](Get-ObjectPropertyValue $_ 'ExposureDetail' '')
             $badge = switch ($state) {
                 'Affected'    { "<span class='status fail'>Affected</span>" }
                 'NotAffected' { "<span class='status ok'>Not affected</span>" }
@@ -6055,23 +6310,23 @@ function New-HTMLReport {
         param([array]$Rows)
         if ($Rows.Count -eq 0) { return '' }
         return (($Rows | ForEach-Object {
-            $success = [bool](Get-ReportProperty $_ 'Success' $false)
-            $isKev = [bool](Get-ReportProperty $_ 'IsKEV' $false)
-            $name = Get-ReportProperty $_ 'Name' ''
-            $packageId = Get-ReportProperty $_ 'PackageId' ''
-            $installedVer = Get-ReportProperty $_ 'InstalledVersion' (Get-ReportProperty $_ 'OldVer' '')
-            $availableVer = Get-ReportProperty $_ 'AvailableVersion' (Get-ReportProperty $_ 'NewVer' '')
-            $reportedVer = Get-ReportProperty $_ 'ReportedVersion' ''
-            $confirmedVer = Get-ReportProperty $_ 'ConfirmedVersion' ''
+            $success = [bool](Get-ObjectPropertyValue $_ 'Success' $false)
+            $isKev = [bool](Get-ObjectPropertyValue $_ 'IsKEV' $false)
+            $name = Get-ObjectPropertyValue $_ 'Name' ''
+            $packageId = Get-ObjectPropertyValue $_ 'PackageId' ''
+            $installedVer = Get-ObjectPropertyValue $_ 'InstalledVersion' (Get-ObjectPropertyValue $_ 'OldVer' '')
+            $availableVer = Get-ObjectPropertyValue $_ 'AvailableVersion' (Get-ObjectPropertyValue $_ 'NewVer' '')
+            $reportedVer = Get-ObjectPropertyValue $_ 'ReportedVersion' ''
+            $confirmedVer = Get-ObjectPropertyValue $_ 'ConfirmedVersion' ''
             $targetText = if ($availableVer -and $reportedVer -and $availableVer -ne $reportedVer) { "$availableVer / reported $reportedVer" } elseif ($availableVer) { $availableVer } else { $reportedVer }
-            $rebootRequired = [bool](Get-ReportProperty $_ 'RebootRequired' $false)
-            $timestamp = Get-ReportProperty $_ 'Timestamp' ''
-            $status = Get-ReportProperty $_ 'Status' ''
+            $rebootRequired = [bool](Get-ObjectPropertyValue $_ 'RebootRequired' $false)
+            $timestamp = Get-ObjectPropertyValue $_ 'Timestamp' ''
+            $status = Get-ObjectPropertyValue $_ 'Status' ''
             if ([string]::IsNullOrWhiteSpace([string]$status)) {
                 $status = if ($success) { 'Succeeded' } else { 'Failed' }
             }
-            $engineSource = Get-ReportProperty $_ 'Source' 'winget'
-            $provider = Get-ReportProperty $_ 'Provider' $engineSource
+            $engineSource = Get-ObjectPropertyValue $_ 'Source' 'winget'
+            $provider = Get-ObjectPropertyValue $_ 'Provider' $engineSource
             $rowClass = switch -Regex ($status) {
                 '^Planned$'   { 'planned'; break }
                 '^Succeeded$' { 'ok'; break }
@@ -6085,8 +6340,8 @@ function New-HTMLReport {
                 default       { if ($success) { 'ok' } else { 'fail' } }
             }
             $kev = if ($isKev) { '<span class="flag danger">KEV</span>' } else { '' }
-            $evidence = Get-ReportProperty $_ 'Evidence' (Get-ReportProperty $_ 'Reason' '')
-            $remediation = Get-ReportProperty $_ 'Remediation' ''
+            $evidence = Get-ObjectPropertyValue $_ 'Evidence' (Get-ObjectPropertyValue $_ 'Reason' '')
+            $remediation = Get-ObjectPropertyValue $_ 'Remediation' ''
             $details = (($evidence, $remediation | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
             $detailsFallback = if ($isDryRun -and $status -eq 'Planned') { 'Dry run only - no package action was attempted.' } else { 'No additional evidence was recorded.' }
             $rebootText = if ($rebootRequired) { 'Yes' } else { 'No' }
@@ -6103,7 +6358,7 @@ function New-HTMLReport {
                 'action'    { 1 }
                 default     { 2 }
             }
-        } }, @{ Expression = { [string](Get-ReportProperty $_ 'Name' '') } })
+        } }, @{ Expression = { [string](Get-ObjectPropertyValue $_ 'Name' '') } })
     $providerCheckRows = @($Results | Where-Object { (Get-ReportRowKind $_) -eq 'provider' })
     $skippedRows = @($Results | Where-Object { (Get-ReportRowKind $_) -eq 'skipped' })
     $actionableUpdateRows = New-ReportRowsHtml -Rows $actionableRows
@@ -6115,7 +6370,7 @@ function New-HTMLReport {
     $kevRows = New-KEVRowsHtml -Candidates $KEVMatches
 
     $slaRows = ($slaEvidence | ForEach-Object {
-        "<tr class='breach'><td>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'PackageName' 'Unknown package'))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'PackageId' ''))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'VersionAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'FirstSeenAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'SLADue' ''))</td><td>$(ConvertTo-ReportHtml (Get-ReportProperty $_ 'Ring' ''))</td></tr>"
+        "<tr class='breach'><td>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'PackageName' 'Unknown package'))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'PackageId' ''))</td><td class='mono'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'VersionAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'FirstSeenAvailable' ''))</td><td class='nowrap'>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'SLADue' ''))</td><td>$(ConvertTo-ReportHtml (Get-ObjectPropertyValue $_ 'Ring' ''))</td></tr>"
     }) -join "`n"
 
     $errorItems = ($runtimeErrors | ForEach-Object {
@@ -6144,18 +6399,18 @@ function New-HTMLReport {
 
     $attentionSequence = [System.Collections.Generic.List[string]]::new()
     foreach ($row in @($actionableRows | Where-Object { (Get-ReportRowKind $_) -eq 'attention' })) {
-        $status = [string](Get-ReportProperty $row 'Status' 'Review')
-        $name = [string](Get-ReportProperty $row 'Name' 'Package')
-        $evidence = [string](Get-ReportProperty $row 'Evidence' 'Review the package evidence.')
-        $confirmedPackage = ($status -in @('Blocked','Failed') -or [bool](Get-ReportProperty $row 'IsKEV' $false))
+        $status = [string](Get-ObjectPropertyValue $row 'Status' 'Review')
+        $name = [string](Get-ObjectPropertyValue $row 'Name' 'Package')
+        $evidence = [string](Get-ObjectPropertyValue $row 'Evidence' 'Review the package evidence.')
+        $confirmedPackage = ($status -in @('Blocked','Failed') -or [bool](Get-ObjectPropertyValue $row 'IsKEV' $false))
         $itemClass = if ($confirmedPackage) { '' } else { " class='review'" }
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>$(ConvertTo-ReportHtml $status) - $(ConvertTo-ReportHtml $name)</strong><p>$(ConvertTo-ReportHtml $evidence)</p></div><a href='#updates'>Package evidence</a></li>")
     }
     foreach ($group in $inventoryKevReviewGroups) {
         $first = @($group.Group)[0]
-        $appName = [string](Get-ReportProperty $first 'InstalledApp' 'Installed application')
-        $state = [string](Get-ReportProperty $first 'ExposureState' 'Unknown')
-        $cves = @($group.Group | ForEach-Object { [string](Get-ReportProperty $_ 'CVE' 'CISA KEV') } | Sort-Object -Unique)
+        $appName = [string](Get-ObjectPropertyValue $first 'InstalledApp' 'Installed application')
+        $state = [string](Get-ObjectPropertyValue $first 'ExposureState' 'Unknown')
+        $cves = @($group.Group | ForEach-Object { [string](Get-ObjectPropertyValue $_ 'CVE' 'CISA KEV') } | Sort-Object -Unique)
         $cveText = $cves -join ', '
         $itemClass = if ($state -eq 'Unknown') { " class='review'" } else { '' }
         $title = if ($state -eq 'Unknown') { "Verify inventory KEV - $appName" } else { "Confirmed inventory KEV - $appName" }
@@ -6163,15 +6418,15 @@ function New-HTMLReport {
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>$(ConvertTo-ReportHtml $title)</strong><p>$(ConvertTo-ReportHtml $message)</p></div><a href='#security'>Security evidence</a></li>")
     }
     foreach ($breach in $slaEvidence) {
-        $packageName = [string](Get-ReportProperty $breach 'PackageName' 'Package')
-        $due = [string](Get-ReportProperty $breach 'SLADue' 'due date unavailable')
+        $packageName = [string](Get-ObjectPropertyValue $breach 'PackageName' 'Package')
+        $due = [string](Get-ObjectPropertyValue $breach 'SLADue' 'due date unavailable')
         $attentionSequence.Add("<li><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>SLA exposure - $(ConvertTo-ReportHtml $packageName)</strong><p>Remediation due $(ConvertTo-ReportHtml $due).</p></div><a href='#security'>SLA evidence</a></li>")
     }
-    foreach ($finding in @($NVDVulnFindings | Sort-Object @{ Expression = { [int](Get-ReportProperty $_ 'CriticalCount' 0) }; Descending = $true })) {
-        $critical = [int](Get-ReportProperty $finding 'CriticalCount' 0)
-        $high = [int](Get-ReportProperty $finding 'HighCount' 0)
+    foreach ($finding in @($NVDVulnFindings | Sort-Object @{ Expression = { [int](Get-ObjectPropertyValue $_ 'CriticalCount' 0) }; Descending = $true })) {
+        $critical = [int](Get-ObjectPropertyValue $finding 'CriticalCount' 0)
+        $high = [int](Get-ObjectPropertyValue $finding 'HighCount' 0)
         if ($critical -le 0 -and $high -le 0) { continue }
-        $item = [string](Get-ReportProperty $finding 'Item' 'Installed software')
+        $item = [string](Get-ObjectPropertyValue $finding 'Item' 'Installed software')
         $itemClass = if ($critical -gt 0) { '' } else { " class='review'" }
         $severity = if ($critical -gt 0) { "$critical Critical" } else { "$high High" }
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>NVD exposure - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $severity) version-matched vulnerability finding(s).</p></div><a href='#security'>NVD evidence</a></li>")
@@ -6180,20 +6435,19 @@ function New-HTMLReport {
         $attentionSequence.Add("<li><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Runtime error</strong><p>$(ConvertTo-ReportHtml $scriptError)</p></div><a href='#auditDetail'>Runtime evidence</a></li>")
     }
     foreach ($finding in $eolReviewFindings) {
-        $item = [string](Get-ReportProperty $finding 'Item' 'Installed software')
-        $status = [string](Get-ReportProperty $finding 'Status' 'Lifecycle review')
+        $item = [string](Get-ObjectPropertyValue $finding 'Item' 'Installed software')
+        $status = [string](Get-ObjectPropertyValue $finding 'Status' 'Lifecycle review')
         $itemClass = if ($status -eq 'EOL') { '' } else { " class='review'" }
         $attentionSequence.Add("<li$itemClass><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Lifecycle - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $status). Review the supported-version evidence.</p></div><a href='#lifecycle'>Lifecycle evidence</a></li>")
     }
-    foreach ($finding in @($StalenessFindings | Where-Object { [string](Get-ReportProperty $_ 'Severity' '') -eq 'review' })) {
-        $item = [string](Get-ReportProperty $finding 'Item' 'Environment evidence')
-        $detail = [string](Get-ReportProperty $finding 'Detail' 'Freshness evidence needs review.')
+    foreach ($finding in @($StalenessFindings | Where-Object { [string](Get-ObjectPropertyValue $_ 'Severity' '') -eq 'review' })) {
+        $item = [string](Get-ObjectPropertyValue $finding 'Item' 'Environment evidence')
+        $detail = [string](Get-ObjectPropertyValue $finding 'Detail' 'Freshness evidence needs review.')
         $attentionSequence.Add("<li class='review'><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Staleness - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $detail)</p></div><a href='#lifecycle'>Staleness evidence</a></li>")
     }
     $attentionSequenceHtml = $attentionSequence -join ''
-    $hasConfirmedAttention = $confirmedAttention
-    $attentionPanelClass = if ($hasConfirmedAttention) { 'danger-panel' } else { 'review-panel' }
-    $attentionCountClass = if ($hasConfirmedAttention) { 'danger' } else { 'attention' }
+    $attentionPanelClass = if ($confirmedAttention) { 'danger-panel' } else { 'review-panel' }
+    $attentionCountClass = if ($confirmedAttention) { 'danger' } else { 'attention' }
     $emptyAttentionCopy = if ($slaEnabled) {
         'No blocked, failed, verifying, reboot-required, KEV-affected, SLA, inventory-verification, or runtime-error states were recorded.'
     } else {
@@ -6229,15 +6483,13 @@ function New-HTMLReport {
     }
 
     $invKevRows      = New-KEVRowsHtml -Candidates $InventoryKEVMatches
-    $invKevAffected  = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Affected' }).Count
-    $invKevUnknown   = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Unknown' }).Count
 
     $invKevSection = if ($InventoryKEVMatches.Count -gt 0) {
-        $tone      = if ($invKevAffected -gt 0) { 'danger-panel' } else { '' }
-        $countTone = if ($invKevAffected -gt 0) { 'danger' } elseif ($invKevUnknown -gt 0) { '' } else { 'good' }
-        $noteClass = if ($invKevAffected -gt 0) { 'note danger-text' } else { 'note' }
-        $heading   = if ($invKevAffected -gt 0) { "$invKevAffected confirmed exposure(s) with no available update" } else { 'KEV product history, no confirmed exposure' }
-        "<section class='panel $tone'><div class='section-head'><div><h2>CISA KEV - installed software: $heading</h2></div><span class='count $countTone'>$invKevAffected</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
+        $tone      = if ($inventoryKevAffectedCount -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($inventoryKevAffectedCount -gt 0) { 'danger' } elseif ($inventoryKevUnknownCount -gt 0) { '' } else { 'good' }
+        $noteClass = if ($inventoryKevAffectedCount -gt 0) { 'note danger-text' } else { 'note' }
+        $heading   = if ($inventoryKevAffectedCount -gt 0) { "$inventoryKevAffectedCount confirmed exposure(s) with no available update" } else { 'KEV product history, no confirmed exposure' }
+        "<section class='panel $tone'><div class='section-head'><div><h2>CISA KEV - installed software: $heading</h2></div><span class='count $countTone'>$inventoryKevAffectedCount</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
     } else {
         "<section class='panel'><div class='section-head'><div><h2>CISA KEV - installed software: No inventory KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>The full software inventory was scanned against the KEV catalogue; nothing matched beyond the actionable items above.</p></section>"
     }
@@ -6578,7 +6830,7 @@ function Send-RunNotification {
     # Posts a compact JSON run summary to a webhook (Teams/Slack incoming webhooks
     # and generic JSON receivers). Both a human-readable "text" field and structured
     # fields are included. Fire-and-forget: a webhook failure never fails the run.
-    param([object]$ReportInfo, [array]$KEVMatches, [array]$SLABreaches)
+    param([object]$ReportInfo, [array]$SLABreaches)
 
     $notify = Get-ObjectPropertyValue $script:CFG 'Notifications' $null
     if ($null -eq $notify) { return }
@@ -6588,7 +6840,7 @@ function Send-RunNotification {
 
     $hasProblems = ($script:Stats.UpdatesFailed -gt 0) -or
                    ($script:Stats.Errors.Count -gt 0) -or
-                   ($KEVMatches.Count -gt 0) -or
+                   ($script:Stats.KEVMatches -gt 0) -or   # confirmed-affected only, not every name candidate
                    ($SLABreaches.Count -gt 0) -or
                    ($script:ExitCode -ne 0)
 
@@ -6696,6 +6948,36 @@ function Resolve-SelfUpdateRef {
     }
 }
 
+function Get-ConfigKeysUnknownToScript {
+    # Static check, nothing from the download is executed: lists keys the config file
+    # sets that the script's $script:DefaultCfg no longer declares (Import-Configuration
+    # rejects unknown keys).
+    param([string]$ScriptPath, [string]$ConfigPath)
+    if (-not $ConfigPath -or -not (Test-Path -LiteralPath $ConfigPath)) { return @() }
+    $tokens = $null; $parseErrors = $null
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors)
+    $assign = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:DefaultCfg' }, $true)
+    if (-not $assign) { return @('(default configuration not found)') }
+    $table = $assign.Right.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+    $known = @{}
+    foreach ($pair in $table.KeyValuePairs) {
+        $section = $pair.Item1.Extent.Text.Trim("'", '"')
+        $inner = $pair.Item2.Find({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)
+        $known[$section] = if ($inner) { @($inner.KeyValuePairs | ForEach-Object { $_.Item1.Extent.Text.Trim("'", '"') }) } else { $null }
+    }
+    $unknown = [System.Collections.Generic.List[string]]::new()
+    $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    foreach ($section in $config.PSObject.Properties) {
+        if ($section.Name -like '_*' -or $section.Name -eq '$schema') { continue }
+        if (-not $known.ContainsKey($section.Name)) { $unknown.Add($section.Name); continue }
+        if ($null -eq $known[$section.Name] -or $section.Value -isnot [PSCustomObject]) { continue }
+        foreach ($key in $section.Value.PSObject.Properties) {
+            if ($key.Name -notlike '_*' -and $key.Name -notin $known[$section.Name]) { $unknown.Add("$($section.Name).$($key.Name)") }
+        }
+    }
+    return @($unknown)
+}
+
 function Invoke-SelfUpdate {
     # Refresh PatchManager itself from GitHub. Security posture:
     #   - On for Personal/Commercial, off for CommercialManaged (resolved by profile).
@@ -6789,7 +7071,8 @@ function Invoke-SelfUpdate {
         if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
             $actualHash = (Get-FileHash -Path $tempFile -Algorithm SHA256).Hash
             if ($actualHash -ine $expectedHash.Trim()) {
-                Write-Log "Self-update: SHA256 mismatch (expected $($expectedHash.Trim()), got $actualHash); refusing to install." -Level ERROR
+                # WARN, not ERROR: a newer release that is not yet approved is not a failed run.
+                Write-Log "Self-update: SHA256 mismatch (expected $($expectedHash.Trim()), got $actualHash): newer build not approved; refusing to install." -Level WARN
                 $script:SelfUpdateStatus = 'Available (hash mismatch)'
                 return
             }
@@ -6805,6 +7088,15 @@ function Invoke-SelfUpdate {
         if ($DryRun -or $ReportOnly) {
             Write-Log "Self-update: update $localVer -> $remoteVer available. Not applied in DryRun/ReportOnly." -Level INFO
             $script:SelfUpdateStatus = "Available ($localVer -> $remoteVer)"
+            return
+        }
+
+        # Integrity gate 3: the current config must still load under the new script, or
+        # every later run exits 2 and self-update can never fix it.
+        $unknownKeys = @(Get-ConfigKeysUnknownToScript -ScriptPath $tempFile -ConfigPath $ConfigPath)
+        if ($unknownKeys.Count -gt 0) {
+            Write-Log "Self-update: $localVer -> $remoteVer would reject this config (unknown key(s): $($unknownKeys -join ', ')); not applied. Update the config first." -Level WARN
+            $script:SelfUpdateStatus = "Available ($localVer -> $remoteVer, config incompatible)"
             return
         }
 
@@ -6838,22 +7130,17 @@ function Invoke-SelfUpdate {
 
 #endregion
 
-#region -- Reboot Detection -----------------------------------------------------------
-
-function Test-RebootRequired {
-    $keys = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
-    )
-    foreach ($k in $keys) { if (Test-Path $k) { return $true } }
-    return $false
-}
-
-#endregion
-
 #region -- Main Orchestration ---------------------------------------------------------
 
 function Invoke-Main {
+    if (-not $ValidateConfig -and (Test-IsAdministrator)) {
+        foreach ($trustPath in @($PSCommandPath, $ConfigPath)) {
+            if ($trustPath -and (Test-Path -LiteralPath $trustPath) -and -not (Test-TrustedPath $trustPath)) {
+                Write-Host "[SECURITY] '$trustPath' is owned by, or writable by, a non-administrator account. Refusing to run elevated. Fix its owner/ACL (Administrators or SYSTEM only)." -ForegroundColor Red
+                exit 2
+            }
+        }
+    }
     try {
         $script:CFG = Import-Configuration -Path $ConfigPath
     } catch {
@@ -6897,7 +7184,7 @@ function Invoke-Main {
     }
 
     $script:RING = Get-DeploymentRing
-    $ringDelay   = $script:CFG.Ring.Delays[$script:RING]
+    $ringDelay   = Get-ObjectPropertyValue $script:CFG.Ring.Delays $script:RING 0
     Write-Log "Ring: $($script:RING) (suggested delay: ${ringDelay}d - enforce via deployment tooling)" -Level INFO
 
     #-- Pre-flight ------------------------------------------------------------
@@ -6955,7 +7242,7 @@ function Invoke-Main {
 
     if ($confirmedKev.Count -gt 0) {
         $script:EmergencyPatch = $true
-        Write-Log "EMERGENCY: $($confirmedKev.Count) CISA KEV match(es) confirmed affected by version. Bypassing maintenance window and reducing jitter." -Level ERROR
+        Write-Log "EMERGENCY: $($confirmedKev.Count) CISA KEV match(es) confirmed affected by version. Bypassing maintenance window and reducing jitter." -Level WARN
         Write-RunEvent -EventId 9001 -Type Error `
             -Message "KEV EMERGENCY on $($script:HOSTNAME): $(($confirmedKev | ForEach-Object { "$($_.CVE) ($($_.InstalledApp) $($_.InstalledVer))" }) -join ', ')"
     } elseif ($kevMatches.Count -gt 0) {
@@ -6989,9 +7276,9 @@ function Invoke-Main {
     if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
 
     if ($slaBreaches.Count -gt 0) {
-        Write-Log "SLA BREACH: $($slaBreaches.Count) update(s) available for over $($script:CFG.SLA.Critical) days." -Level ERROR
+        Write-Log "SLA BREACH: $($slaBreaches.Count) update(s) available for over $($script:CFG.SLA.Critical) days." -Level WARN
         $slaBreaches | ForEach-Object {
-            Write-Log "  BREACH: $($_.PackageName) v$($_.VersionAvailable) available since $($_.FirstSeenAvailable) (due: $($_.SLADue))" -Level ERROR
+            Write-Log "  BREACH: $($_.PackageName) v$($_.VersionAvailable) available since $($_.FirstSeenAvailable) (due: $($_.SLADue))" -Level WARN
         }
         $script:Stats.SLABreaches = $slaBreaches.Count
         Write-RunEvent -EventId 1020 -Type Error `
@@ -7106,15 +7393,20 @@ function Invoke-Main {
         Write-RunEvent -EventId 1011 -Type Warning -Message $summaryMsg
     }
 
-    Send-RunNotification -ReportInfo $reportInfo -KEVMatches $kevMatches -SLABreaches $slaBreaches
+    Send-RunNotification -ReportInfo $reportInfo -SLABreaches $slaBreaches
 
+    # Release machine-wide state before the popup: it waits for the user, and the
+    # lock and BITS throttle must not be held while nobody is at the screen.
+    Restore-BITSThrottle
+    Exit-SingleInstance
     if ($reportInfo -and $reportInfo.HtmlPath) {
         Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath
     }
 
-    Exit-SingleInstance
-
-    if ($script:ExitCode -eq 0 -and (Test-RebootRequired)) {
+    # A row that says "reboot required" (choco 3010, firmware) counts even when no
+    # registry flag is set; Test-PendingReboot covers PFRO/CBS/SCCM signals too.
+    $rowNeedsReboot = @($updateResults | Where-Object { $_.PSObject.Properties['RebootRequired'] -and [bool]$_.RebootRequired }).Count -gt 0
+    if ($script:ExitCode -eq 0 -and ($rowNeedsReboot -or (Test-PendingReboot))) {
         Write-Log 'Reboot required to complete updates.' -Level WARN
         Write-RunEvent -EventId 3010 -Type Warning -Message "Reboot required on $($script:HOSTNAME) to complete updates."
         exit 3010
