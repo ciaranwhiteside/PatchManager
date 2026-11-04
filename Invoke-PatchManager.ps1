@@ -139,6 +139,8 @@ $script:NVDLookupCount = 0                          # KEV-path budget
 $script:NVDInventoryLookupCount = 0                 # inventory-scan budget (separate cap, shared pacer)
 $script:NVDCpeByName = @{}                          # display name -> chosen CPE (or $null), per run
 $script:NVDLastRequest = [datetime]::MinValue       # ONE pacing clock across both NVD paths
+$script:NVDKeyRejected = $false                     # NVD answered 'Invalid apiKey'; run keyless
+$script:LastApiStatus = 0                           # HTTP status of the last failed Get-CachedApiJson fetch
 $script:NVDVulnFindings = @()
 $script:StalenessFindings = @()
 $script:EndOfLifeFindings = @()
@@ -2397,10 +2399,13 @@ function Invoke-NVDPacedRequest {
     $base       = if ($isMirror) { "$($mirror.TrimEnd('/'))/$Endpoint/2.0" } else { $PublicBaseUrl }
 
     $hdrs = @{ 'User-Agent' = 'PatchManager-NVD' }
-    if (-not $isMirror) {
+    if (-not $isMirror -and -not $script:NVDKeyRejected) {
         $apiKey = [string](Get-ObjectPropertyValue $NvdCfg 'ApiKey' '')
         if ($apiKey) { $hdrs['apiKey'] = $apiKey }
     }
+    # A keyless public API needs the public pacing, whatever RequestDelayMs says.
+    $delayMs = [int](Get-ObjectPropertyValue $NvdCfg 'RequestDelayMs' 6500)
+    if ($script:NVDKeyRejected) { $delayMs = [Math]::Max($delayMs, 6500) }
 
     # Decide willFetch exactly as Get-CachedApiJson would, so pacing tracks real calls.
     $cacheDir   = [string](Get-ObjectPropertyValue $NvdCfg 'CachePath' 'C:\ProgramData\PatchManager\Cache')
@@ -2412,7 +2417,6 @@ function Invoke-NVDPacedRequest {
 
     # Pace only real network calls, and only against the public API (a mirror is unthrottled).
     if ($willFetch -and -not $isMirror -and $script:NVDLastRequest -ne [datetime]::MinValue) {
-        $delayMs = [int](Get-ObjectPropertyValue $NvdCfg 'RequestDelayMs' 6500)
         $waited  = ((Get-Date) - $script:NVDLastRequest).TotalMilliseconds
         if ($waited -lt $delayMs) { Start-Sleep -Milliseconds ([int]($delayMs - $waited)) }
     }
@@ -2420,10 +2424,22 @@ function Invoke-NVDPacedRequest {
     $fetchCfg = [ordered]@{ CachePath = $cacheDir; CacheHours = $CacheHours; Offline = $offline }
     $sep  = if ($base -match '\?') { '&' } else { '?' }
     $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
-    if ($null -eq $resp -and $willFetch) {
+    $retry = $null -eq $resp -and $willFetch
+    if ($retry -and $script:LastApiStatus -eq 404) {
+        # 404 is final, except that NVD also answers 404 'Invalid apiKey' for an expired
+        # or revoked key: drop the key for the rest of the run instead of failing every call.
+        $retry = $hdrs.ContainsKey('apiKey')
+        if ($retry) {
+            $script:NVDKeyRejected = $true
+            $hdrs.Remove('apiKey')
+            $delayMs = [Math]::Max($delayMs, 6500)
+            Write-Log 'NVD rejected NVD.ApiKey (404 Invalid apiKey); continuing without it at the public rate limit. Request a new key at https://nvd.nist.gov/developers/request-an-api-key or remove NVD.ApiKey.' -Level WARN
+        }
+    }
+    if ($retry) {
         # NVD answers 403/429/503 when many hosts share an IP or key; one paced retry
         # recovers most collisions instead of turning a real KEV emergency into Unknown.
-        Start-Sleep -Milliseconds ([int](Get-ObjectPropertyValue $NvdCfg 'RequestDelayMs' 6500))
+        Start-Sleep -Milliseconds $delayMs
         $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
     }
 
@@ -4924,11 +4940,14 @@ function Get-CachedApiJson {
 
     $hdrs = @{ 'User-Agent' = 'PatchManager'; 'Accept' = 'application/json' }
     foreach ($k in $Headers.Keys) { $hdrs[$k] = $Headers[$k] }
+    $script:LastApiStatus = 0
     try {
         $resp = Invoke-RestMethod -Uri $Uri -TimeoutSec 30 -Headers $hdrs -EA Stop
         try { $resp | ConvertTo-Json -Depth 12 | Set-Content $cacheFile -Encoding UTF8 } catch { }
         return $resp
     } catch {
+        # WebException (5.1) and HttpResponseException (7) both expose Response.StatusCode.
+        $script:LastApiStatus = try { [int]$_.Exception.Response.StatusCode } catch { 0 }
         Write-Log "${Label}: fetch '$Uri' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level WARN
         if (Test-Path $cacheFile) {
             try { return (Get-Content $cacheFile -Raw | ConvertFrom-Json) } catch { }

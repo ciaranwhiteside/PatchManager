@@ -1839,10 +1839,27 @@ foreach ($fn in 'Invoke-NVDPacedRequest','Get-NVDCpeMatches') { Invoke-Expressio
 & {
     $nvdCfg = [pscustomobject]@{ Enabled = $true; RequestDelayMs = 0; CachePath = (Join-Path ([IO.Path]::GetTempPath()) "pm-nvd-$([guid]::NewGuid())"); MaxLookupsPerRun = 5 }
     $script:NVDLastRequest = [datetime]::MinValue
+    $script:NVDKeyRejected = $false
+    $script:LastApiStatus = 0
     $script:nvdCalls = 0
-    function Get-CachedApiJson { $script:nvdCalls++; if ($script:nvdCalls -eq 1) { $null } else { [pscustomobject]@{ ok = $true } } }
+    function Get-CachedApiJson { $script:nvdCalls++; if ($script:nvdCalls -eq 1) { $script:LastApiStatus = 503; $null } else { [pscustomobject]@{ ok = $true } } }
     $nvdReq = Invoke-NVDPacedRequest -NvdCfg $nvdCfg -Endpoint 'cves' -PublicBaseUrl 'https://example.invalid/cves' -Query 'cveId=CVE-1' -CacheKey 'nvd_CVE-1'
     Assert-True ($script:nvdCalls -eq 2 -and $nvdReq.Data.ok) 'A failed NVD fetch should be retried once.'
+
+    # Live run 2026-11-04: an expired NVD key made every call 404 'Invalid apiKey', twice.
+    function Write-Log { param($Message, $Level) }
+    function Start-Sleep { param($Milliseconds) }
+    $script:nvdCalls = 0; $script:sentKeys = @()
+    function Get-CachedApiJson { param($Uri, $CacheKey, $Cfg, $Headers, $Label) $script:nvdCalls++; $script:sentKeys += $Headers.ContainsKey('apiKey'); if ($Headers.ContainsKey('apiKey')) { $script:LastApiStatus = 404; $null } else { $script:LastApiStatus = 0; [pscustomobject]@{ ok = $true } } }
+    $keyCfg = [pscustomobject]@{ Enabled = $true; ApiKey = 'expired'; RequestDelayMs = 0; CachePath = $nvdCfg.CachePath }
+    $first = Invoke-NVDPacedRequest -NvdCfg $keyCfg -Endpoint 'cpes' -PublicBaseUrl 'https://example.invalid/cpes' -Query 'keywordSearch=a' -CacheKey 'nvdcpe_a'
+    $second = Invoke-NVDPacedRequest -NvdCfg $keyCfg -Endpoint 'cpes' -PublicBaseUrl 'https://example.invalid/cpes' -Query 'keywordSearch=b' -CacheKey 'nvdcpe_b'
+    Assert-True ($first.Data.ok -and $second.Data.ok -and $script:NVDKeyRejected) 'A rejected NVD key must fall back to keyless requests.'
+    Assert-True ($script:nvdCalls -eq 3 -and ($script:sentKeys -join ',') -eq 'True,False,False') 'The rejected key must be sent once, then dropped for the run.'
+    $script:NVDKeyRejected = $false; $script:nvdCalls = 0
+    function Get-CachedApiJson { $script:nvdCalls++; $script:LastApiStatus = 404; $null }
+    [void](Invoke-NVDPacedRequest -NvdCfg $nvdCfg -Endpoint 'cpes' -PublicBaseUrl 'https://example.invalid/cpes' -Query 'keywordSearch=c' -CacheKey 'nvdcpe_c')
+    Assert-True ($script:nvdCalls -eq 1) 'A keyless 404 is final and must not be retried.'
 
     $script:CFG = [pscustomobject]@{ NVD = $nvdCfg }
     $script:NVDMemo = @{}; $script:NVDLookupCount = 0
