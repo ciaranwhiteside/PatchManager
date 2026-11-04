@@ -679,6 +679,29 @@ function Test-IsAdministrator {
     } catch { return $false }
 }
 
+function Test-TrustedPath {
+    # An elevated run must not obey a file a standard user created or can change:
+    # owner and every effective write ACE must be SYSTEM, Administrators,
+    # TrustedInstaller, or the account running PatchManager.
+    param([Parameter(Mandatory)] [string]$Path)
+    try {
+        $acl = Get-Acl -LiteralPath $Path -EA Stop
+        $sid = [Security.Principal.SecurityIdentifier]
+        $trusted = @('S-1-5-18', 'S-1-5-32-544',
+                     'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464',
+                     [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        if ($acl.GetOwner($sid).Value -notin $trusted) { return $false }
+        $write = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, Delete, ChangePermissions, TakeOwnership'
+        foreach ($ace in $acl.GetAccessRules($true, $true, $sid)) {
+            if ($ace.AccessControlType -ne 'Allow') { continue }
+            if ($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) { continue }
+            if (($ace.FileSystemRights -band $write) -eq 0) { continue }
+            if ($ace.IdentityReference.Value -notin $trusted) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Set-ScopeProfileDefaults {
     param([Parameter(Mandatory)] [object]$Config)
 
@@ -2039,6 +2062,10 @@ function Get-CISAKEVData {
 
     # A catalogue only counts when it parses and lists vulnerabilities; a truncated
     # file or a proxy's HTML page must never be used (or cached) as the feed.
+    if ((Test-Path $cacheFile) -and -not (Test-TrustedPath $cacheFile)) {
+        Write-Log "CISA KEV: cache file '$cacheFile' is not admin-owned; discarding it." -Level WARN
+        Remove-Item -LiteralPath $cacheFile -Force -EA SilentlyContinue
+    }
     $readCache = {
         try {
             $cached = Get-Content $cacheFile -Raw -EA Stop | ConvertFrom-Json -EA Stop
@@ -4710,6 +4737,11 @@ function Get-CachedApiJson {
     $cacheHours = [double](Get-ObjectPropertyValue $Cfg 'CacheHours' 168)
     $offline    = [bool](Get-ObjectPropertyValue $Cfg 'Offline' $false)
 
+    if ((Test-Path $cacheFile) -and -not (Test-TrustedPath $cacheFile)) {
+        Write-Log "${Label}: cache file '$cacheFile' is not admin-owned; discarding it." -Level WARN
+        Remove-Item -LiteralPath $cacheFile -Force -EA SilentlyContinue
+    }
+
     if (Test-Path $cacheFile) {
         $age = ((Get-Date) - (Get-Item $cacheFile).LastWriteTime).TotalHours
         if ($offline -or $age -lt $cacheHours) {
@@ -6879,6 +6911,14 @@ function Test-RebootRequired {
 #region -- Main Orchestration ---------------------------------------------------------
 
 function Invoke-Main {
+    if (-not $ValidateConfig -and (Test-IsAdministrator)) {
+        foreach ($trustPath in @($PSCommandPath, $ConfigPath)) {
+            if ($trustPath -and (Test-Path -LiteralPath $trustPath) -and -not (Test-TrustedPath $trustPath)) {
+                Write-Host "[SECURITY] '$trustPath' is owned by, or writable by, a non-administrator account. Refusing to run elevated. Fix its owner/ACL (Administrators or SYSTEM only)." -ForegroundColor Red
+                exit 2
+            }
+        }
+    }
     try {
         $script:CFG = Import-Configuration -Path $ConfigPath
     } catch {

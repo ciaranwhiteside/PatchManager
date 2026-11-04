@@ -1678,6 +1678,18 @@ if (-not [string]::IsNullOrWhiteSpace($VisualArtifactPath)) {
 
 # --- Audit 2026-11 regression tests -----------------------------------------------
 
+function Protect-TestPath {
+    # Leave only the current account on a temp path, so Test-TrustedPath sees it as admin-owned.
+    param([string]$Path)
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+    $inherit = if (Test-Path -LiteralPath $Path -PathType Container) { 'ContainerInherit, ObjectInherit' } else { 'None' }
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($me, 'FullControl', $inherit, 'None', 'Allow')))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
 # T1: KEV emergency / SLA breach messages must not force exit 1 (ERROR sets ExitCode).
 $kevSlaErrorLogs = @($ast.FindAll({
     param($node)
@@ -1718,10 +1730,11 @@ foreach ($write in $reportWrites) {
 }
 
 # T5: a truncated KEV cache must not throw; an HTML (proxy) response must not be cached.
-Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-CISAKEVData')
+foreach ($fn in 'Get-CISAKEVData','Test-TrustedPath') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Set-ContentAtomic')
 $kevCacheDir = Join-Path ([IO.Path]::GetTempPath()) "pm-kev-$([guid]::NewGuid())"
 [void](New-Item -ItemType Directory -Path $kevCacheDir)
+Protect-TestPath $kevCacheDir
 try {
     & {
         Set-StrictMode -Version Latest
@@ -1751,5 +1764,16 @@ try {
     Assert-True (@($freshState.TrackedUpdates).Count -eq 0) 'Corrupt state should yield a fresh state.'
     Assert-True (@(Get-ChildItem $stateDir -Filter 'state.json.corrupt-*').Count -eq 1) 'Corrupt state file should be preserved.'
 } finally { Remove-Item $stateDir -Recurse -Force -EA SilentlyContinue }
+
+# T7: files a standard user can write are not trusted by an elevated run.
+$trustFile = Join-Path ([IO.Path]::GetTempPath()) "pm-trust-$([guid]::NewGuid()).json"
+Set-Content -Path $trustFile -Value '{}' -Encoding UTF8
+try {
+    Protect-TestPath $trustFile
+    Assert-True (Test-TrustedPath $trustFile) 'A file owned and writable only by the running account should be trusted.'
+    & icacls.exe $trustFile /grant '*S-1-5-32-545:(W)' | Out-Null
+    Assert-True (-not (Test-TrustedPath $trustFile)) 'A file BUILTIN\Users can write must not be trusted.'
+    Assert-True (-not (Test-TrustedPath (Join-Path $trustFile 'missing'))) 'An unreadable path must not be trusted.'
+} finally { Remove-Item $trustFile -Force -EA SilentlyContinue }
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
