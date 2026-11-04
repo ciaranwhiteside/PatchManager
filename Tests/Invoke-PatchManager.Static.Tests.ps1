@@ -1824,6 +1824,11 @@ $chromiumKev = [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID =
 $chromePkg = [pscustomobject]@{ Name = 'Google Chrome'; PackageId = 'Google.Chrome'; Version = '120.0.1'; Source = 'winget' }
 $chromiumHits = @(Find-KEVCandidates -Packages @($chromePkg) -KEVData $chromiumKev)
 Assert-True ($chromiumHits.Count -eq 1 -and $chromiumHits[0].Product -eq 'Chrome') 'A Chromium KEV entry must become a Google Chrome candidate.'
+$edgeKev = [pscustomobject]@{ vulnerabilities = @([pscustomobject]@{ cveID = 'CVE-2016-7200'; vendorProject = 'Microsoft'; product = 'Edge'; vulnerabilityName = 'Edge memory corruption'; dateAdded = '2022-03-28'; dueDate = '2022-04-18' }) }
+$gameAssist = [pscustomobject]@{ Name = 'Microsoft.Edge.GameAssist'; Version = '1.0.4019.0'; Source = 'inventory' }
+Assert-True (@(Find-KEVCandidates -Packages @($gameAssist) -KEVData $edgeKev).Count -eq 0) 'An AppX sub-product (Microsoft.Edge.GameAssist) must not match the Edge KEV product.'
+$edgePkgs = @([pscustomobject]@{ Name = 'Microsoft Edge'; Version = '130.0'; Source = 'inventory' }, [pscustomobject]@{ Name = 'Edge Stable'; PackageId = 'Microsoft.Edge'; Version = '130.0'; Source = 'winget' })
+Assert-True (@(Find-KEVCandidates -Packages $edgePkgs -KEVData $edgeKev).Count -eq 2) 'Real Edge display names and package ids must still match.'
 
 # T12: an OS CPE (chrome_os) must not align with desktop Chrome; app qualifiers still do.
 Assert-True (-not (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:o:google:chrome_os:*:*:*:*:*:*:*:*') 'Google' 'Chrome')) 'A ChromeOS CPE must not align with a Chrome KEV entry.'

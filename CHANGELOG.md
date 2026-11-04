@@ -8,6 +8,8 @@ All notable changes to PatchManager are documented here. The format follows
 
 ### Fixed
 
+- AppX sub-products such as `Microsoft.Edge.GameAssist` no longer match KEV
+  entries for the parent product (Edge).
 - KEV emergency and SLA breach messages are logged at WARN, so a clean run no
   longer exits 1 and a pending reboot still returns 3010.
 - `Ring.Delays` overrides in the JSON config no longer crash every run.

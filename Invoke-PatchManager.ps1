@@ -2557,7 +2557,10 @@ function Find-KEVCandidates {
                 $vendorMatch  = (Test-WordMatch $name $vendor) -or
                                 (Test-WordMatch $packageId $vendor) -or
                                 (Test-WordMatch $publisher $vendor)
-                $productMatch = (Test-WordMatch $name $product) -or
+                # AppX identity names (no spaces) put sub-products in further dotted
+                # segments: "Microsoft.Edge.GameAssist" is not Edge.
+                $subProductName = $name -notmatch '\s' -and $name -imatch "(?<!\w)$([regex]::Escape($product))\.\w"
+                $productMatch = ((Test-WordMatch $name $product) -and -not $subProductName) -or
                                 (Test-WordMatch $packageId $product)
     
                 if ($vendorMatch -and $productMatch) {
