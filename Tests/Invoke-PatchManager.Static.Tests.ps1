@@ -1740,4 +1740,16 @@ try {
     }
 } finally { Remove-Item $kevCacheDir -Recurse -Force -EA SilentlyContinue }
 
+# T6: a corrupt state file is preserved as .corrupt-* before a fresh state is returned.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-PatchState')
+$stateDir = Join-Path ([IO.Path]::GetTempPath()) "pm-state-$([guid]::NewGuid())"
+[void](New-Item -ItemType Directory -Path $stateDir)
+try {
+    $script:CFG = [pscustomobject]@{ State = [pscustomobject]@{ StatePath = $stateDir; StateFile = 'state.json' } }
+    Set-Content -Path (Join-Path $stateDir 'state.json') -Value '{"TrackedUpdates":[{"Pack' -Encoding UTF8
+    $freshState = Get-PatchState
+    Assert-True (@($freshState.TrackedUpdates).Count -eq 0) 'Corrupt state should yield a fresh state.'
+    Assert-True (@(Get-ChildItem $stateDir -Filter 'state.json.corrupt-*').Count -eq 1) 'Corrupt state file should be preserved.'
+} finally { Remove-Item $stateDir -Recurse -Force -EA SilentlyContinue }
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

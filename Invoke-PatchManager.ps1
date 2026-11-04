@@ -2798,7 +2798,12 @@ function Get-PatchState {
     if (-not (Test-Path $statePath)) { New-Item -ItemType Directory -Path $statePath -Force | Out-Null }
 
     if (Test-Path $stateFile) {
-        try { return Get-Content $stateFile -Raw | ConvertFrom-Json } catch { }
+        try { return Get-Content $stateFile -Raw -EA Stop | ConvertFrom-Json -EA Stop } catch {
+            # Keep the bad file: the next save would otherwise overwrite all SLA history.
+            $backup = "$stateFile.corrupt-$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            Copy-Item -LiteralPath $stateFile -Destination $backup -Force -EA SilentlyContinue
+            Write-Log "Patch state file unreadable ($_). Saved a copy to '$backup' and starting fresh SLA tracking." -Level WARN
+        }
     }
 
     # Clean schema - SLA tracked against update availability date, not CVE dates
