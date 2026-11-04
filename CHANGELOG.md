@@ -41,6 +41,26 @@ All notable changes to PatchManager are documented here. The format follows
 - KEV name matching pre-filters with one substring check per entry, cutting a
   1500-entry x 300-package match from seconds to well under one.
 
+### Fixed (update engines)
+
+- The WinGet text parser reads only the first table: footers, pin notices and
+  the "require explicit targeting" table no longer become packages, and
+  truncated (`…`) ids are skipped.
+- Non-English winget output without the Microsoft.WinGet.Client module is now
+  a Failed discovery instead of "0 upgrades", so SLA history is kept.
+- An empty Microsoft.WinGet.Client result no longer triggers a second scan
+  with winget.exe.
+- Timeouts kill the whole process tree (no orphaned installers blocking the
+  next install); zero timeouts are rejected and browser/winget timeouts have a
+  30-second floor.
+- Dell (500) and HP (256/257) "no updates" exit codes are AlreadyCurrent, and
+  a timed-out firmware scan no longer runs apply.
+- System restore points are created through CIM, so PowerShell 7 hosts get one.
+- Store update verification no longer matches unrelated apps on empty or very
+  short name keys and prefers exact name matches.
+- The newest WinGet is chosen by numeric version and CPU architecture (ARM64).
+- Chocolatey ConfirmedVersion is read from the installed package, not assumed.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
