@@ -19,6 +19,17 @@ All notable changes to PatchManager are documented here. The format follows
 - A corrupt patch state file is preserved as `*.corrupt-<stamp>` with a warning
   instead of silently discarding SLA history.
 
+### Security
+
+- Elevated runs refuse a script, config or cache file that a non-administrator
+  account owns or can write (exit 2 for script/config; untrusted cache files are
+  discarded).
+- Commercial and CommercialManaged profiles refuse to run executables from
+  user-writable locations (per-user updaters, Scoop/py shims, user PATH).
+- The fleet report takes each host's identity from its share folder, so one host
+  can no longer hide itself or take over another host's row and report link.
+- Device and fleet CSV exports neutralise spreadsheet formulas.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
