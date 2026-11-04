@@ -6,6 +6,13 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- An expired or revoked `NVD.ApiKey` (NVD answers 404 "Invalid apiKey") is
+  detected on the first call: one warning, then the run continues without the
+  key at the public rate limit instead of failing and retrying every lookup.
+  Other 404s are no longer retried.
+
 ## [1.9.0] - 2026-11-04
 
 ### Fixed
