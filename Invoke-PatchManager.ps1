@@ -5191,6 +5191,8 @@ function Get-FirmwareCatalogue {
             # Dell Command Update documented codes: 0=success, 1=reboot required,
             # 2=fatal error, 3=error, 4=invalid system, 5=reboot + rescan required.
             RebootCodes = @(1, 5)
+            # 500 = no updates found (system already current).
+            NoUpdateCodes = @(500)
         }
         [PSCustomObject]@{
             Match     = 'HP|Hewlett'
@@ -5205,6 +5207,8 @@ function Get-FirmwareCatalogue {
             ApplyArgs = @('/Operation:Install', '/Silent', '/Category:BIOS,Firmware', "/ReportFolder:$env:TEMP\HPIA")
             # HP Image Assistant uses the MSI convention: 3010 = success, reboot required.
             RebootCodes = @(3010)
+            # 256 = analysis returned no recommendations; 257 = nothing selected to install.
+            NoUpdateCodes = @(256, 257)
         }
         [PSCustomObject]@{
             Match     = 'Lenovo'
@@ -5220,6 +5224,7 @@ function Get-FirmwareCatalogue {
             # only 0 is trusted as success; anything else is reported as failed
             # with the tool output as evidence.
             RebootCodes = @()
+            NoUpdateCodes = @()
         }
     )
 }
@@ -5253,6 +5258,14 @@ function Invoke-FirmwareProvider {
     try {
         Write-Log "$($entry.Name): scanning ($tool $($entry.ScanArgs -join ' '))." -Level INFO
         $scan = Invoke-CapturedProcess -FilePath $tool -Arguments @($entry.ScanArgs) -TimeoutSeconds $timeout
+        $noUpdateCodes = @(Get-ObjectPropertyValue $entry 'NoUpdateCodes' @())
+        if ($scan.TimedOut) {
+            # The killed scan may still hold the tool; never start apply on top of it.
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Failed' -Evidence "OEM firmware scan timed out after ${timeout}s; apply skipped."))
+        }
+        if ($null -ne $scan.ExitCode -and $scan.ExitCode -in $noUpdateCodes) {
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'AlreadyCurrent' -Success $true -Evidence "OEM firmware scan found no updates (exit code $($scan.ExitCode))."))
+        }
         Write-Log "$($entry.Name): applying updates (reboot suppressed)." -Level INFO
         $apply = Invoke-CapturedProcess -FilePath $tool -Arguments @($entry.ApplyArgs) -TimeoutSeconds $timeout
 
@@ -5265,6 +5278,9 @@ function Invoke-FirmwareProvider {
         # Reboot codes are vendor-specific and declared per catalogue entry. A
         # shared list previously treated Dell's exit 2 (fatal error) as success.
         $rebootCodes = @(Get-ObjectPropertyValue $entry 'RebootCodes' @())
+        if ($null -ne $apply.ExitCode -and $apply.ExitCode -in $noUpdateCodes) {
+            return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'AlreadyCurrent' -Success $true -Evidence "OEM firmware tool reported no updates to install. $summary"))
+        }
         if ($apply.ExitCode -eq 0 -or $apply.ExitCode -in $rebootCodes) {
             $reboot = $apply.ExitCode -in $rebootCodes
             return @((New-PatchResult -Name $entry.Name -PackageId "Firmware.$($entry.Provider)" -Provider $provider -Source $provider -Status 'Completed' -Success $true -RebootRequired $reboot -Evidence "OEM firmware apply completed. $summary"))

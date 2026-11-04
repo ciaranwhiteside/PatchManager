@@ -1883,4 +1883,22 @@ $zeroThrew = $false
 try { Assert-ValidConfiguration -Config $zeroCfg } catch { $zeroThrew = $_.Exception.Message -match 'PackageTimeoutSeconds must be at least 1' }
 Assert-True $zeroThrew 'WinGet.PackageTimeoutSeconds = 0 must be rejected.'
 
+# T18: OEM "no updates" exit codes are AlreadyCurrent; a timed-out scan skips apply.
+foreach ($fn in 'Invoke-FirmwareProvider','Get-FirmwareCatalogue') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+& {
+    $DryRun = $false
+    $script:CFG = [pscustomobject]@{ Firmware = [pscustomobject]@{ Enabled = $true } }
+    function Get-CimInstance { [pscustomobject]@{ Manufacturer = 'Dell Inc.' } }
+    function Test-OnACPower { $true }
+    function Resolve-FirstExistingPath { 'C:\fake\dcu-cli.exe' }
+    $script:fwCalls = @()
+    function Invoke-CapturedProcess { param($FilePath, $Arguments, $TimeoutSeconds) $script:fwCalls += ,$Arguments; [pscustomobject]@{ ExitCode = 500; TimedOut = $false; Output = 'No updates' } }
+    $fwRow = @(Invoke-FirmwareProvider)[0]
+    Assert-True ($fwRow.Status -eq 'AlreadyCurrent' -and $fwRow.Success -and $script:fwCalls.Count -eq 1) 'Dell exit 500 on scan must be AlreadyCurrent without running apply.'
+    $script:fwCalls = @()
+    function Invoke-CapturedProcess { param($FilePath, $Arguments, $TimeoutSeconds) $script:fwCalls += ,$Arguments; [pscustomobject]@{ ExitCode = $null; TimedOut = $true; Output = '' } }
+    $fwRow = @(Invoke-FirmwareProvider)[0]
+    Assert-True ($fwRow.Status -eq 'Failed' -and $script:fwCalls.Count -eq 1) 'A timed-out firmware scan must not be followed by apply.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
