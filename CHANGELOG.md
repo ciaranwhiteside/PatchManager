@@ -6,6 +6,19 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- KEV emergency and SLA breach messages are logged at WARN, so a clean run no
+  longer exits 1 and a pending reboot still returns 3010.
+- `Ring.Delays` overrides in the JSON config no longer crash every run.
+- `VendorUpdaters.ExtraCatalogue` entries without `UpdaterArgs` or
+  `VersionRegistryPaths` no longer crash the run after patching.
+- A failed JSON report write is logged instead of ending the run as FATAL 99.
+- A truncated KEV cache or a proxy/captive-portal response can no longer crash
+  runs or silently disable KEV; the cache is written atomically.
+- A corrupt patch state file is preserved as `*.corrupt-<stamp>` with a warning
+  instead of silently discarding SLA history.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
