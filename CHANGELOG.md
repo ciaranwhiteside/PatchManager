@@ -30,6 +30,17 @@ All notable changes to PatchManager are documented here. The format follows
   can no longer hide itself or take over another host's row and report link.
 - Device and fleet CSV exports neutralise spreadsheet formulas.
 
+### Fixed (threat detection)
+
+- KEV name matching now matches products next to punctuation (`.NET Framework`,
+  `Visual C++`) and treats Google "Chromium <component>" entries as Google Chrome.
+- A ChromeOS CPE can no longer mark desktop Chrome as KEV-affected and trigger a
+  false emergency.
+- NVD lookups retry once after a failure (rate limits), failed lookups are no
+  longer memoised for the run, and API failures are logged at WARN.
+- KEV name matching pre-filters with one substring check per entry, cutting a
+  1500-entry x 300-package match from seconds to well under one.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
