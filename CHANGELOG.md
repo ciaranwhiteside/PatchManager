@@ -99,6 +99,19 @@ All notable changes to PatchManager are documented here. The format follows
 - Self-update refuses a release whose default configuration would reject the
   current config file (checked statically; the download is never executed).
 
+### Removed
+
+- Duplicate helpers: the nested `Get-ReportProperty` (now
+  `Get-ObjectPropertyValue`), `Compare-VersionText` (now
+  `Compare-SoftwareVersion`), `Test-RebootRequired` (now `Test-PendingReboot`),
+  recomputed report counters, and the inline copies of the skipped/descoped
+  row builder. Browser helpers reuse the shared version/path helpers.
+
+### CI
+
+- The Playwright report usability test (device and fleet HTML at three widths)
+  now runs in CI.
+
 ## [1.8.1] - 2026-09-06
 
 ### Added
