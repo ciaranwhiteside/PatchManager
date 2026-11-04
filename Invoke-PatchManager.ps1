@@ -585,6 +585,13 @@ function Assert-ValidConfiguration {
     foreach ($item in $nonNegativeValues) {
         if ($null -ne $item.Value -and [double]$item.Value -lt 0) { $errors.Add("$($item.Name) cannot be negative.") }
     }
+    # A 0s timeout makes every install "time out" instantly and orphans the installer.
+    foreach ($item in @(
+        @{ Name='WinGet.PackageTimeoutSeconds'; Value=$Config.WinGet.PackageTimeoutSeconds },
+        @{ Name='Browsers.NativeTimeoutSeconds'; Value=$Config.Browsers.NativeTimeoutSeconds }
+    )) {
+        if ($null -ne $item.Value -and [double]$item.Value -lt 1) { $errors.Add("$($item.Name) must be at least 1.") }
+    }
 
     foreach ($entry in @($Config.VendorUpdaters.ExtraCatalogue)) {
         $allowedVendorFields = @('Name','PackageId','Provider','WinGetOverlapId','VersionFilePaths','VersionRegistryPaths','VersionValueName','UpdaterPathCandidates','UpdaterArgs')
@@ -3448,7 +3455,7 @@ function Invoke-PackageUpdate {
         # Start-Process implementation left .ExitCode $null with redirected
         # streams on PS 5.1 and defaulted it to 0 - so a failed installer whose
         # output matched none of the text patterns was recorded as a success.
-        $timeout = $script:CFG.WinGet.PackageTimeoutSeconds
+        $timeout = [Math]::Max(30, [int]$script:CFG.WinGet.PackageTimeoutSeconds)
         $run = Invoke-CapturedProcess -FilePath $script:WINGET -Arguments $argList -TimeoutSeconds $timeout
 
         if ($run.TimedOut) {
@@ -4072,7 +4079,10 @@ function Invoke-CapturedProcess {
         $errTask = $proc.StandardError.ReadToEndAsync()
 
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-            try { $proc.Kill() } catch { }
+            # Kill the whole tree: winget/scoop launch msiexec/setup children that would
+            # otherwise keep running and block the next install (1618).
+            try { & taskkill.exe /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
             return [PSCustomObject]@{ ExitCode = $null; TimedOut = $true; Output = "Timed out after ${TimeoutSeconds}s." }
         }
         # Second WaitForExit() ensures the async stream reads have fully flushed.
@@ -4154,9 +4164,10 @@ function Invoke-BrowserProvider {
 
     try {
         Write-Log "${name}: running native updater ($updater $($updaterArgs -join ' '))." -Level INFO
-        $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds ([int]$script:CFG.Browsers.NativeTimeoutSeconds)
+        $browserTimeout = [Math]::Max(30, [int]$script:CFG.Browsers.NativeTimeoutSeconds)
+        $run = Invoke-CapturedProcess -FilePath $updater -Arguments $updaterArgs -TimeoutSeconds $browserTimeout
         if ($run.TimedOut) {
-            return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after $($script:CFG.Browsers.NativeTimeoutSeconds)s."))
+            return @((New-PatchResult -Name $name -PackageId $packageId -Provider $provider -Source $provider -InstalledVersion $currentVersion -Status 'Failed' -Evidence "Native updater timed out after ${browserTimeout}s."))
         }
         if ($null -eq $run.ExitCode -or $run.ExitCode -ne 0) {
             $summary = (([string]$run.Output -replace '\s+', ' ').Trim())

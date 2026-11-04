@@ -1871,4 +1871,16 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-WinGetUpgr
     Assert-True ($null -ne $moduleResult -and @($moduleResult).Count -eq 0) 'Empty module discovery must return an empty array, not $null.'
 }
 
+# T17: a timeout kills the whole process tree; zero timeouts are rejected.
+$script:CFG = $null
+$treeRun = Invoke-CapturedProcess -FilePath "$env:SystemRoot\System32\cmd.exe" -Arguments @('/c', 'ping -n 37 127.0.0.37 >nul') -TimeoutSeconds 2
+Start-Sleep -Milliseconds 500
+$orphans = @(Get-CimInstance Win32_Process -Filter "Name = 'PING.EXE'" | Where-Object { $_.CommandLine -match '127\.0\.0\.37' })
+Assert-True ($treeRun.TimedOut -and $orphans.Count -eq 0) 'Timed-out child processes (grandchildren) must be killed too.'
+$zeroCfg = New-TestDefaultCfg
+$zeroCfg.WinGet.PackageTimeoutSeconds = 0
+$zeroThrew = $false
+try { Assert-ValidConfiguration -Config $zeroCfg } catch { $zeroThrew = $_.Exception.Message -match 'PackageTimeoutSeconds must be at least 1' }
+Assert-True $zeroThrew 'WinGet.PackageTimeoutSeconds = 0 must be rejected.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
