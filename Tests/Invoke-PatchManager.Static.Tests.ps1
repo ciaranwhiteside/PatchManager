@@ -1901,4 +1901,16 @@ foreach ($fn in 'Invoke-FirmwareProvider','Get-FirmwareCatalogue') { Invoke-Expr
     Assert-True ($fwRow.Status -eq 'Failed' -and $script:fwCalls.Count -eq 1) 'A timed-out firmware scan must not be followed by apply.'
 }
 
+# T19: restore points use CIM (works on PowerShell 5.1 and 7), not 5.1-only cmdlets.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchRestorePoint')
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchRestorePoint') -notmatch 'Checkpoint-Computer|Enable-ComputerRestore') 'Restore point must not depend on Windows PowerShell-only cmdlets.'
+& {
+    $DryRun = $false
+    $script:CFG = [pscustomobject]@{ SystemRestore = [pscustomobject]@{ Enabled = $true; Description = 'test' } }
+    $script:cimCalls = @()
+    function Invoke-CimMethod { param($Namespace, $ClassName, $MethodName, $Arguments) $script:cimCalls += $MethodName; [pscustomobject]@{ ReturnValue = 0 } }
+    New-PatchRestorePoint
+    Assert-True ($script:cimCalls -contains 'CreateRestorePoint') 'New-PatchRestorePoint must call SystemRestore.CreateRestorePoint.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

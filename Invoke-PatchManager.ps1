@@ -5824,15 +5824,18 @@ function New-PatchRestorePoint {
     if ($DryRun) { Write-Log 'DRY RUN: Would create system restore point.' -Level INFO; return }
 
     try {
-        Enable-ComputerRestore -Drive "$env:SystemDrive\" -EA SilentlyContinue
-
-        # Checkpoint-Computer emits a non-terminating WARNING (not an error) when a
-        # restore point was already created within the last 1440 min. That's expected
-        # behaviour, not a problem - suppress the warning stream so it doesn't alarm.
-        Checkpoint-Computer -Description $script:CFG.SystemRestore.Description `
-                            -RestorePointType MODIFY_SETTINGS `
-                            -WarningAction SilentlyContinue -EA Stop
-        Write-Log 'System restore point created.' -Level INFO
+        # CIM instead of the System Restore cmdlets: those are Windows PowerShell-only and do
+        # not exist in PowerShell 7, so no restore point was ever created there.
+        Invoke-CimMethod -Namespace root/default -ClassName SystemRestore -MethodName Enable `
+                         -Arguments @{ Drive = "$env:SystemDrive\" } -EA SilentlyContinue | Out-Null
+        $restore = Invoke-CimMethod -Namespace root/default -ClassName SystemRestore -MethodName CreateRestorePoint `
+                                    -Arguments @{ Description = [string]$script:CFG.SystemRestore.Description; RestorePointType = [uint32]12; EventType = [uint32]100 } -EA Stop
+        if ([int]$restore.ReturnValue -eq 0) {
+            # Windows silently skips a new point if one exists from the last 24h (1440 min).
+            Write-Log 'System restore point requested (an existing point from the last 24h is kept).' -Level INFO
+        } else {
+            Write-Log "Restore point creation returned code $($restore.ReturnValue). Proceeding anyway." -Level WARN
+        }
     } catch {
         # The 1440-minute throttle surfaces as an error in some Windows builds.
         # A recent restore point already exists, which is fine for our purposes.
