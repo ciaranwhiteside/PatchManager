@@ -2041,9 +2041,10 @@ function Start-JitteredDelay {
     $maxMinutes = if ($CapMinutes -gt 0) { $CapMinutes } else { $script:CFG.MaintenanceWindow.JitterMaxMinutes }
     if ($maxMinutes -le 0) { return }
 
-    # Deterministic seed from hostname - same machine always gets the same slot
-    $seed    = [Math]::Abs(([char[]]$script:HOSTNAME | ForEach-Object { [int]$_ } |
-                Measure-Object -Sum).Sum % [int]::MaxValue)
+    # Deterministic per host. Hash the hostname (SHA256: FIPS-safe): a character sum put
+    # WS001-WS999 into ~27 slots and gave anagrams (PC-012 / PC-021) the same delay.
+    $hash    = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$script:HOSTNAME).ToUpperInvariant()))
+    $seed    = [BitConverter]::ToInt32($hash, 0) -band [int]::MaxValue
     $rng     = New-Object System.Random($seed)
     $mult    = switch ($Ring) { 'Pilot' { 0.3 } 'Early' { 0.65 } default { 1.0 } }
     $minutes = [Math]::Round($rng.NextDouble() * $maxMinutes * $mult)

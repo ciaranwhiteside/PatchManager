@@ -2011,4 +2011,19 @@ try {
     Assert-True ($row132.FirstSeenAvailable -eq (Get-Date -Format 'yyyy-MM-dd')) 'After the installed version moves, the next release starts a fresh clock.'
 } finally { Remove-Item $slaDir -Recurse -Force -EA SilentlyContinue }
 
+# T29: hostname-seeded jitter spreads hosts and separates anagrams.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Start-JitteredDelay')
+& {
+    $DryRun = $true
+    $script:CFG = [pscustomobject]@{ MaintenanceWindow = [pscustomobject]@{ JitterMaxMinutes = 120 } }
+    $script:jitterSlots = @{}
+    function Write-Log { param($Message, $Level) if ($Message -match 'Jitter delay: (\d+) min') { $script:jitterSlots[$script:HOSTNAME] = [int]$Matches[1] } }
+    foreach ($n in 1..300) { $script:HOSTNAME = 'WS{0:D3}' -f $n; $script:jitterSlots[$script:HOSTNAME] = 0; Start-JitteredDelay -Ring 'Broad' }
+    $distinctSlots = @($script:jitterSlots.Values | Sort-Object -Unique).Count
+    Assert-True ($distinctSlots -ge 90) "Jitter must spread 300 hosts over many slots (got $distinctSlots)."
+    foreach ($n in 'PC-012','PC-021') { $script:HOSTNAME = $n; Start-JitteredDelay -Ring 'Broad' }
+    Assert-True ($script:jitterSlots['PC-012'] -ne $script:jitterSlots['PC-021']) 'Anagram hostnames must not share a jitter slot.'
+}
+$script:HOSTNAME = $env:COMPUTERNAME
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
