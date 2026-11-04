@@ -5736,36 +5736,42 @@ function New-ComplianceReport {
 
     if ($script:CFG.Reporting.GenerateJSON) {
         $jsonPath = Join-Path $rptDir "$base.json"
-        [ordered]@{
-            Metadata = [ordered]@{
-                Hostname    = $script:HOSTNAME
-                ScriptVer   = $script:VERSION
-                RunStart    = $script:STARTTIME.ToString('yyyy-MM-dd HH:mm:ss')
-                DurationMin = $elapsed
-                Ring        = $script:RING
-                DryRun      = $DryRun.IsPresent
-                Emergency   = $script:EmergencyPatch
-                ScopeProfile = $script:CFG.ScopeProfile
-                SelfUpdate   = $script:SelfUpdateStatus
-                ProvidersExecuted = $providersExecuted
-                RunDisposition = $runDisposition
-            }
-            Statistics  = $script:Stats
-            Metrics     = $Metrics
-            StatusSummary = $statusSummary
-            SourceSummary = $sourceSummary
-            ProviderSummary = $providerSummary
-            AttentionItems = $attentionItems
-            RebootRequiredItems = $rebootItems
-            Updates     = $Results
-            KEVMatches  = $KEVMatches
-            InventoryKEVMatches = @($script:InventoryKEVMatches)
-            StalenessFindings = @($script:StalenessFindings)
-            EndOfLifeFindings = @($script:EndOfLifeFindings)
-            NVDVulnFindings = @($script:NVDVulnFindings)
-            SLABreaches = $SLABreaches
-        } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8
-        Write-Log "JSON report: $jsonPath" -Level INFO
+        try {
+            [ordered]@{
+                Metadata = [ordered]@{
+                    Hostname    = $script:HOSTNAME
+                    ScriptVer   = $script:VERSION
+                    RunStart    = $script:STARTTIME.ToString('yyyy-MM-dd HH:mm:ss')
+                    DurationMin = $elapsed
+                    Ring        = $script:RING
+                    DryRun      = $DryRun.IsPresent
+                    Emergency   = $script:EmergencyPatch
+                    ScopeProfile = $script:CFG.ScopeProfile
+                    SelfUpdate   = $script:SelfUpdateStatus
+                    ProvidersExecuted = $providersExecuted
+                    RunDisposition = $runDisposition
+                }
+                Statistics  = $script:Stats
+                Metrics     = $Metrics
+                StatusSummary = $statusSummary
+                SourceSummary = $sourceSummary
+                ProviderSummary = $providerSummary
+                AttentionItems = $attentionItems
+                RebootRequiredItems = $rebootItems
+                Updates     = $Results
+                KEVMatches  = $KEVMatches
+                InventoryKEVMatches = @($script:InventoryKEVMatches)
+                StalenessFindings = @($script:StalenessFindings)
+                EndOfLifeFindings = @($script:EndOfLifeFindings)
+                NVDVulnFindings = @($script:NVDVulnFindings)
+                SLABreaches = $SLABreaches
+            } | ConvertTo-Json -Depth 10 | Set-Content $jsonPath -Encoding UTF8 -EA Stop
+            Write-Log "JSON report: $jsonPath" -Level INFO
+        } catch {
+            # Patches are already applied; keep going so CSV/HTML, central copy and exit code still happen.
+            Write-Log "JSON report generation failed: $_" -Level ERROR
+            $jsonPath = $null
+        }
     }
 
     if ([bool](Get-ObjectPropertyValue $script:CFG.Reporting 'GenerateCSV' $true)) {

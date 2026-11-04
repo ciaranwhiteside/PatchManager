@@ -1707,4 +1707,14 @@ foreach ($fn in 'Invoke-VendorUpdaterProvider','Resolve-FirstExistingPath','Get-
     Assert-True ($vendorRows.Count -eq 1 -and $vendorRows[0].Status -eq 'Planned') 'Minimal ExtraCatalogue entry should plan, not throw.'
 }
 
+# T4: every report Set-Content in New-ComplianceReport must sit inside a try, so a full disk is not FATAL 99.
+$complianceAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-ComplianceReport' }, $true)
+$reportWrites = @($complianceAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in 'Set-Content','Export-Csv' }, $true))
+Assert-True ($reportWrites.Count -ge 2) 'Expected report writes in New-ComplianceReport.'
+foreach ($write in $reportWrites) {
+    $p = $write.Parent; $inTry = $false
+    while ($p -and $p -ne $complianceAst) { if ($p -is [System.Management.Automation.Language.TryStatementAst]) { $inTry = $true; break }; $p = $p.Parent }
+    Assert-True $inTry "Report write at line $($write.Extent.StartLineNumber) must be inside try/catch."
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
