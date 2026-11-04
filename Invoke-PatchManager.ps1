@@ -2435,6 +2435,19 @@ function Find-KEVCandidates {
     $kevMatchList = [System.Collections.Generic.List[PSCustomObject]]::new()
     $matchKeys    = [System.Collections.Generic.HashSet[string]]::new()
 
+    # Resolve package fields once. ~1500 KEV entries x every package made per-pair
+    # property lookups and regexes cost tens of seconds per run, so each KEV name is
+    # first checked against all package names in one string before any per-package work.
+    $pkgInfo = @(foreach ($app in $Packages) {
+        [PSCustomObject]@{
+            App       = $app
+            Name      = [string]$app.Name
+            PackageId = [string](Get-ObjectPropertyValue $app 'PackageId' '')
+            Publisher = [string](Get-ObjectPropertyValue $app 'Publisher' '')
+        }
+    })
+    $allProductText = ($pkgInfo | ForEach-Object { "$($_.Name) $($_.PackageId)" }) -join "`n"
+
     foreach ($entry in $KEVData.vulnerabilities) {
         # Catalogue strings are external data. Normalise surrounding whitespace
         # before exclusions and whole-word matching: the live KEV feed has carried
@@ -2463,10 +2476,12 @@ function Find-KEVCandidates {
 
         foreach ($pair in $names) {
             $vendor, $product = $pair
-            foreach ($app in $Packages) {
-                $name      = [string]$app.Name
-                $packageId = [string](Get-ObjectPropertyValue $app 'PackageId' '')
-                $publisher = if ($app.PSObject.Properties['Publisher']) { [string]$app.Publisher } else { '' }
+            if ($allProductText.IndexOf($product, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+            foreach ($pkg in $pkgInfo) {
+                $app       = $pkg.App
+                $name      = $pkg.Name
+                $packageId = $pkg.PackageId
+                $publisher = $pkg.Publisher
     
                 # Require BOTH vendor and product to match on whole-word boundaries.
                 # Vendor can match against app name, package id, or publisher; product must
