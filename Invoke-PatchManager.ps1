@@ -1431,7 +1431,7 @@ function Show-CompletionPopup {
                                       -Message $message `
                                       -PrimaryText $primaryText `
                                       -SecondaryText $secondaryText `
-                                      -TimeoutSeconds 0 `
+                                      -TimeoutSeconds ([int]$script:CFG.UserExperience.PromptTimeoutSeconds) `
                                       -Tone $tone
     if ($script:CFG.UserExperience.OpenReportPrompt -and $choice -eq 'Primary' -and $HtmlReportPath -and (Test-Path $HtmlReportPath)) {
         try { Start-Process -FilePath $HtmlReportPath | Out-Null } catch { Write-Log "Could not open report '$HtmlReportPath': $_" -Level WARN }
@@ -6096,7 +6096,10 @@ function Complete-EarlyRun {
     }
 
     try { Send-RunNotification -ReportInfo $reportInfo -KEVMatches @() -SLABreaches @() } catch { }
-    if ($reportInfo -and $reportInfo.HtmlPath) { try { Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath } catch { } }
+    try { Restore-BITSThrottle } catch { }
+    try { Exit-SingleInstance } catch { }
+    # A skipped attempt (lock contention, outside the window) is not a finished run.
+    if ($Status -ne 'Skipped' -and $reportInfo -and $reportInfo.HtmlPath) { try { Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath } catch { } }
     $script:ExitCode = $ExitCode
     return $reportInfo
 }
@@ -7312,6 +7315,10 @@ function Invoke-Main {
 
     Send-RunNotification -ReportInfo $reportInfo -KEVMatches $kevMatches -SLABreaches $slaBreaches
 
+    # Release machine-wide state before the popup: it waits for the user, and the
+    # lock and BITS throttle must not be held while nobody is at the screen.
+    Restore-BITSThrottle
+    Exit-SingleInstance
     if ($reportInfo -and $reportInfo.HtmlPath) {
         Show-CompletionPopup -HtmlReportPath $reportInfo.HtmlPath
     }

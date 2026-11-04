@@ -1947,4 +1947,17 @@ try {
 } finally { Remove-Item $chocoRoot -Recurse -Force -EA SilentlyContinue }
 Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-ChocolateyProvider') -notmatch 'ConfirmedVersion \$pkg\.Available') 'Chocolatey must not claim the target version as confirmed.'
 
+# T23: the lock and BITS throttle are released before any popup; popups time out; skipped attempts show none.
+foreach ($popupFn in 'Invoke-Main', 'Complete-EarlyRun') {
+    $popupAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $popupFn }, $true)
+    $popupCalls = @($popupAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in 'Show-CompletionPopup','Exit-SingleInstance','Restore-BITSThrottle' }, $true))
+    $firstPopup = ($popupCalls | Where-Object { $_.GetCommandName() -eq 'Show-CompletionPopup' } | Select-Object -First 1).Extent.StartOffset
+    foreach ($release in 'Exit-SingleInstance','Restore-BITSThrottle') {
+        $releaseAt = ($popupCalls | Where-Object { $_.GetCommandName() -eq $release } | Select-Object -First 1).Extent.StartOffset
+        Assert-True ($null -ne $releaseAt -and $releaseAt -lt $firstPopup) "${popupFn}: $release must run before Show-CompletionPopup."
+    }
+}
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Show-CompletionPopup') -notmatch '-TimeoutSeconds 0') 'The completion popup must time out.'
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Complete-EarlyRun') -match "\`$Status -ne 'Skipped'") 'Skipped early runs must not show the completion popup.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
