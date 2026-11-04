@@ -1826,4 +1826,21 @@ Assert-True ($chromiumHits.Count -eq 1 -and $chromiumHits[0].Product -eq 'Chrome
 Assert-True (-not (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:o:google:chrome_os:*:*:*:*:*:*:*:*') 'Google' 'Chrome')) 'A ChromeOS CPE must not align with a Chrome KEV entry.'
 Assert-True (Test-CpeProductAlignment (ConvertFrom-CpeCriteria 'cpe:2.3:a:microsoft:edge_chromium:*:*:*:*:*:*:*:*') 'Microsoft' 'Edge') 'Application qualifiers (edge_chromium) still align.'
 
+# T13: a failed NVD fetch is retried once and never memoised.
+foreach ($fn in 'Invoke-NVDPacedRequest','Get-NVDCpeMatches') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+& {
+    $nvdCfg = [pscustomobject]@{ Enabled = $true; RequestDelayMs = 0; CachePath = (Join-Path ([IO.Path]::GetTempPath()) "pm-nvd-$([guid]::NewGuid())"); MaxLookupsPerRun = 5 }
+    $script:NVDLastRequest = [datetime]::MinValue
+    $script:nvdCalls = 0
+    function Get-CachedApiJson { $script:nvdCalls++; if ($script:nvdCalls -eq 1) { $null } else { [pscustomobject]@{ ok = $true } } }
+    $nvdReq = Invoke-NVDPacedRequest -NvdCfg $nvdCfg -Endpoint 'cves' -PublicBaseUrl 'https://example.invalid/cves' -Query 'cveId=CVE-1' -CacheKey 'nvd_CVE-1'
+    Assert-True ($script:nvdCalls -eq 2 -and $nvdReq.Data.ok) 'A failed NVD fetch should be retried once.'
+
+    $script:CFG = [pscustomobject]@{ NVD = $nvdCfg }
+    $script:NVDMemo = @{}; $script:NVDLookupCount = 0
+    function Invoke-NVDPacedRequest { [pscustomobject]@{ Data = $null; Fetched = $true } }
+    [void](Get-NVDCpeMatches -CveId 'CVE-2')
+    Assert-True (-not $script:NVDMemo.ContainsKey('CVE-2')) 'A failed NVD lookup must not be memoised.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

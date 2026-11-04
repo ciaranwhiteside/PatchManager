@@ -2352,6 +2352,12 @@ function Invoke-NVDPacedRequest {
     $fetchCfg = [ordered]@{ CachePath = $cacheDir; CacheHours = $CacheHours; Offline = $offline }
     $sep  = if ($base -match '\?') { '&' } else { '?' }
     $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
+    if ($null -eq $resp -and $willFetch) {
+        # NVD answers 403/429/503 when many hosts share an IP or key; one paced retry
+        # recovers most collisions instead of turning a real KEV emergency into Unknown.
+        Start-Sleep -Milliseconds ([int](Get-ObjectPropertyValue $NvdCfg 'RequestDelayMs' 6500))
+        $resp = Get-CachedApiJson -Uri "$base$sep$Query" -CacheKey $CacheKey -Cfg $fetchCfg -Headers $hdrs -Label 'NVD'
+    }
 
     if ($willFetch -and -not $isMirror) { $script:NVDLastRequest = Get-Date }
     return [PSCustomObject]@{ Data = $resp; Fetched = [bool]$willFetch }
@@ -2393,7 +2399,8 @@ function Get-NVDCpeMatches {
         }
         $cpeMatches = @($collected)
     }
-    $script:NVDMemo[$CveId] = $cpeMatches
+    # Never memoise a failed fetch: a later lookup in this run may still succeed.
+    if ($null -ne $resp) { $script:NVDMemo[$CveId] = $cpeMatches }
     return $cpeMatches
 }
 
@@ -4794,7 +4801,7 @@ function Get-CachedApiJson {
         try { $resp | ConvertTo-Json -Depth 12 | Set-Content $cacheFile -Encoding UTF8 } catch { }
         return $resp
     } catch {
-        Write-Log "${Label}: fetch '$Uri' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level DEBUG
+        Write-Log "${Label}: fetch '$Uri' failed: $_. $(if (Test-Path $cacheFile) { 'Using stale cache.' } else { 'No cache available.' })" -Level WARN
         if (Test-Path $cacheFile) {
             try { return (Get-Content $cacheFile -Raw | ConvertFrom-Json) } catch { }
         }
