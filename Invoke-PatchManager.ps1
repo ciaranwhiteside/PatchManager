@@ -4036,13 +4036,7 @@ function Get-BrowserVersion {
     } else {
         @('HKLM:\SOFTWARE\Microsoft\Edge\BLBeacon','HKCU:\SOFTWARE\Microsoft\Edge\BLBeacon')
     }
-    foreach ($path in $paths) {
-        try {
-            $item = Get-ItemProperty -Path $path -EA Stop
-            if ($item.version) { return [string]$item.version }
-        } catch { }
-    }
-    return ''
+    return (Get-RegistryVersion -Paths $paths)
 }
 
 function Resolve-BrowserUpdater {
@@ -4060,14 +4054,11 @@ function Resolve-BrowserUpdater {
             (Join-Path $env:LOCALAPPDATA 'Microsoft\EdgeUpdate\MicrosoftEdgeUpdate.exe')
         )
     }
-    # Select-Object -First 1 yields the item or nothing; do not index with [0],
-    # which throws on an empty result under Set-StrictMode -Version Latest.
-    return ($paths | Where-Object { $_ -and (Test-Path $_) -and (Test-SafeExecutablePath $_) } | Select-Object -First 1)
+    return (Resolve-FirstExistingPath -Candidates @($paths | Where-Object { $_ -and (Test-SafeExecutablePath $_) }))
 }
 
 # --- Generic native-updater helpers (used by the vendor/firmware providers) ---
-# Generalisations of Get-BrowserVersion / Resolve-BrowserUpdater. The browser
-# provider keeps its own tested copies; these serve the newer providers.
+# Shared version/path helpers for the browser, vendor and firmware providers.
 
 function Get-RegistryVersion {
     # Reads the first available version-style value from a list of registry keys.

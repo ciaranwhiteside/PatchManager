@@ -2124,4 +2124,13 @@ Assert-True ($scriptContent -notmatch 'Get-ReportProperty') 'Get-ReportProperty 
 $htmlText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-HTMLReport'
 Assert-True ($htmlText -notmatch '\$invKevAffected|\$invKevUnknown|\$hasConfirmedAttention') 'Recomputed counts and aliases must be removed from New-HTMLReport.'
 
+# T40: browser helpers reuse the shared version/path helpers.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserVersion')
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-BrowserUpdater')
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserVersion') -match 'Get-RegistryVersion') 'Get-BrowserVersion must reuse Get-RegistryVersion.'
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Resolve-BrowserUpdater') -match 'Resolve-FirstExistingPath') 'Resolve-BrowserUpdater must reuse Resolve-FirstExistingPath.'
+$script:CFG = [pscustomobject]@{ ScopeProfile = 'Personal' }
+[void](Get-BrowserVersion -Browser 'Edge')
+[void](Resolve-BrowserUpdater -Browser 'Chrome')
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
