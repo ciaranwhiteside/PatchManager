@@ -1978,4 +1978,11 @@ $mainText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-Main'
 Assert-True ($scriptContent -notmatch 'function Test-RebootRequired') 'Test-RebootRequired duplicate must be removed.'
 Assert-True ($mainText -match 'rowNeedsReboot' -and $mainText -match 'Test-PendingReboot\)\)\)') 'Exit 3010 must consider row RebootRequired and Test-PendingReboot.'
 
+# T26: two batteries on AC power count as on AC.
+$preflightText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-PreFlightChecks'
+$batteryLines = ($preflightText -split "`n" | Where-Object { $_ -match '^\s*\$(pct|onAC)\s*=' }) -join "`n"
+$battery = @([pscustomobject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 80 }, [pscustomobject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 15 })
+Invoke-Expression $batteryLines
+Assert-True ($onAC -eq $true -and $pct -eq 15) 'Two charging batteries must read as on AC with the lowest charge.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

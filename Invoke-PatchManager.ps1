@@ -1839,8 +1839,9 @@ function Invoke-PreFlightChecks {
     if ($pf.CheckBattery) {
         $battery = Get-WmiObject -Class Win32_Battery -EA SilentlyContinue
         if ($battery) {
-            $pct  = $battery.EstimatedChargeRemaining
-            $onAC = $battery.BatteryStatus -in @(2, 6, 7, 8, 9)
+            # Some laptops report two batteries; an array on the left of -in is never "in".
+            $pct  = (@($battery) | Measure-Object -Property EstimatedChargeRemaining -Minimum).Minimum
+            $onAC = @($battery | Where-Object { $_.BatteryStatus -in @(2, 6, 7, 8, 9) }).Count -gt 0
             if ($pf.RequireACPower -and -not $onAC) {
                 Write-Log "PREFLIGHT FAIL: AC power required but device is on battery (${pct}%)." -Level WARN
                 $pass = $false
