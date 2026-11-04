@@ -2031,4 +2031,9 @@ $taskText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Install-PatchManagerS
 Assert-True ($taskText -notmatch '-AtStartup' -and $taskText -notmatch 'AtLogOn -User') 'Task must not use a boot trigger or a single-user logon trigger.'
 Assert-True ($taskText -match "-GroupId 'S-1-5-32-544'") 'Task principal must be the Administrators group.'
 
+# T31: AlreadyCurrent rows are not "skipped" work.
+$script:Stats = @{ Errors = [System.Collections.Generic.List[string]]::new() }
+Update-StatsFromResults -Results @((New-PatchResult -Name 'Windows Update' -PackageId 'WU' -Provider 'windows-update' -Source 'wu' -Status 'AlreadyCurrent' -Success $true))
+Assert-True ($script:Stats.UpdatesSkipped -eq 0) 'AlreadyCurrent must not count as skipped.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

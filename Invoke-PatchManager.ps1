@@ -1669,7 +1669,8 @@ function Update-StatsFromResults {
     $script:Stats.UpdatesPlanned = @($Results | Where-Object { $_.Status -eq 'Planned' }).Count
     $script:Stats.UpdatesApplied = @($Results | Where-Object { $_.Status -in @('Succeeded','Updated','Detected') -and $_.Success }).Count
     $script:Stats.UpdatesFailed  = @($Results | Where-Object { $_.Status -in @('Failed','Blocked','Verifying') -or ($_.PSObject.Properties['Success'] -and -not $_.Success -and $_.Status -notin @('Skipped','Descoped','Planned')) }).Count
-    $script:Stats.UpdatesSkipped = @($Results | Where-Object { $_.Status -in @('Skipped','Descoped','AlreadyCurrent') }).Count
+    # AlreadyCurrent is evidence of a clean source, not skipped work (see Get-PatchRowKind).
+    $script:Stats.UpdatesSkipped = @($Results | Where-Object { $_.Status -in @('Skipped','Descoped') }).Count
 
     # Result rows are the authoritative provider outcome. Most provider failures
     # are logged at WARN so a recoverable native-tool error does not masquerade as
