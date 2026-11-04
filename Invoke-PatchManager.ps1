@@ -4280,6 +4280,22 @@ function Get-ChocoInstalledVersion {
     } catch { return '' }
 }
 
+function Get-ChocoNewerInstalledVersion {
+    # The product may have been updated outside choco (its own updater, winget), so
+    # choco's record is stale and its upgrade fails as a downgrade (MSI 1603). Returns
+    # the installed version when exactly one inventory entry matches the id's first
+    # word and is newer than the choco target; '' otherwise. Pure - unit-testable.
+    # shortcut: name matching by first id word, upgrade to a choco id -> product map if it misfires.
+    param([string]$PackageId, [string]$Available, [array]$Inventory)
+    $word = ($PackageId -split '[-.]')[0]
+    if ($word.Length -lt 4) { return '' }
+    $hits = @($Inventory | Where-Object { Test-WordMatch ([string]$_.Name) $word })
+    if ($hits.Count -ne 1) { return '' }
+    $installed = [string]$hits[0].Version
+    if ((Compare-SoftwareVersion $installed $Available) -eq 1) { return $installed }
+    return ''
+}
+
 function Invoke-ChocolateyProvider {
     $provider = 'chocolatey'
     if (-not [bool](Get-ObjectPropertyValue $script:CFG.PackageManagers 'ChocolateyEnabled' $false)) { return @() }
@@ -4327,6 +4343,11 @@ function Invoke-ChocolateyProvider {
         }
         if ($max -gt 0 -and $applied -ge $max) {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Skipped' -Evidence "Per-run update cap ($max) reached; deferred to next run."))
+            continue
+        }
+        $newer = Get-ChocoNewerInstalledVersion -PackageId $pkg.Id -Available $pkg.Available -Inventory @($script:Inventory)
+        if ($newer) {
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Skipped' -Evidence "Installed version $newer is newer than choco target $($pkg.Available); choco's record ($($pkg.Current)) is stale. Not upgraded, to avoid a downgrade. To stop tracking without uninstalling: choco uninstall $($pkg.Id) --skip-autouninstaller."))
             continue
         }
         if ($DryRun) {

@@ -64,6 +64,9 @@ All notable changes to PatchManager are documented here. The format follows
   short name keys and prefers exact name matches.
 - The newest WinGet is chosen by numeric version and CPU architecture (ARM64).
 - Chocolatey ConfirmedVersion is read from the installed package, not assumed.
+- Chocolatey packages already updated outside choco (installed version newer
+  than the choco target) are skipped with guidance instead of failing as a
+  downgrade (MSI 1603).
 
 ### Fixed (scheduling and pre-flight)
 

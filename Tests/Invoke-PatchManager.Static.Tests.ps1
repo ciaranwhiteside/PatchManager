@@ -1952,6 +1952,18 @@ try {
 } finally { Remove-Item $chocoRoot -Recurse -Force -EA SilentlyContinue }
 Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-ChocolateyProvider') -notmatch 'ConfirmedVersion \$pkg\.Available') 'Chocolatey must not claim the target version as confirmed.'
 
+# Live run 2026-11-04: LibreOffice updated outside choco made choco attempt a downgrade (MSI 1603).
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ChocoNewerInstalledVersion')
+$lo = @([pscustomobject]@{ Name = 'LibreOffice 26.8.2.2'; Version = '26.8.2.2' }, [pscustomobject]@{ Name = 'Google Chrome'; Version = '130.0' })
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'libreoffice-fresh' -Available '26.2.6' -Inventory $lo) -eq '26.8.2.2') 'A newer version installed outside choco must be detected.'
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'libreoffice-fresh' -Available '26.9.0' -Inventory $lo) -eq '') 'An older installed version must still be upgraded.'
+$twoGits = @([pscustomobject]@{ Name = 'Git'; Version = '9.0' }, [pscustomobject]@{ Name = 'Git Extensions'; Version = '9.0' })
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'gitkraken' -Available '1.0' -Inventory $twoGits) -eq '') 'No whole-word match must not skip.'
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'nodejs' -Available '1.0' -Inventory @()) -eq '') 'Empty inventory must not skip.'
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'vlc' -Available '1.0' -Inventory @([pscustomobject]@{ Name = 'VLC media player'; Version = '9.0' })) -eq '') 'Ids shorter than 4 characters are too generic to match.'
+$twoLo = @([pscustomobject]@{ Name = 'LibreOffice 26.8'; Version = '26.8' }, [pscustomobject]@{ Name = 'LibreOffice Help Pack'; Version = '26.8' })
+Assert-True ((Get-ChocoNewerInstalledVersion -PackageId 'libreoffice-fresh' -Available '26.2.6' -Inventory $twoLo) -eq '') 'Ambiguous matches must not skip.'
+
 # T23: the lock and BITS throttle are released before any popup; popups time out; skipped attempts show none.
 foreach ($popupFn in 'Invoke-Main', 'Complete-EarlyRun') {
     $popupAst = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $popupFn }, $true)
