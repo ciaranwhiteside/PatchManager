@@ -1913,4 +1913,16 @@ Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-PatchRestorePoi
     Assert-True ($script:cimCalls -contains 'CreateRestorePoint') 'New-PatchRestorePoint must call SystemRestore.CreateRestorePoint.'
 }
 
+# T20: Store matching ignores empty/short keys and prefers exact names.
+foreach ($fn in 'ConvertTo-StoreMatchKey','Test-StoreKeyMatch','Find-StoreSnapshotPackage') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+Assert-True (-not (Test-StoreKeyMatch 'Microsoft.WindowsCalculator_8wekyb3d8bbwe' ([string][char]0x5FAE + [char]0x4FE1))) 'An empty (CJK) key must not match.'
+Assert-True (-not (Test-StoreKeyMatch 'Microsoft.Photos_2024.1_x64__8wekyb3d8bbwe' 'X')) 'A 1-character key must not substring-match x64.'
+Assert-True (Test-StoreKeyMatch 'Microsoft.WindowsCalculator' 'Windows Calculator') 'A real name still substring-matches.'
+$storeSnap = @{
+    a = [pscustomobject]@{ Name = 'Microsoft.XboxApp'; PackageFamilyName = 'Microsoft.XboxApp_8wekyb3d8bbwe'; PackageFullName = 'Microsoft.XboxApp_1.0_x64__8wekyb3d8bbwe'; Version = '1.0' }
+    b = [pscustomobject]@{ Name = 'X'; PackageFamilyName = 'X_abc'; PackageFullName = 'X_2.0_x64__abc'; Version = '2.0' }
+}
+Assert-True ((Find-StoreSnapshotPackage -Snapshot $storeSnap -Candidate ([pscustomobject]@{ Name = 'X' })).Version -eq '2.0') 'Exact name match must win over substring matches.'
+Assert-True ($scriptContent -notmatch 'Compare-VersionText') 'Compare-VersionText must be replaced by Compare-SoftwareVersion.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

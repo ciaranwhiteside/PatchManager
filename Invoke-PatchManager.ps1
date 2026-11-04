@@ -5354,16 +5354,16 @@ function ConvertTo-StoreMatchKey {
     return (([string]$Value).ToLowerInvariant() -replace '[^a-z0-9]', '')
 }
 
-function Compare-VersionText {
-    param($Left, $Right)
-
-    try {
-        $leftVersion = [version]([string]$Left)
-        $rightVersion = [version]([string]$Right)
-        return $leftVersion.CompareTo($rightVersion)
-    } catch {
-        return $null
-    }
+function Test-StoreKeyMatch {
+    # Name keys strip non-[a-z0-9], so a CJK name becomes '' and an app called 'X'
+    # becomes 'x' (inside every '...x64...'). Empty keys never match; substring
+    # matching needs at least 3 characters.
+    param($Container, $Key, [switch]$Exact)
+    $c = ConvertTo-StoreMatchKey $Container
+    $k = ConvertTo-StoreMatchKey $Key
+    if (-not $c -or -not $k) { return $false }
+    if ($c -eq $k) { return $true }
+    return (-not $Exact -and $k.Length -ge 3 -and $c.Contains($k))
 }
 
 function Find-StoreSnapshotPackage {
@@ -5374,20 +5374,13 @@ function Find-StoreSnapshotPackage {
 
     if (-not $Snapshot -or -not $Candidate) { return $null }
 
-    $candidateKey = ConvertTo-StoreMatchKey $Candidate.Name
-    if ([string]::IsNullOrWhiteSpace($candidateKey)) { return $null }
-
+    # Exact name first; substring matching only as a fallback.
     foreach ($pkg in $Snapshot.Values) {
-        $packageKeys = @(
-            ConvertTo-StoreMatchKey $pkg.Name
-            ConvertTo-StoreMatchKey $pkg.PackageFamilyName
-            ConvertTo-StoreMatchKey $pkg.PackageFullName
-        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-        foreach ($packageKey in $packageKeys) {
-            if ($packageKey.Contains($candidateKey) -or $candidateKey.Contains($packageKey)) {
-                return $pkg
-            }
+        if (Test-StoreKeyMatch $pkg.Name $Candidate.Name -Exact) { return $pkg }
+    }
+    foreach ($pkg in $Snapshot.Values) {
+        foreach ($field in @($pkg.Name, $pkg.PackageFamilyName, $pkg.PackageFullName)) {
+            if ((Test-StoreKeyMatch $field $Candidate.Name) -or (Test-StoreKeyMatch $Candidate.Name $field)) { return $pkg }
         }
     }
 
@@ -5623,7 +5616,7 @@ function Invoke-MicrosoftStoreClientUpdates {
                 $candidateTargetVersion = $candidateReportedVersion
                 $candidateVersionNote = " StoreCliVersion=$candidateReportedVersion;"
                 if (-not [string]::IsNullOrWhiteSpace($candidateOldVersion) -and -not [string]::IsNullOrWhiteSpace($candidateReportedVersion)) {
-                    $versionComparison = Compare-VersionText -Left $candidateReportedVersion -Right $candidateOldVersion
+                    $versionComparison = Compare-SoftwareVersion -Left $candidateReportedVersion -Right $candidateOldVersion
                     if ($null -ne $versionComparison -and $versionComparison -lt 0) {
                         $candidateTargetVersion = ''
                         $candidateVersionNote = " StoreCliVersion=$candidateReportedVersion; Store CLI listed version is lower than local AppX version $candidateOldVersion, so it is recorded as Store-reported metadata rather than a confirmed target version;"
@@ -5740,13 +5733,13 @@ function Invoke-MicrosoftStoreClientUpdates {
                     if ($storeRow.Status -eq 'Failed') { continue }
 
                     $matchingDiff = @($diffRows | Where-Object {
-                        (ConvertTo-StoreMatchKey $_.Name) -eq (ConvertTo-StoreMatchKey $storeRow.Name) -or
-                        (ConvertTo-StoreMatchKey $_.PackageId).Contains((ConvertTo-StoreMatchKey $storeRow.Name)) -or
-                        (ConvertTo-StoreMatchKey $storeRow.PackageId).Contains((ConvertTo-StoreMatchKey $_.Name))
+                        (Test-StoreKeyMatch $_.Name $storeRow.Name -Exact) -or
+                        (Test-StoreKeyMatch $_.PackageId $storeRow.Name) -or
+                        (Test-StoreKeyMatch $storeRow.PackageId $_.Name)
                     } | Select-Object -First 1)
 
                     $stillOffered = @($remainingCandidates | Where-Object {
-                        (ConvertTo-StoreMatchKey $_.Name) -eq (ConvertTo-StoreMatchKey $storeRow.Name)
+                        Test-StoreKeyMatch $_.Name $storeRow.Name -Exact
                     } | Select-Object -First 1)
 
                     if ($matchingDiff.Count -gt 0) {
@@ -5769,8 +5762,8 @@ function Invoke-MicrosoftStoreClientUpdates {
 
             foreach ($row in $diffRows) {
                 if ($storeCliRows -and @($storeCliRows | Where-Object {
-                    (ConvertTo-StoreMatchKey $_.Name) -eq (ConvertTo-StoreMatchKey $row.Name) -or
-                    (ConvertTo-StoreMatchKey $_.PackageId).Contains((ConvertTo-StoreMatchKey $row.Name))
+                    (Test-StoreKeyMatch $_.Name $row.Name -Exact) -or
+                    (Test-StoreKeyMatch $_.PackageId $row.Name)
                 }).Count -gt 0) {
                     continue
                 }
