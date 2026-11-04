@@ -4231,6 +4231,18 @@ function ConvertFrom-ChocoOutdated {
     return @($items)
 }
 
+function Get-ChocoInstalledVersion {
+    # Observed version from the package's installed nuspec (<root>\lib\<id>\<id>.nuspec),
+    # so ConfirmedVersion is evidence, not the target choco was asked for. '' if unknown.
+    param([string]$ChocoPath, [string]$PackageId)
+    try {
+        $root = Split-Path (Split-Path $ChocoPath -Parent) -Parent
+        $nuspec = Join-Path $root "lib\$PackageId\$PackageId.nuspec"
+        if (-not (Test-Path -LiteralPath $nuspec)) { return '' }
+        return [string]([xml](Get-Content -LiteralPath $nuspec -Raw -EA Stop)).package.metadata.version
+    } catch { return '' }
+}
+
 function Invoke-ChocolateyProvider {
     $provider = 'chocolatey'
     if (-not [bool](Get-ObjectPropertyValue $script:CFG.PackageManagers 'ChocolateyEnabled' $false)) { return @() }
@@ -4296,7 +4308,8 @@ function Invoke-ChocolateyProvider {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "choco upgrade timed out after ${timeout}s."))
         } elseif ($upg.ExitCode -eq 0 -or $upg.ExitCode -in $rebootCodes) {
             $reboot = $upg.ExitCode -in $rebootCodes
-            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -ConfirmedVersion $pkg.Available -Status 'Succeeded' -Success $true -RebootRequired $reboot -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
+            $confirmed = Get-ChocoInstalledVersion -ChocoPath $choco -PackageId $pkg.Id
+            $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -ConfirmedVersion $confirmed -Status 'Succeeded' -Success $true -RebootRequired $reboot -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
         } else {
             $results.Add((New-PatchResult -Name $pkg.Id -PackageId $pkg.Id -Provider $provider -Source $provider -InstalledVersion $pkg.Current -AvailableVersion $pkg.Available -Status 'Failed' -Evidence "choco upgrade exit code=$($upg.ExitCode). $summary"))
         }

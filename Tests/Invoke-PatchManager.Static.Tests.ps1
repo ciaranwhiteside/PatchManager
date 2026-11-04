@@ -1936,4 +1936,15 @@ try {
     Assert-True ((Select-WinGetPackageFolder -Folders $wingetFolders).Name -like '*_arm64_*') 'ARM64 must pick the arm64 package.'
 } finally { $env:PROCESSOR_ARCHITECTURE = $savedArch }
 
+# T22: Chocolatey ConfirmedVersion comes from the installed nuspec, not the requested target.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-ChocoInstalledVersion')
+$chocoRoot = Join-Path ([IO.Path]::GetTempPath()) "pm-choco-$([guid]::NewGuid())"
+try {
+    [void](New-Item -ItemType Directory -Path (Join-Path $chocoRoot 'bin'), (Join-Path $chocoRoot 'lib\git') -Force)
+    Set-Content -Path (Join-Path $chocoRoot 'lib\git\git.nuspec') -Value '<?xml version="1.0"?><package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"><metadata><id>git</id><version>2.47.1</version></metadata></package>' -Encoding UTF8
+    Assert-True ((Get-ChocoInstalledVersion -ChocoPath (Join-Path $chocoRoot 'bin\choco.exe') -PackageId 'git') -eq '2.47.1') 'Installed choco version must be read from the nuspec.'
+    Assert-True ((Get-ChocoInstalledVersion -ChocoPath (Join-Path $chocoRoot 'bin\choco.exe') -PackageId 'missing') -eq '') 'Unknown package must give an empty confirmed version.'
+} finally { Remove-Item $chocoRoot -Recurse -Force -EA SilentlyContinue }
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-ChocolateyProvider') -notmatch 'ConfirmedVersion \$pkg\.Available') 'Chocolatey must not claim the target version as confirmed.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
