@@ -13,7 +13,7 @@ Release preparation does not publish a GitHub release or tag.
    Compare the archive hash before extraction:
 
    ```powershell
-   $archive = '.\PatchManager-v1.9.0.zip'
+   $archive = '.\PatchManager-v1.9.1.zip'
    $expected = ((Get-Content -LiteralPath "$archive.sha256" -Raw).Trim() -split '\s+')[0]
    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $expected) {
        throw 'Release archive checksum mismatch.'

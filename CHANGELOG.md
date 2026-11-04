@@ -6,6 +6,8 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-04
+
 ### Fixed
 
 - An expired or revoked `NVD.ApiKey` (NVD answers 404 "Invalid apiKey") is
