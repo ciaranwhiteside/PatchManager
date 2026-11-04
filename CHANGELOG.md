@@ -6,6 +6,8 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-04
+
 ### Fixed
 
 - AppX sub-products such as `Microsoft.Edge.GameAssist` no longer match KEV
