@@ -2120,4 +2120,8 @@ try {
 # T38: one property helper, not a nested byte-identical copy.
 Assert-True ($scriptContent -notmatch 'Get-ReportProperty') 'Get-ReportProperty duplicate must be removed in favour of Get-ObjectPropertyValue.'
 
+# T39: New-HTMLReport computes each count once.
+$htmlText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'New-HTMLReport'
+Assert-True ($htmlText -notmatch '\$invKevAffected|\$invKevUnknown|\$hasConfirmedAttention') 'Recomputed counts and aliases must be removed from New-HTMLReport.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

@@ -6446,9 +6446,8 @@ function New-HTMLReport {
         $attentionSequence.Add("<li class='review'><span class='attention-order'>$($attentionSequence.Count + 1)</span><div><strong>Staleness - $(ConvertTo-ReportHtml $item)</strong><p>$(ConvertTo-ReportHtml $detail)</p></div><a href='#lifecycle'>Staleness evidence</a></li>")
     }
     $attentionSequenceHtml = $attentionSequence -join ''
-    $hasConfirmedAttention = $confirmedAttention
-    $attentionPanelClass = if ($hasConfirmedAttention) { 'danger-panel' } else { 'review-panel' }
-    $attentionCountClass = if ($hasConfirmedAttention) { 'danger' } else { 'attention' }
+    $attentionPanelClass = if ($confirmedAttention) { 'danger-panel' } else { 'review-panel' }
+    $attentionCountClass = if ($confirmedAttention) { 'danger' } else { 'attention' }
     $emptyAttentionCopy = if ($slaEnabled) {
         'No blocked, failed, verifying, reboot-required, KEV-affected, SLA, inventory-verification, or runtime-error states were recorded.'
     } else {
@@ -6484,15 +6483,13 @@ function New-HTMLReport {
     }
 
     $invKevRows      = New-KEVRowsHtml -Candidates $InventoryKEVMatches
-    $invKevAffected  = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Affected' }).Count
-    $invKevUnknown   = @($InventoryKEVMatches | Where-Object { $_.ExposureState -eq 'Unknown' }).Count
 
     $invKevSection = if ($InventoryKEVMatches.Count -gt 0) {
-        $tone      = if ($invKevAffected -gt 0) { 'danger-panel' } else { '' }
-        $countTone = if ($invKevAffected -gt 0) { 'danger' } elseif ($invKevUnknown -gt 0) { '' } else { 'good' }
-        $noteClass = if ($invKevAffected -gt 0) { 'note danger-text' } else { 'note' }
-        $heading   = if ($invKevAffected -gt 0) { "$invKevAffected confirmed exposure(s) with no available update" } else { 'KEV product history, no confirmed exposure' }
-        "<section class='panel $tone'><div class='section-head'><div><h2>CISA KEV - installed software: $heading</h2></div><span class='count $countTone'>$invKevAffected</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
+        $tone      = if ($inventoryKevAffectedCount -gt 0) { 'danger-panel' } else { '' }
+        $countTone = if ($inventoryKevAffectedCount -gt 0) { 'danger' } elseif ($inventoryKevUnknownCount -gt 0) { '' } else { 'good' }
+        $noteClass = if ($inventoryKevAffectedCount -gt 0) { 'note danger-text' } else { 'note' }
+        $heading   = if ($inventoryKevAffectedCount -gt 0) { "$inventoryKevAffectedCount confirmed exposure(s) with no available update" } else { 'KEV product history, no confirmed exposure' }
+        "<section class='panel $tone'><div class='section-head'><div><h2>CISA KEV - installed software: $heading</h2></div><span class='count $countTone'>$inventoryKevAffectedCount</span></div><p class='$noteClass'>$($InventoryKEVMatches.Count) installed application(s) match a product named in the CISA KEV catalogue, and no update was available through PatchManager's sources in this run. $kevMethodNote</p><div class='table-wrap'><table><thead><tr><th>CVE</th><th>Installed app</th><th>Version</th><th>Exposure</th><th>Fixed in</th><th>Vulnerability</th><th>CISA due</th></tr></thead><tbody>$invKevRows</tbody></table></div></section>"
     } else {
         "<section class='panel'><div class='section-head'><div><h2>CISA KEV - installed software: No inventory KEV matches</h2></div><span class='count good'>0</span></div><p class='note'>The full software inventory was scanned against the KEV catalogue; nothing matched beyond the actionable items above.</p></section>"
     }
