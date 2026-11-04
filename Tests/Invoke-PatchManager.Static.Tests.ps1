@@ -1688,4 +1688,9 @@ $kevSlaErrorLogs = @($ast.FindAll({
 }, $true))
 Assert-True ($kevSlaErrorLogs.Count -eq 0) 'KEV emergency and SLA breach logs must be WARN so a clean run does not exit 1.'
 
+# T2: Ring.Delays loaded from JSON is a PSCustomObject; the lookup must not index it.
+$jsonDelays = '{"Pilot":0,"Early":3,"Broad":10}' | ConvertFrom-Json
+Assert-True ((Get-ObjectPropertyValue $jsonDelays 'Early' 0) -eq 3) 'Ring delay lookup must work on a JSON object.'
+Assert-True ($scriptContent -notmatch '\.Ring\.Delays\[') 'Ring.Delays must not be indexed with [] (throws on PSCustomObject under StrictMode).'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

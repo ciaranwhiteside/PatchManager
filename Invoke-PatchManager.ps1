@@ -6897,7 +6897,7 @@ function Invoke-Main {
     }
 
     $script:RING = Get-DeploymentRing
-    $ringDelay   = $script:CFG.Ring.Delays[$script:RING]
+    $ringDelay   = Get-ObjectPropertyValue $script:CFG.Ring.Delays $script:RING 0
     Write-Log "Ring: $($script:RING) (suggested delay: ${ringDelay}d - enforce via deployment tooling)" -Level INFO
 
     #-- Pre-flight ------------------------------------------------------------
