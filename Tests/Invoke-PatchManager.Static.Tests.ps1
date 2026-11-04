@@ -502,7 +502,7 @@ Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorU
 # Regression guard: Start-Process -PassThru leaves .ExitCode $null with redirected
 # streams on PS 5.1, which made every choco upgrade look Failed and choco discovery
 # look "failed to run". Invoke-CapturedProcess must return the real exit code.
-Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+foreach ($fn in 'Invoke-CapturedProcess','Test-SafeExecutablePath','Test-IsFleetProfile','Test-TrustedPath') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-SuccessfulProcessOutput')
 Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-BrowserUpdaterArguments')
 $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
@@ -563,7 +563,7 @@ $resolvedScope = Resolve-WinGetInstalledScope -PackageId 'Google.PlatformTools' 
 Assert-True ($resolvedScope -eq 'user') 'Scope resolution must fall back from machine to the user scope that owns the package.'
 Assert-True ($script:ScopeProbeCalls.Count -eq 2 -and $script:ScopeProbeCalls[0] -match '--scope machine' -and $script:ScopeProbeCalls[1] -match '--scope user') 'Scope resolution must probe the configured scope first and alternate scope second.'
 Remove-Item Function:\Invoke-CapturedProcess
-Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-CapturedProcess')
+foreach ($fn in 'Invoke-CapturedProcess','Test-SafeExecutablePath','Test-IsFleetProfile','Test-TrustedPath') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
 
 $browserProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-BrowserProvider'
 $vendorProviderText = Get-FunctionTextFromScriptAst -Ast $ast -Name 'Invoke-VendorUpdaterProvider'
@@ -1775,5 +1775,15 @@ try {
     Assert-True (-not (Test-TrustedPath $trustFile)) 'A file BUILTIN\Users can write must not be trusted.'
     Assert-True (-not (Test-TrustedPath (Join-Path $trustFile 'missing'))) 'An unreadable path must not be trusted.'
 } finally { Remove-Item $trustFile -Force -EA SilentlyContinue }
+
+# T8: fleet profiles refuse executables in user-writable folders; Personal keeps per-user tools.
+$script:CFG = [pscustomobject]@{ ScopeProfile = 'Commercial' }
+Assert-True (Test-SafeExecutablePath "$env:SystemRoot\System32\cmd.exe") 'System32 binaries are safe.'
+Assert-True (-not (Test-SafeExecutablePath (Join-Path $env:LOCALAPPDATA 'Google\Update\GoogleUpdate.exe'))) 'Per-user updater must be refused in fleet profiles.'
+Assert-True (-not (Test-SafeExecutablePath (Join-Path $env:USERPROFILE 'scoop\shims\scoop.cmd'))) 'Scoop shim must be refused in fleet profiles.'
+$refused = Invoke-CapturedProcess -FilePath (Join-Path $env:USERPROFILE 'evil.exe') -TimeoutSeconds 5
+Assert-True ($null -eq $refused.ExitCode -and $refused.Output -match '^Refused') 'Invoke-CapturedProcess must refuse user-writable executables in fleet profiles.'
+$script:CFG = [pscustomobject]@{ ScopeProfile = 'Personal' }
+Assert-True (Test-SafeExecutablePath (Join-Path $env:LOCALAPPDATA 'Google\Update\GoogleUpdate.exe')) 'Personal profile keeps per-user tools.'
 
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

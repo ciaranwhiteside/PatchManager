@@ -702,6 +702,28 @@ function Test-TrustedPath {
     } catch { return $false }
 }
 
+function Test-SafeExecutablePath {
+    # Fleet profiles run elevated on shared machines: never execute a binary a
+    # standard user could have replaced (per-user updaters, Scoop/py shims, user PATH).
+    # shortcut: the Personal profile still runs the signed-in user's own tools (UAC is not a
+    # security boundary on a single-user device); extend this to Personal if it is used on shared PCs.
+    param([string]$Path)
+    if (-not $script:CFG -or -not (Test-IsFleetProfile $script:CFG.ScopeProfile)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try { $full = [IO.Path]::GetFullPath($Path) } catch { return $false }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:SystemRoot) | Where-Object { $_ }) {
+        if ($full.StartsWith($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    # App execution aliases (winget.exe, store.exe) are reparse points into the signed package.
+    $aliasDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+    if ($full.StartsWith($aliasDir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        $item = Get-Item -LiteralPath $full -Force -EA SilentlyContinue
+        return [bool]($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))
+    }
+    if ($full.StartsWith((Join-Path $env:SystemDrive 'Users') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    return (Test-TrustedPath $full)
+}
+
 function Set-ScopeProfileDefaults {
     param([Parameter(Mandatory)] [object]$Config)
 
@@ -1654,7 +1676,7 @@ function Update-StatsFromResults {
 function Resolve-WinGetPath {
     # Try PATH first (interactive sessions)
     $cmd = Get-Command 'winget' -EA SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if ($cmd -and (Test-SafeExecutablePath $cmd.Source)) { return $cmd.Source }
 
     # WindowsApps lookup for SYSTEM context (Intune/SCCM)
     $appBase = 'C:\Program Files\WindowsApps'
@@ -1672,7 +1694,7 @@ function Resolve-WinGetPath {
 
     # User-context fallback
     $userExe = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
-    if (Test-Path $userExe) { return $userExe }
+    if ((Test-Path $userExe) -and (Test-SafeExecutablePath $userExe)) { return $userExe }
 
     return $null
 }
@@ -3911,7 +3933,7 @@ function Resolve-BrowserUpdater {
     }
     # Select-Object -First 1 yields the item or nothing; do not index with [0],
     # which throws on an empty result under Set-StrictMode -Version Latest.
-    return ($paths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1)
+    return ($paths | Where-Object { $_ -and (Test-Path $_) -and (Test-SafeExecutablePath $_) } | Select-Object -First 1)
 }
 
 # --- Generic native-updater helpers (used by the vendor/firmware providers) ---
@@ -3960,6 +3982,9 @@ function Invoke-CapturedProcess {
         [string[]]$StandardInputLines = @()
     )
 
+    if (-not (Test-SafeExecutablePath $FilePath)) {
+        return [PSCustomObject]@{ ExitCode = $null; TimedOut = $false; Output = "Refused to run '$FilePath': it is in a user-writable location and PatchManager runs elevated." }
+    }
     $proc = $null
     try {
         $escaped = @($Arguments | ForEach-Object {
@@ -4213,13 +4238,13 @@ function Resolve-ScoopCommand {
     if ($cmd -and $cmd.Source) {
         if ($cmd.Source -like '*.ps1') {
             $sibling = [System.IO.Path]::ChangeExtension($cmd.Source, '.cmd')
-            if (Test-Path $sibling) { return $sibling }
-        } else {
+            if ((Test-Path $sibling) -and (Test-SafeExecutablePath $sibling)) { return $sibling }
+        } elseif (Test-SafeExecutablePath $cmd.Source) {
             return $cmd.Source
         }
     }
     $userShim = Join-Path $env:USERPROFILE 'scoop\shims\scoop.cmd'
-    if (Test-Path $userShim) { return $userShim }
+    if ((Test-Path $userShim) -and (Test-SafeExecutablePath $userShim)) { return $userShim }
     return $null
 }
 
@@ -4280,7 +4305,7 @@ function Resolve-PyManagerCommand {
     if ($cmd -and $cmd.Source) { $candidates += [string]$cmd.Source }
     $candidates += (Join-Path $env:LOCALAPPDATA 'Python\bin\py.exe')
 
-    foreach ($path in ($candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)) {
+    foreach ($path in ($candidates | Where-Object { $_ -and (Test-Path $_) -and (Test-SafeExecutablePath $_) } | Select-Object -Unique)) {
         try {
             $probe = Invoke-CapturedProcess -FilePath $path -Arguments @('list', '--only-managed', '-f', 'json') -TimeoutSeconds 30
             if ($probe.TimedOut -or $probe.ExitCode -ne 0) { continue }
