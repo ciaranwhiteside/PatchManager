@@ -1676,4 +1676,16 @@ if (-not [string]::IsNullOrWhiteSpace($VisualArtifactPath)) {
     Write-Host "Visual artifacts: $VisualArtifactPath" -ForegroundColor Cyan
 }
 
+# --- Audit 2026-11 regression tests -----------------------------------------------
+
+# T1: KEV emergency / SLA breach messages must not force exit 1 (ERROR sets ExitCode).
+$kevSlaErrorLogs = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Write-Log' -and
+    $node.Extent.Text -match '(EMERGENCY:|BREACH:)' -and
+    $node.Extent.Text -match '-Level ERROR'
+}, $true))
+Assert-True ($kevSlaErrorLogs.Count -eq 0) 'KEV emergency and SLA breach logs must be WARN so a clean run does not exit 1.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

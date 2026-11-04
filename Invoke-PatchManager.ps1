@@ -6955,7 +6955,7 @@ function Invoke-Main {
 
     if ($confirmedKev.Count -gt 0) {
         $script:EmergencyPatch = $true
-        Write-Log "EMERGENCY: $($confirmedKev.Count) CISA KEV match(es) confirmed affected by version. Bypassing maintenance window and reducing jitter." -Level ERROR
+        Write-Log "EMERGENCY: $($confirmedKev.Count) CISA KEV match(es) confirmed affected by version. Bypassing maintenance window and reducing jitter." -Level WARN
         Write-RunEvent -EventId 9001 -Type Error `
             -Message "KEV EMERGENCY on $($script:HOSTNAME): $(($confirmedKev | ForEach-Object { "$($_.CVE) ($($_.InstalledApp) $($_.InstalledVer))" }) -join ', ')"
     } elseif ($kevMatches.Count -gt 0) {
@@ -6989,9 +6989,9 @@ function Invoke-Main {
     if ($script:CFG.SLA.Enabled) { $slaBreaches = @(Get-SLABreaches -State $patchState) }
 
     if ($slaBreaches.Count -gt 0) {
-        Write-Log "SLA BREACH: $($slaBreaches.Count) update(s) available for over $($script:CFG.SLA.Critical) days." -Level ERROR
+        Write-Log "SLA BREACH: $($slaBreaches.Count) update(s) available for over $($script:CFG.SLA.Critical) days." -Level WARN
         $slaBreaches | ForEach-Object {
-            Write-Log "  BREACH: $($_.PackageName) v$($_.VersionAvailable) available since $($_.FirstSeenAvailable) (due: $($_.SLADue))" -Level ERROR
+            Write-Log "  BREACH: $($_.PackageName) v$($_.VersionAvailable) available since $($_.FirstSeenAvailable) (due: $($_.SLADue))" -Level WARN
         }
         $script:Stats.SLABreaches = $slaBreaches.Count
         Write-RunEvent -EventId 1020 -Type Error `
