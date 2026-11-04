@@ -2184,4 +2184,25 @@ foreach ($fn in 'Add-SkippedUpgradeResult','Get-FilteredUpgrades') { Invoke-Expr
 # T42: CI runs the browser usability test, not just checks that the file exists.
 Assert-True ((Get-Content (Join-Path $root '.github\workflows\ci.yml') -Raw).Contains('node .\Tests\Report.Usability.Tests.cjs')) 'CI must run Tests/Report.Usability.Tests.cjs.'
 
+# Live run 2026-11-04: under StrictMode the registry inventory was empty because uninstall
+# keys without SystemComponent threw, so desktop apps (LibreOffice) were invisible.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-SoftwareInventory')
+& {
+    Set-StrictMode -Version Latest
+    function Write-Log { param($Message, $Level) }
+    function Get-ChildItem { @() }
+    function Get-AppxPackage { @() }
+    function Get-ItemProperty {
+        param($Path)
+        if ($Path -notlike 'HKLM:\SOFTWARE\Microsoft*') { return }
+        [pscustomobject]@{ DisplayName = 'LibreOffice 26.8.2.2'; DisplayVersion = '26.8.2.2' }
+        [pscustomobject]@{ DisplayName = 'Hidden Runtime'; DisplayVersion = '1.0'; SystemComponent = 1 }
+        [pscustomobject]@{ DisplayName = 'No Version' }
+        [pscustomobject]@{ DisplayName = '7-Zip'; DisplayVersion = '25.01'; Publisher = 'Igor Pavlov' }
+    }
+    $strictInv = @(Get-SoftwareInventory)
+    Assert-True (($strictInv.Name -join '|') -eq 'LibreOffice 26.8.2.2|7-Zip') 'Registry inventory must survive keys without SystemComponent/Publisher under StrictMode and still skip system components.'
+    Assert-True ($strictInv[1].Publisher -eq 'Igor Pavlov' -and $strictInv[0].Publisher -eq '') 'Publisher must be read when present and empty when absent.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

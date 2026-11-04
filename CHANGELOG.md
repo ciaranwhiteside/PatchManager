@@ -6,6 +6,14 @@ All notable changes to PatchManager are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The software inventory now includes classic desktop apps from the registry.
+  Under StrictMode, uninstall keys without a `SystemComponent` value threw and
+  the whole registry path was dropped, so only AppX packages were inventoried:
+  KEV, NVD and end-of-life scans never saw desktop software, and the Chocolatey
+  newer-version check could not see apps such as LibreOffice.
+
 ## [1.9.1] - 2026-11-04
 
 ### Fixed

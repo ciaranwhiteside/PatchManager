@@ -2920,19 +2920,22 @@ function Get-SoftwareInventory {
 
     foreach ($path in $regPaths) {
         try {
-            Get-ItemProperty -Path $path -EA SilentlyContinue |
-                Where-Object { $_.DisplayName -and $_.DisplayVersion -and -not $_.SystemComponent } |
-                ForEach-Object {
-                    # Dedupe on name+version - the same app can appear in multiple hives
-                    $key = "$($_.DisplayName)|$($_.DisplayVersion)"
-                    if ($seen.Add($key)) {
-                        $inventory.Add([PSCustomObject]@{
-                            Name      = $_.DisplayName
-                            Version   = $_.DisplayVersion
-                            Publisher = $_.Publisher
-                        })
-                    }
+            # Uninstall keys carry only the values they set; under StrictMode a direct
+            # $_.SystemComponent read throws on the first key without it and the catch
+            # below used to drop the whole path, leaving only AppX in the inventory.
+            Get-ItemProperty -Path $path -EA SilentlyContinue | ForEach-Object {
+                $name    = [string](Get-ObjectPropertyValue $_ 'DisplayName' '')
+                $version = [string](Get-ObjectPropertyValue $_ 'DisplayVersion' '')
+                if (-not $name -or -not $version -or (Get-ObjectPropertyValue $_ 'SystemComponent' 0)) { return }
+                # Dedupe on name+version - the same app can appear in multiple hives
+                if ($seen.Add("$name|$version")) {
+                    $inventory.Add([PSCustomObject]@{
+                        Name      = $name
+                        Version   = $version
+                        Publisher = [string](Get-ObjectPropertyValue $_ 'Publisher' '')
+                    })
                 }
+            }
         } catch { }
     }
 
