@@ -1774,17 +1774,33 @@ function Test-PendingReboot {
 }
 
 function Get-UserIdleMinutes {
-    # P/Invoke to Win32 GetLastInputInfo - works from SYSTEM context
+    # Own-session idle time via GetLastInputInfo. A SYSTEM task runs in session 0,
+    # which never receives input, so there we ask WTS about the console session.
     $typeDef = @"
 using System;
 using System.Runtime.InteropServices;
-public class Win32Idle {
+public class PatchManagerIdle {
     [StructLayout(LayoutKind.Sequential)]
     public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
     [DllImport("user32.dll")]
     public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
     [DllImport("kernel32.dll")]
     public static extern ulong GetTickCount64();
+    [DllImport("kernel32.dll")]
+    public static extern uint WTSGetActiveConsoleSessionId();
+    [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool WTSQuerySessionInformationW(IntPtr server, uint sessionId, int infoClass, out IntPtr buffer, out uint bytes);
+    [DllImport("wtsapi32.dll")]
+    public static extern void WTSFreeMemory(IntPtr memory);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct WTSINFOW {
+        public int State; public uint SessionId;
+        public uint IncomingBytes, OutgoingBytes, IncomingFrames, OutgoingFrames, IncomingCompressedBytes, OutgoingCompressedBytes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string WinStationName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 17)] public string Domain;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 21)] public string UserName;
+        public long ConnectTime, DisconnectTime, LastInputTime, LogonTime, CurrentTime;
+    }
     public static ulong GetIdleMilliseconds() {
         LASTINPUTINFO lii = new LASTINPUTINFO();
         lii.cbSize = (uint)Marshal.SizeOf(lii);
@@ -1794,15 +1810,39 @@ public class Win32Idle {
         uint now = (uint)(GetTickCount64() & 0xFFFFFFFF);
         return (ulong)unchecked(now - lii.dwTime);
     }
+    // Console session idle ms; -1 = nobody signed in at the console, -2 = unknown.
+    public static long GetConsoleIdleMilliseconds() {
+        uint sessionId = WTSGetActiveConsoleSessionId();
+        if (sessionId == 0xFFFFFFFF) return -1;
+        IntPtr buffer; uint bytes;
+        if (!WTSQuerySessionInformationW(IntPtr.Zero, sessionId, 24, out buffer, out bytes)) return -2;  // 24 = WTSSessionInfo
+        try {
+            WTSINFOW info = (WTSINFOW)Marshal.PtrToStructure(buffer, typeof(WTSINFOW));
+            if (string.IsNullOrEmpty(info.UserName)) return -1;
+            if (info.LastInputTime <= 0 || info.CurrentTime <= info.LastInputTime) return -2;
+            return (info.CurrentTime - info.LastInputTime) / 10000;
+        } finally { WTSFreeMemory(buffer); }
+    }
 }
 "@
-    if (-not ([System.Management.Automation.PSTypeName]'Win32Idle').Type) {
+    if (-not ([System.Management.Automation.PSTypeName]'PatchManagerIdle').Type) {
         Add-Type -TypeDefinition $typeDef -Language CSharp -EA SilentlyContinue
     }
     try {
-        return [Math]::Round([Win32Idle]::GetIdleMilliseconds() / 60000)
+        if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18') {
+            $consoleMs = [PatchManagerIdle]::GetConsoleIdleMilliseconds()
+            if ($consoleMs -eq -1) { return 999 }   # nobody at the console: no one to disturb
+            if ($consoleMs -lt 0) {
+                # Windows leaves LastInputTime at 0 for console sessions, so SYSTEM cannot
+                # measure a signed-in user's idle time: fail closed rather than interrupt them.
+                Write-Log 'User idle: console idle time is not available to SYSTEM; treating the signed-in user as active.' -Level INFO
+                return 0
+            }
+            return [Math]::Round($consoleMs / 60000)
+        }
+        return [Math]::Round([PatchManagerIdle]::GetIdleMilliseconds() / 60000)
     } catch {
-        return 999  # If we can't check, assume idle
+        return 0  # Can't tell: treat the user as active rather than patch in front of them
     }
 }
 

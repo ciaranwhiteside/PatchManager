@@ -1985,4 +1985,12 @@ $battery = @([pscustomobject]@{ BatteryStatus = 2; EstimatedChargeRemaining = 80
 Invoke-Expression $batteryLines
 Assert-True ($onAC -eq $true -and $pct -eq 15) 'Two charging batteries must read as on AC with the lowest charge.'
 
+# T27: idle detection compiles, measures the console session for SYSTEM, and fails closed.
+Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-UserIdleMinutes')
+$idleNow = Get-UserIdleMinutes
+Assert-True ($idleNow -is [double] -or $idleNow -is [int] -or $idleNow -is [long]) 'Idle minutes must be a number.'
+$consoleIdle = [PatchManagerIdle]::GetConsoleIdleMilliseconds()
+Assert-True ($consoleIdle -ge -2) 'Console idle query must return a value without throwing.'
+Assert-True ((Get-FunctionTextFromScriptAst -Ast $ast -Name 'Get-UserIdleMinutes') -match 'catch \{\s*return 0') 'An idle-check failure must treat the user as active.'
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green

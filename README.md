@@ -545,7 +545,7 @@ refreshed. Apply is skipped in dry-run/report-only.
 | `PreFlight.MinFreeSpaceGB` | `5` | Abort if the system drive is below this. |
 | `PreFlight.CheckBattery` / `MinBatteryPercent` / `RequireACPower` | `true` / `20` / `false` | Laptop protections. |
 | `PreFlight.AbortOnPendingReboot` | `true` | Don't patch on top of a half-applied state. |
-| `PreFlight.RequireUserIdle` / `MinIdleMinutes` | `false` / `5` | Defer gracefully while the user is active (great for scheduled tasks). |
+| `PreFlight.RequireUserIdle` / `MinIdleMinutes` | `false` / `5` | Defer gracefully while the user is active (great for scheduled tasks). When run as SYSTEM, Windows does not expose the console user's idle time, so a run defers whenever someone is signed in at the console. |
 | `SystemRestore.Enabled` | `true` | Create a restore point before patching (throttled to one per 24 h by Windows). |
 | `CISAKEV.Enabled` | `true` | Fetch and match the KEV catalogue. |
 | `CISAKEV.FeedUrl` / `CacheHours` / `CachePath` | CISA feed / `24` / `C:\ProgramData\PatchManager\Cache` | Feed caching; a stale cache is used if the fetch fails. |
