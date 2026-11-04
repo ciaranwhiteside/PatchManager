@@ -3338,7 +3338,8 @@ function Get-WinGetUpgrades {
 function Add-SkippedUpgradeResult {
     param(
         [Parameter(Mandatory)] [PSCustomObject]$Package,
-        [Parameter(Mandatory)] [string]$Reason
+        [Parameter(Mandatory)] [string]$Reason,
+        [ValidateSet('Skipped','Descoped')] [string]$Status = 'Skipped'
     )
 
     $provider = if ($Package.PSObject.Properties['Provider']) { $Package.Provider } elseif ($Package.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
@@ -3348,7 +3349,7 @@ function Add-SkippedUpgradeResult {
         -Provider $provider `
         -InstalledVersion $Package.Version `
         -AvailableVersion $Package.Available `
-        -Status 'Skipped' `
+        -Status $Status `
         -Evidence $Reason))
 }
 
@@ -3369,30 +3370,14 @@ function Get-FilteredUpgrades {
 
         $descopeReason = ''
         if (Test-IsDescoped -Item $pkg -Reason ([ref]$descopeReason)) {
-            $provider = if ($pkg.PSObject.Properties['Provider']) { $pkg.Provider } elseif ($pkg.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
-            $script:SkippedUpgradeResults.Add((New-PatchResult -Name $pkg.Name `
-                -PackageId $pkg.PackageId `
-                -Source $pkg.Source `
-                -Provider $provider `
-                -InstalledVersion $pkg.Version `
-                -AvailableVersion $pkg.Available `
-                -Status 'Descoped' `
-                -Evidence $descopeReason))
+            Add-SkippedUpgradeResult -Package $pkg -Reason $descopeReason -Status 'Descoped'
             $excluded++
             continue
         }
 
         $isExcluded = @($script:CFG.WinGet.ExcludePackagePrefixes) | Where-Object { $pkg.PackageId -like "$_*" }
         if ($isExcluded) {
-            $provider = if ($pkg.PSObject.Properties['Provider']) { $pkg.Provider } elseif ($pkg.Source -eq 'msstore') { 'winget-msstore' } else { 'winget' }
-            $script:SkippedUpgradeResults.Add((New-PatchResult -Name $pkg.Name `
-                -PackageId $pkg.PackageId `
-                -Source $pkg.Source `
-                -Provider $provider `
-                -InstalledVersion $pkg.Version `
-                -AvailableVersion $pkg.Available `
-                -Status 'Descoped' `
-                -Evidence 'Descoped by WinGet component/package prefix safety list.'))
+            Add-SkippedUpgradeResult -Package $pkg -Reason 'Descoped by WinGet component/package prefix safety list.' -Status 'Descoped'
             $excluded++
             continue
         }

@@ -2133,4 +2133,18 @@ $script:CFG = [pscustomobject]@{ ScopeProfile = 'Personal' }
 [void](Get-BrowserVersion -Browser 'Edge')
 [void](Resolve-BrowserUpdater -Browser 'Chrome')
 
+# T41: descoped rows go through Add-SkippedUpgradeResult.
+foreach ($fn in 'Add-SkippedUpgradeResult','Get-FilteredUpgrades') { Invoke-Expression (Get-FunctionTextFromScriptAst -Ast $ast -Name $fn) }
+& {
+    $script:CFG = [pscustomobject]@{ WinGet = [pscustomobject]@{ ApprovedPackages = @(); PublisherManagedPackageIds = @(); ExcludePackagePrefixes = @('Microsoft.VCLibs') } }
+    $script:SkippedUpgradeResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+    function Test-IsDescoped { param($Item, [ref]$Reason) if ($Item.PackageId -eq 'Corp.Tool') { $Reason.Value = 'Descoped by policy.'; return $true }; $false }
+    $filteredPkgs = @(Get-FilteredUpgrades -Upgrades @(
+        [pscustomobject]@{ Name = 'Tool'; PackageId = 'Corp.Tool'; Source = 'winget'; Version = '1'; Available = '2' },
+        [pscustomobject]@{ Name = 'VCLibs'; PackageId = 'Microsoft.VCLibs.140'; Source = 'winget'; Version = '1'; Available = '2' },
+        [pscustomobject]@{ Name = 'Git'; PackageId = 'Git.Git'; Source = 'winget'; Version = '1'; Available = '2' }))
+    Assert-True ($filteredPkgs.Count -eq 1 -and $filteredPkgs[0].PackageId -eq 'Git.Git') 'Only the eligible package remains.'
+    Assert-True (@($script:SkippedUpgradeResults | Where-Object Status -eq 'Descoped').Count -eq 2 -and $script:SkippedUpgradeResults[0].Provider -eq 'winget') 'Descoped rows keep their status and provider.'
+}
+
 Write-Host 'PatchManager static tests passed.' -ForegroundColor Green
